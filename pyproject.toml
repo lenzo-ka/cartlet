@@ -1,0 +1,114 @@
+[build-system]
+# setuptools >= 77 is required for the PEP 639 `license`/`license-files`
+# metadata used below.
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cartlet"
+dynamic = ["version"]
+description = "Fast decision trees and random forests for classification and regression"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    {name = "Kevin Lenzo", email = "kevinlenzo@gmail.com"}
+]
+keywords = [
+    "machine-learning",
+    "decision-trees",
+    "random-forest",
+    "cart",
+    "classification",
+    "regression",
+    "scikit-learn",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Typing :: Typed",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0",
+]
+sklearn = ["scikit-learn>=1.0", "joblib>=1.0"]
+yaml = ["pyyaml>=6.0"]
+xgboost = ["xgboost>=1.5.0"]
+# Recursive extras so `all` never drifts from the individual groups above.
+all = ["cartlet[dev,sklearn,yaml,xgboost]"]
+
+[project.scripts]
+cartlet = "cartlet.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/lenzo-ka/cartlet"
+Repository = "https://github.com/lenzo-ka/cartlet"
+Documentation = "https://github.com/lenzo-ka/cartlet#readme"
+Issues = "https://github.com/lenzo-ka/cartlet/issues"
+
+[tool.setuptools.dynamic]
+version = {attr = "cartlet.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cartlet*"]
+
+[tool.setuptools.package-data]
+cartlet = ["py.typed", "bundled/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"
+
+[tool.ruff]
+line-length = 88
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = false
+warn_unused_ignores = true
+disallow_untyped_defs = false
+check_untyped_defs = true
+strict_optional = false
+exclude = ["venv/", "build/", ".eggs/"]
+
+[[tool.mypy.overrides]]
+module = ["sklearn.*", "joblib", "xgboost.*", "yaml"]
+ignore_missing_imports = true
+
+[tool.coverage.run]
+source = ["cartlet"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+]
