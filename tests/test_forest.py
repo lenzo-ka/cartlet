@@ -12,7 +12,15 @@ class TestBasicTraining:
     """Test basic forest training and prediction."""
 
     def test_simple_classification(self):
-        rf = RandomForest(n_estimators=10, feature_names=["color", "size"])
+        # Separating these four classes needs BOTH features, so use
+        # max_features=None (otherwise sqrt(2)=1 feature per split leaves each
+        # tree unable to learn the mapping) and a fixed seed for determinism --
+        # without them this asserted exact per-point predictions from an
+        # under-powered, unseeded forest and was flaky across RNG/sklearn
+        # versions.
+        rf = RandomForest(
+            n_estimators=10, max_features=None, feature_names=["color", "size"]
+        )
         X = [
             ["red", "small"],
             ["red", "large"],
@@ -21,7 +29,7 @@ class TestBasicTraining:
         ] * 10
         y = ["apple", "apple", "ball", "box"] * 10
         rf.load_data(X, y)
-        rf.train()
+        rf.train(random_state=42)
 
         assert rf.predict(["red", "small"]) == "apple"
         assert rf.predict(["blue", "large"]) == "box"
