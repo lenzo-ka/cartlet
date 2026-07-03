@@ -38,7 +38,7 @@ def evaluate_predictions(
     if not y_true:
         return {"accuracy": 0.0, "total": 0}
 
-    correct = sum(1 for true, pred in zip(y_true, y_pred) if true == pred)
+    correct = sum(1 for true, pred in zip(y_true, y_pred, strict=False) if true == pred)
     total = len(y_true)
 
     return {
@@ -76,7 +76,7 @@ def regression_metrics(
     if n == 0:
         raise ValueError("Cannot compute regression metrics on empty input")
 
-    errors = [float(t) - float(p) for t, p in zip(y_true, y_pred)]
+    errors = [float(t) - float(p) for t, p in zip(y_true, y_pred, strict=False)]
     ss_res = sum(e * e for e in errors)
     mse = ss_res / n
     mae = sum(abs(e) for e in errors) / n
@@ -162,7 +162,7 @@ def confusion_matrix(
     """
     matrix: dict[tuple[Any, Any], int] = {}
 
-    for true, pred in zip(y_true, y_pred):
+    for true, pred in zip(y_true, y_pred, strict=False):
         key = (true, pred)
         matrix[key] = matrix.get(key, 0) + 1
 

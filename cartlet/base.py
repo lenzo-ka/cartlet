@@ -8,7 +8,8 @@ import json
 import os
 import pickle
 from abc import ABC, abstractmethod
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from .io.cart_format import MAGIC as CART_MAGIC
 from .io.utils import open_file, open_file_binary, require_joblib, resolve_format

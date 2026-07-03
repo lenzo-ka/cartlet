@@ -309,7 +309,9 @@ class TestRunnerVsSklearn:
             runner_preds = [predict(model, x) for x in X]
 
             # Should be identical
-            mismatches = sum(1 for s, r in zip(sklearn_preds, runner_preds) if s != r)
+            mismatches = sum(
+                1 for s, r in zip(sklearn_preds, runner_preds, strict=False) if s != r
+            )
             assert mismatches == 0, (
                 f"Runner disagrees with sklearn on {mismatches}/{len(X)} samples"
             )
@@ -351,7 +353,9 @@ class TestRunnerVsSklearn:
             runner_preds = [predict(model, x) for x in X]
 
             # Should be identical
-            mismatches = sum(1 for s, r in zip(sklearn_preds, runner_preds) if s != r)
+            mismatches = sum(
+                1 for s, r in zip(sklearn_preds, runner_preds, strict=False) if s != r
+            )
             assert mismatches == 0, (
                 f"Runner disagrees with sklearn on {mismatches}/{len(X)} samples"
             )

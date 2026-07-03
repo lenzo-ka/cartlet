@@ -244,7 +244,7 @@ class TestCrossRunnerConsistency:
         lib_preds = predict_batch(model, test_vectors)
 
         # Runner predictions
-        for vec, expected in zip(test_vectors, lib_preds):
+        for vec, expected in zip(test_vectors, lib_preds, strict=False):
             args = [sys.executable, "cartlet/bundled/predict.py", "-m", model_path] + [
                 str(v) for v in vec
             ]

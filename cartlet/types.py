@@ -13,20 +13,20 @@ This module contains:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, TypedDict, Union
+from typing import Any, TypedDict
 
 # =============================================================================
 # Tree node type aliases
 # =============================================================================
 
 # Classification leaf: class label (str) or distribution (dict)
-ClassificationLeaf = Union[str, dict[str, float]]
+ClassificationLeaf = str | dict[str, float]
 
 # Regression leaf: [mean, variance, n_samples]
 RegressionLeaf = list[float]
 
 # Any leaf node
-LeafNode = Union[str, dict[str, float], list[float]]
+LeafNode = str | dict[str, float] | list[float]
 
 # Decision node: [feature_name, operator, value, left_child, right_child]
 # where operator is "<" for numerical or "=" for categorical splits
@@ -34,7 +34,7 @@ LeafNode = Union[str, dict[str, float], list[float]]
 DecisionNode = list[Any]  # [str, str, Any, TreeNode, TreeNode]
 
 # Complete tree node (leaf or decision)
-TreeNode = Union[LeafNode, DecisionNode]
+TreeNode = LeafNode | DecisionNode
 
 
 # =============================================================================

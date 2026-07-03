@@ -323,7 +323,7 @@ class TestSklearnTrainer:
             model_data = load_model(f.name)
 
             # Predictions should work
-            for x, _expected in zip(X, y):
+            for x, _expected in zip(X, y, strict=False):
                 pred = predict(model_data, x)
                 # May not be exact due to sklearn's different splitting
                 assert pred in y

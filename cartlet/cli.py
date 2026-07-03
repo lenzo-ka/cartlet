@@ -872,7 +872,7 @@ def cmd_predict(args: argparse.Namespace) -> int:
         if is_jsonl:
             return dict(row)
         return (
-            dict(zip(header, row))
+            dict(zip(header, row, strict=False))
             if header
             else {str(i + 1): v for i, v in enumerate(row)}
         )
@@ -895,20 +895,20 @@ def cmd_predict(args: argparse.Namespace) -> int:
         if is_structured:
             output_data = [
                 dict(row_to_dict(row), **{args.prediction_column: pred})
-                for row, pred in zip(raw_rows, predictions)
+                for row, pred in zip(raw_rows, predictions, strict=False)
             ]
         else:
             lines = []
             if header:
                 lines.append(output_delimiter.join(header + [args.prediction_column]))
-            for row, pred in zip(raw_rows, predictions):
+            for row, pred in zip(raw_rows, predictions, strict=False):
                 lines.append(output_delimiter.join(row_to_list(row) + [str(pred)]))
             output_data = lines
 
     else:  # args.mode == "inplace"
         if is_structured:
             records: list[dict[str, Any]] = []
-            for row, pred in zip(raw_rows, predictions):
+            for row, pred in zip(raw_rows, predictions, strict=False):
                 record = row_to_dict(row)
                 if target_key:
                     record[target_key] = pred
@@ -918,7 +918,7 @@ def cmd_predict(args: argparse.Namespace) -> int:
             lines = []
             if header:
                 lines.append(output_delimiter.join(header))
-            for row, pred in zip(raw_rows, predictions):
+            for row, pred in zip(raw_rows, predictions, strict=False):
                 new_row = row_to_list(row)
                 idx = (
                     header.index(target_key)

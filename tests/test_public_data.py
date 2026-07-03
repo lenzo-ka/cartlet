@@ -102,7 +102,7 @@ def iris_csv(tmp_path):
     header = [name.replace(" ", "_") for name in data.feature_names] + ["species"]
     rows = [
         [*[float(v) for v in row], target_names[int(label)]]
-        for row, label in zip(data.data.tolist(), data.target.tolist())
+        for row, label in zip(data.data.tolist(), data.target.tolist(), strict=False)
     ]
     path = tmp_path / "iris.csv"
     _write_csv(str(path), header, rows)
@@ -162,7 +162,9 @@ class TestIrisWorkflow:
         # .cart stores numeric thresholds as float32, so a few samples sitting
         # exactly on a split boundary can flip. JSON/JSONL/pkl are lossless.
         n = len(in_memory)
-        agreements = sum(str(a) == str(b) for a, b in zip(in_memory, from_disk))
+        agreements = sum(
+            str(a) == str(b) for a, b in zip(in_memory, from_disk, strict=False)
+        )
         if ext == ".cart":
             assert agreements / n > 0.95, (
                 f"{ext} round-trip agreement too low: {agreements}/{n}"
@@ -411,7 +413,7 @@ class TestDiabetesRegression:
         # .cart stores numeric values as float32, so allow ~1e-5 relative error
         # plus a small absolute floor for values that round to zero.
         assert len(from_disk) == len(in_memory)
-        for a, b in zip(in_memory, from_disk):
+        for a, b in zip(in_memory, from_disk, strict=False):
             assert abs(float(a) - float(b)) <= 1e-5 * abs(float(a)) + 1e-3
 
 

@@ -66,7 +66,7 @@ def _write_vectors(
 
     if format == "json":
         if header:
-            json.dump([dict(zip(header, row)) for row in data], f)
+            json.dump([dict(zip(header, row, strict=False)) for row in data], f)
         else:
             json.dump(data, f)
         return
@@ -74,7 +74,7 @@ def _write_vectors(
     if format == "jsonl":
         for row in data:
             if header:
-                f.write(json.dumps(dict(zip(header, row))) + "\n")
+                f.write(json.dumps(dict(zip(header, row, strict=False))) + "\n")
             else:
                 f.write(json.dumps(row) + "\n")
         return

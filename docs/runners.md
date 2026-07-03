@@ -34,7 +34,7 @@ standard library:
 
 | Runner | Dependencies |
 |--------|--------------|
-| `cartlet/bundled/predict.py` | Python 3.9+ stdlib |
+| `cartlet/bundled/predict.py` | Python 3.11+ stdlib |
 
 This enables deployment in constrained environments (locked-down servers,
 air-gapped networks) where installing third-party packages is difficult or
