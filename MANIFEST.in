@@ -1,0 +1,7 @@
+include LICENSE
+include README.md
+include pyproject.toml
+recursive-include cartlet py.typed
+recursive-include cartlet/bundled *.py
+prune tests
+prune .github

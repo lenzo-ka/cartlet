@@ -1,0 +1,9 @@
+# Development dependencies for cartlet.
+#
+# The canonical source of truth is pyproject.toml's optional-dependency groups
+# ([project.optional-dependencies]); this file just installs the "all" group so
+# `pip install -r requirements-dev.txt` stays in lockstep with it (dev tools +
+# scikit-learn, joblib, pyyaml, xgboost).
+#
+# Equivalent to: pip install -e ".[all]"
+-e .[all]
