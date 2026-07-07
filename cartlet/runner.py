@@ -41,8 +41,12 @@ from .io.cart_format import (
     OP_MASK,
     OP_SHIFT,
     OP_SWITCH,
+    SIZE_DECISION_HEADER,
     SIZE_DIST_ENTRY,
+    SIZE_F32,
     SIZE_FEAT_HEADER,
+    SIZE_HEADER_COUNTS1,
+    SIZE_HEADER_COUNTS2,
     SIZE_LEAF,
     SIZE_U16,
     TYPE_MASK,
@@ -133,7 +137,7 @@ def _load_cart_from_bytes(data: bytes) -> dict[str, Any]:
         version, flags, n_features, n_classes, n_trees = struct.unpack_from(
             "<HHHHH", data, pos
         )
-        pos += 10
+        pos += SIZE_HEADER_COUNTS1
 
         if version != VERSION:
             raise ValueError(
@@ -149,7 +153,7 @@ def _load_cart_from_bytes(data: bytes) -> dict[str, Any]:
             n_case_tables,
             metadata_len,
         ) = struct.unpack_from("<IIIHHHH", data, pos)
-        pos += 20
+        pos += SIZE_HEADER_COUNTS2
 
         if n_features > _CART_MAX_FEATURES:
             raise ValueError(f"Unreasonable n_features: {n_features}")
@@ -194,7 +198,7 @@ def _load_cart_from_bytes(data: bytes) -> dict[str, Any]:
 
         # Float pool
         floats = list(struct.unpack_from(f"<{n_floats}f", data, pos))
-        pos += 4 * n_floats
+        pos += SIZE_F32 * n_floats
 
         # Cat value pool
         cat_vals = list(struct.unpack_from(f"<{n_cat_vals}H", data, pos))
@@ -324,7 +328,7 @@ def _parse_decision_nodes(
     decisions = []
     for _ in range(n_decisions):
         feat_op, val = struct.unpack_from("<BH", data, pos)
-        pos += 3
+        pos += SIZE_DECISION_HEADER
         feat = feat_op & FEAT_MASK
         op = (feat_op & OP_MASK) >> OP_SHIFT
         if op == OP_SWITCH:

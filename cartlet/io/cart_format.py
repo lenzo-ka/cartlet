@@ -10,6 +10,7 @@ Format optimizations:
 - feat + op packed into 1 byte (6 bits feat, 2 bits op)
 """
 
+import struct
 from typing import Any
 
 # Magic bytes
@@ -88,9 +89,19 @@ OFF_META_LEN = 32
 
 # Element sizes (bytes)
 SIZE_U16 = 2
+SIZE_F32 = 4  # 32-bit float (float pool entries)
 SIZE_LEAF = 3  # type(1) + val(2) - no padding
 SIZE_DIST_ENTRY = 6  # class_idx(u16) + prob(f32)
 SIZE_FEAT_HEADER = 4  # name_idx(u16) + type_flags(u8) + n_cat(u8)
+SIZE_DECISION_HEADER = 3  # packed feat_op(1) + val(2); left/right follow as varints
+
+# Header struct groups parsed after the 4-byte magic (see the breakdown above).
+HEADER_FMT_COUNTS1 = "<HHHHH"  # version, flags, n_features, n_classes, n_trees
+HEADER_FMT_COUNTS2 = "<IIIHHHH"  # n_decisions/leaves/floats + cat/dist/case/meta
+SIZE_HEADER_COUNTS1 = struct.calcsize(HEADER_FMT_COUNTS1)  # 10
+SIZE_HEADER_COUNTS2 = struct.calcsize(HEADER_FMT_COUNTS2)  # 20
+# Sanity: the magic + both count groups must equal the fixed header size.
+assert 4 + SIZE_HEADER_COUNTS1 + SIZE_HEADER_COUNTS2 == HEADER_SIZE
 
 
 # =============================================================================
