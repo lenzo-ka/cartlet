@@ -39,6 +39,8 @@ class TestEvaluatePredictions:
         result = evaluate_predictions([], [])
         assert result["accuracy"] == 0.0
         assert result["total"] == 0
+        # Schema is stable: "correct" is present even on empty input.
+        assert result["correct"] == 0
 
     def test_mismatched_lengths_raises(self):
         with pytest.raises(ValueError):
