@@ -58,7 +58,7 @@ class IsolationForest:
     def __init__(
         self,
         n_estimators: int = DEFAULT_N_ESTIMATORS,
-        max_samples: int = DEFAULT_MAX_SAMPLES,
+        max_samples: int | float | str = DEFAULT_MAX_SAMPLES,
         max_depth: int | None = None,
         feature_names: list[str] | None = None,
         random_state: int | None = None,
@@ -83,13 +83,44 @@ class IsolationForest:
         if not self.feature_names and X:
             self.feature_names = [f"f{i}" for i in range(len(X[0]))]
 
+    def _resolve_max_samples(self, n: int) -> int:
+        """Resolve ``max_samples`` (int / float fraction / "auto") to a count.
+
+        - ``"auto"``: ``min(256, n)`` (matches sklearn's IsolationForest).
+        - ``float`` in (0, 1]: that fraction of ``n`` (at least 1).
+        - ``int``: capped at ``n``.
+        """
+        ms = self.max_samples
+        if isinstance(ms, str):
+            if ms != "auto":
+                raise ValueError(
+                    f"max_samples={ms!r}; expected 'auto', an int, or a "
+                    "float in (0, 1]."
+                )
+            return min(256, n)
+        if isinstance(ms, bool):  # bool is an int subclass; reject explicitly
+            raise ValueError("max_samples must be a number or 'auto', not bool.")
+        if isinstance(ms, float):
+            if not 0.0 < ms <= 1.0:
+                raise ValueError(
+                    f"max_samples={ms}; float must be in (0, 1] (a fraction of n)."
+                )
+            return max(1, int(ms * n))
+        if isinstance(ms, int):
+            if ms <= 0:
+                raise ValueError(f"max_samples={ms}; int must be positive.")
+            return min(ms, n)
+        raise ValueError(
+            f"max_samples={ms!r}; expected 'auto', an int, or a float in (0, 1]."
+        )
+
     def train(self) -> dict[str, Any]:
         """Build the isolation forest."""
         if not self.X:
             raise ValueError("No training data loaded. Call load_data() first.")
 
         n = len(self.X)
-        sub_size = min(self.max_samples, n)
+        sub_size = self._resolve_max_samples(n)
         self._n_samples_used = sub_size
 
         depth_limit = self.max_depth or math.ceil(math.log2(max(sub_size, 2)))
@@ -165,6 +196,11 @@ class IsolationForest:
         """
         if not self.trees:
             raise ValueError("Model not trained. Call train() first.")
+
+        if self.feature_names and len(vector) != len(self.feature_names):
+            raise ValueError(
+                f"Expected {len(self.feature_names)} features, got {len(vector)}."
+            )
 
         fvec = [float(v) for v in vector]
         mean_path = sum(self._path_length(fvec, tree) for tree in self.trees) / len(

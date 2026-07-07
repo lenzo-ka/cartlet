@@ -373,6 +373,34 @@ class TestIsolationForest:
         with pytest.raises(ValueError, match="No training data"):
             ifo.train()
 
+    def test_predict_wrong_length_raises(self):
+        ifo = IsolationForest(n_estimators=5, feature_names=["x", "y"], random_state=42)
+        ifo.load_data([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+        ifo.train()
+        with pytest.raises(ValueError, match="Expected 2 features, got 1"):
+            ifo.predict([1.0])
+
+    def test_max_samples_auto(self):
+        X = [[float(i), float(i)] for i in range(500)]
+        ifo = IsolationForest(n_estimators=3, max_samples="auto", random_state=42)
+        ifo.load_data(X)
+        result = ifo.train()
+        # "auto" caps at 256 (sklearn convention).
+        assert result["max_samples"] == 256
+
+    def test_max_samples_float_fraction(self):
+        X = [[float(i), float(i)] for i in range(200)]
+        ifo = IsolationForest(n_estimators=3, max_samples=0.25, random_state=42)
+        ifo.load_data(X)
+        result = ifo.train()
+        assert result["max_samples"] == 50
+
+    def test_max_samples_invalid(self):
+        ifo = IsolationForest(n_estimators=3, max_samples=1.5)
+        ifo.load_data([[1.0], [2.0], [3.0]])
+        with pytest.raises(ValueError, match="max_samples"):
+            ifo.train()
+
     def test_repr(self):
         ifo = IsolationForest(n_estimators=50)
         assert "untrained" in repr(ifo)
