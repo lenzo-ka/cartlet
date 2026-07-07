@@ -46,6 +46,7 @@ from .utils import (
     collapse_distributions,
     count_nodes,
     eval_tree,
+    is_decision_node,
 )
 from .utils import (
     max_depth as compute_max_depth,
@@ -554,10 +555,10 @@ class DecisionTree(BaseModel):
         importances: dict[str, float] = dict.fromkeys(self.feature_names, 0.0)
 
         def count_splits(node: Any, depth: int = 0) -> None:
-            if not isinstance(node, list) or len(node) != 5:
+            if not is_decision_node(node):
                 return  # Leaf node
 
-            feature, op, value, left, right = node
+            feature, _op, _value, left, right = node
 
             # Weight by depth (higher nodes affect more samples)
             weight = 1.0 / (depth + 1)
