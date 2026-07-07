@@ -65,7 +65,7 @@ class XGBoostTree(BaseModel):
         max_depth: int = _DEFAULT_MAX_DEPTH,
         features: list[dict[str, Any]] | None = None,
         feature_names: list[str] | None = None,
-        target: dict[str, Any] | Any | None = None,
+        target: dict[str, Any] | None = None,
         task: str = TASK_AUTO,
         verbose: bool = False,
         **xgb_params,

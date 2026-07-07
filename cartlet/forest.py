@@ -60,7 +60,7 @@ class RandomForest(BaseModel):
         extra_trees: bool = False,
         features: list[dict[str, Any]] | None = None,
         feature_names: list[str] | None = None,
-        target: dict[str, Any] | Any | None = None,
+        target: dict[str, Any] | None = None,
         task: str = TASK_AUTO,
         max_depth: int | None = None,
         min_samples_split: int = 2,

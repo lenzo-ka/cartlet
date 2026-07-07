@@ -261,7 +261,7 @@ class DecisionTree(BaseModel):
         test_split: float = 0.0,
         prune: bool = False,
         random_state: int | None = None,
-        trainer: str | Any = None,
+        trainer: str | Trainer | None = None,
     ) -> dict[str, float]:
         """
         Train the decision tree.
