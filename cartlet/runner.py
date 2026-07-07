@@ -216,7 +216,9 @@ def _load_cart_from_bytes(data: bytes) -> dict[str, Any]:
         distributions, pos = _parse_distributions(data, pos, n_dists, has_distributions)
 
         # Case tables (for OP_SWITCH nodes)
-        case_tables, pos = _parse_case_tables(data, pos, n_case_tables)
+        case_tables, pos = _parse_case_tables(
+            data, pos, n_case_tables, cat_vals, strings
+        )
 
         # Trailing metadata blob (JSON, may carry XGBoost base_score etc.).
         # Length 0 is the common case for plain DecisionTree/RandomForest exports.
@@ -363,21 +365,41 @@ def _parse_distributions(
 
 
 def _parse_case_tables(
-    data: bytes, pos: int, n_case_tables: int
+    data: bytes,
+    pos: int,
+    n_case_tables: int,
+    cat_vals: list[int],
+    strings: list[str],
 ) -> tuple[list[dict], int]:
-    """Parse case tables for OP_SWITCH nodes."""
+    """Parse case tables for OP_SWITCH nodes.
+
+    Each table's cases are resolved once to a ``{category_string: child_idx}``
+    lookup so switch traversal is an O(1) dict get per node instead of a linear
+    scan (with per-entry ``cat_vals``/``strings`` dereferences) on every
+    prediction row. First-match-wins is preserved via ``setdefault``.
+    """
     case_tables: list[dict[str, Any]] = []
     for _ in range(n_case_tables):
         (n_cases,) = struct.unpack_from("<H", data, pos)
         pos += SIZE_U16
         default_child, pos = decode_varint(data, pos)
         cases: list[tuple[int, int]] = []
+        lookup: dict[str, int] = {}
         for _ in range(n_cases):
             (cat_val_idx,) = struct.unpack_from("<H", data, pos)
             pos += SIZE_U16
             child_idx, pos = decode_varint(data, pos)
             cases.append((cat_val_idx, child_idx))
-        case_tables.append({"default": default_child, "cases": cases})
+            if cat_val_idx >= len(cat_vals):
+                continue
+            actual_cat_idx = cat_vals[cat_val_idx]
+            if actual_cat_idx >= len(strings):
+                continue
+            lookup.setdefault(strings[actual_cat_idx], child_idx)
+        # "cases" retains the raw (cat_val_idx, child_idx) pairs for tree
+        # rebuild (cart_format.rebuild_tree_from_cart); "lookup" is the resolved
+        # O(1) prediction path.
+        case_tables.append({"default": default_child, "cases": cases, "lookup": lookup})
     return case_tables, pos
 
 
@@ -514,16 +536,7 @@ def _predict_tree_recursive(
             table = case_tables[val]
             idx = table["default"]
             if feat_val is not None:
-                feat_str = str(feat_val)
-                for cat_val_idx, child_idx in table["cases"]:
-                    if cat_val_idx >= len(cat_vals):
-                        continue
-                    actual_cat_idx = cat_vals[cat_val_idx]
-                    if actual_cat_idx >= len(strings):
-                        continue
-                    if strings[actual_cat_idx] == feat_str:
-                        idx = child_idx
-                        break
+                idx = table["lookup"].get(str(feat_val), table["default"])
 
     raise RuntimeError("Max tree depth exceeded (possible corrupted model)")
 

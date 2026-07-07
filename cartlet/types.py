@@ -71,7 +71,8 @@ class CaseTable(TypedDict):
     """Case table for OP_SWITCH nodes."""
 
     default: int  # default child index
-    cases: list[tuple[int, int]]  # [(cat_val_idx, child_idx), ...]
+    cases: list[tuple[int, int]]  # [(cat_val_idx, child_idx), ...] (for rebuild)
+    lookup: dict[str, int]  # {category_string: child_idx} (O(1) prediction path)
 
 
 class ModelData(TypedDict):
