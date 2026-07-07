@@ -320,6 +320,40 @@ class TestPruning:
 
         assert preds_before == preds_after
 
+    def test_prune_without_split_uses_default_and_prunes(self):
+        """prune=True with no validation_split must actually prune.
+
+        Previously the default validation_split of 0.0 produced an empty
+        validation set, so pruning silently never ran. It should now fall back
+        to DEFAULT_VALIDATION_SPLIT and reduce the tree relative to unpruned.
+        """
+        from cartlet import count_nodes
+
+        X, y = self._make_noisy_data()
+
+        unpruned = DecisionTree(feature_names=["color", "size"])
+        unpruned.load_data(X, y)
+        unpruned.train(prune=False, random_state=42)
+
+        pruned = DecisionTree(feature_names=["color", "size"])
+        pruned.load_data(X, y)
+        pruned.train(prune=True, random_state=42)  # no explicit validation_split
+
+        assert count_nodes(pruned.model) < count_nodes(unpruned.model)
+
+    def test_prune_with_sklearn_backend_warns_and_noops(self, caplog):
+        """The sklearn backend cannot prune; prune=True should warn, not lie."""
+        import logging
+
+        pytest.importorskip("sklearn")
+        X, y = self._make_noisy_data()
+        dt = DecisionTree(feature_names=["color", "size"])
+        dt.load_data(X, y)
+        with caplog.at_level(logging.WARNING, logger="cartlet"):
+            dt.train(prune=True, random_state=42, trainer="sklearn")
+        assert any("does not support pruning" in rec.message for rec in caplog.records)
+        assert dt.model is not None
+
     def test_collapsed_leaf_uses_training_majority(self):
         """REP must label a pruned leaf from the training rows, not validation.
 

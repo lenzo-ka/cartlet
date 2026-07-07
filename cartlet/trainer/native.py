@@ -130,6 +130,10 @@ class Native(Trainer):
     def supports_categorical(self) -> bool:
         return True
 
+    @property
+    def supports_pruning(self) -> bool:
+        return True
+
     def train(
         self,
         tree: DecisionTree,

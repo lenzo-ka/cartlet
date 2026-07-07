@@ -29,6 +29,7 @@ from .trainer.base import normalize_importances
 from .types import (
     CRITERION_ENTROPY,
     DEFAULT_MIN_DIST_ENTROPY,
+    DEFAULT_VALIDATION_SPLIT,
     DTYPE_BOOL,
     DTYPE_STR,
     PROB_HIGH_CONFIDENCE,
@@ -265,9 +266,13 @@ class DecisionTree(BaseModel):
         Train the decision tree.
 
         Args:
-            validation_split: Fraction for validation (pruning)
+            validation_split: Fraction held out for reduced-error pruning.
+                When ``prune=True`` and this is left at 0.0, a default of
+                DEFAULT_VALIDATION_SPLIT is used so pruning actually happens.
             test_split: Fraction for test (evaluation)
-            prune: Whether to prune tree using validation data
+            prune: Whether to prune tree using validation data. Only the native
+                backend prunes; with the sklearn backend ``prune=True`` is a
+                no-op and a warning is logged (no data is held out).
             random_state: Random seed for reproducibility (used when pruning)
             trainer: Trainer to use - "native" (default), "sklearn", or a Trainer instance
 
@@ -287,9 +292,41 @@ class DecisionTree(BaseModel):
         if self.verbose:
             self.logger.info("Building tree from %d observations", len(self.X))
 
+        # Get trainer instance up front so pruning support can inform the split.
+        trainer_instance = self._get_trainer(trainer, prune, random_state)
+
+        if self.verbose:
+            self.logger.info("Using trainer: %s", trainer_instance.name)
+
+        # Resolve the effective validation split for pruning. Historically
+        # ``prune=True`` with the default ``validation_split=0.0`` produced an
+        # empty validation set and silently never pruned; fall back to
+        # DEFAULT_VALIDATION_SPLIT so pruning actually happens. Backends that
+        # do not honour validation rows (e.g. sklearn) warn instead of holding
+        # out data pointlessly.
+        effective_val_split = validation_split
+        if prune:
+            if not trainer_instance.supports_pruning:
+                self.logger.warning(
+                    "The %s backend does not support pruning; prune=True is "
+                    "ignored (no validation data is held out).",
+                    trainer_instance.name,
+                )
+                effective_val_split = 0.0
+            elif effective_val_split <= 0.0:
+                effective_val_split = DEFAULT_VALIDATION_SPLIT
+                if self.verbose:
+                    self.logger.info(
+                        "prune=True with no validation_split; using default "
+                        "%.3g for pruning.",
+                        effective_val_split,
+                    )
+
+        do_prune = prune and effective_val_split > 0.0
+
         # Split data
         train_rows, val_rows, test_rows = self._split_data(
-            validation_split if prune else 0.0,
+            effective_val_split if do_prune else 0.0,
             test_split,
             random_state,
         )
@@ -301,18 +338,12 @@ class DecisionTree(BaseModel):
                 len(test_rows),
             )
 
-        # Get trainer instance
-        trainer_instance = self._get_trainer(trainer, prune, random_state)
-
-        if self.verbose:
-            self.logger.info("Using trainer: %s", trainer_instance.name)
-
         # Build tree
         tree_start = time()
         self.model = trainer_instance.train(
             self,
             train_rows,
-            val_rows if prune else None,
+            val_rows if do_prune else None,
         )
         tree_time = time() - tree_start
 

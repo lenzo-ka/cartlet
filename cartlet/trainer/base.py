@@ -91,6 +91,15 @@ class Trainer(ABC):
         return False
 
     @property
+    def supports_pruning(self) -> bool:
+        """Whether this trainer honours ``val_rows`` for reduced-error pruning.
+
+        Backends that ignore the validation rows (e.g. sklearn) return False so
+        callers can warn instead of silently holding out data and never pruning.
+        """
+        return False
+
+    @property
     def name(self) -> str:
         """Human-readable name for this trainer."""
         return self.__class__.__name__
