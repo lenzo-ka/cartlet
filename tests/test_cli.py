@@ -618,6 +618,57 @@ class TestConfigPresets:
             magic = rf.read(4)
         assert magic == b"CART"
 
+    def test_preset_value_applied_and_overridable(self, tmp_path):
+        """The preset value reaches args (config-as-default), and an explicit
+        flag overrides it -- verified via --save-config, which dumps the
+        effective args (guards the set_defaults-based config handling)."""
+        import json
+
+        from cartlet.cli import load_config
+
+        data = tmp_path / "d.csv"
+        data.write_text("x,label\n" + "".join(f"{i},{i % 2}\n" for i in range(10)))
+
+        # 'fast' preset -> max_depth 10 flows through to the saved config.
+        cfg1 = tmp_path / "c1.json"
+        assert (
+            main(
+                [
+                    "train",
+                    str(data),
+                    "-o",
+                    str(tmp_path / "a.cart"),
+                    "-c",
+                    "fast",
+                    "--save-config",
+                    str(cfg1),
+                ]
+            )
+            == 0
+        )
+        assert load_config(str(cfg1))["max_depth"] == 10
+
+        # Explicit -D 2 overrides the preset.
+        cfg2 = tmp_path / "c2.json"
+        assert (
+            main(
+                [
+                    "train",
+                    str(data),
+                    "-o",
+                    str(tmp_path / "b.cart"),
+                    "-c",
+                    "fast",
+                    "-D",
+                    "2",
+                    "--save-config",
+                    str(cfg2),
+                ]
+            )
+            == 0
+        )
+        assert load_config(str(cfg2))["max_depth"] == 2
+
     def test_train_with_equals_form_preset(self, tmp_path, capsys):
         """--config=NAME (equals form) must be honored, not silently ignored."""
         data = tmp_path / "d.csv"

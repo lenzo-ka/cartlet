@@ -272,44 +272,14 @@ def save_config(args: argparse.Namespace, path: str) -> None:
     print(f"Config saved to {path}", file=sys.stderr)
 
 
-def merge_config_with_argv(config: dict[str, Any], argv: list[str]) -> list[str]:
-    """
-    Merge config values into argv. CLI args take precedence.
-
-    Args:
-        config: Config dict
-        argv: Original command line args
-
-    Returns:
-        New argv with config values inserted as defaults
-    """
-    # Build set of args already in argv (to avoid overriding)
-    provided = set()
-    for arg in argv:
-        if arg.startswith("-"):
-            # Strip leading dashes and get the dest name
-            clean = arg.lstrip("-").replace("-", "_")
-            provided.add(clean)
-
-    # Build new argv with config values prepended (CLI will override)
-    new_args = []
-    for key, value in config.items():
-        if key in provided or key in _CONFIG_EXCLUDE:
-            continue
-        if key == "data":
-            continue  # Positional, handled separately
-
-        # Convert to CLI arg format
-        cli_key = f"--{key.replace('_', '-')}"
-
-        if isinstance(value, bool):
-            if value:
-                new_args.append(cli_key)
-        elif value is not None:
-            new_args.append(cli_key)
-            new_args.append(str(value))
-
-    return new_args + argv
+def _get_subparser(
+    parser: argparse.ArgumentParser, name: str
+) -> argparse.ArgumentParser | None:
+    """Return the named subparser (e.g. "train") from a parser, or None."""
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return action.choices.get(name)
+    return None
 
 
 def load_feature_specs(spec_input: str, feature_names: list[str]) -> list[dict]:
@@ -1819,7 +1789,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if len(argv) >= 1 and argv[0] == "train":
-            config_name, rest = _extract_config_option(argv[1:])
+            config_name, _ = _extract_config_option(argv[1:])
             if config_name:
                 config = load_config(config_name)
                 if config_name in _BUILTIN_CONFIGS:
@@ -1828,7 +1798,19 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     config_file_used = config_name
                     print(f"Loaded config from {config_name}", file=sys.stderr)
-                argv = [argv[0]] + merge_config_with_argv(config, rest)
+                # Apply the config as the train subparser's defaults. argparse
+                # then lets any explicitly-provided CLI flag override them --
+                # no argv string surgery, and short flags (e.g. -D) are handled
+                # by argparse's own dest resolution.
+                train_parser = _get_subparser(parser, "train")
+                if train_parser is not None:
+                    train_parser.set_defaults(
+                        **{
+                            k: v
+                            for k, v in config.items()
+                            if k not in _CONFIG_EXCLUDE and k != "data"
+                        }
+                    )
 
         args = parser.parse_args(argv)
 
