@@ -175,6 +175,8 @@ DEFAULT_N_ESTIMATORS = 100
 DEFAULT_VALIDATION_SPLIT = 0.05
 DEFAULT_TEST_SPLIT = 0.05
 DEFAULT_MIN_DIST_ENTROPY = 0.1
+DEFAULT_MIN_SAMPLES_SPLIT = 2
+DEFAULT_MIN_SAMPLES_LEAF = 1
 
 
 # =============================================================================

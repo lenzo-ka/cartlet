@@ -48,6 +48,8 @@ from .isolation import (
 from .runner import load_model, predict_batch
 from .tree import DecisionTree
 from .types import (
+    DEFAULT_MIN_SAMPLES_LEAF,
+    DEFAULT_MIN_SAMPLES_SPLIT,
     DEFAULT_N_ESTIMATORS,
     DEFAULT_TEST_SPLIT,
     DEFAULT_VALIDATION_SPLIT,
@@ -137,8 +139,8 @@ _BUILTIN_CONFIGS: dict[str, dict[str, Any]] = {
         "extra_trees": False,
         "n_estimators": DEFAULT_N_ESTIMATORS,
         "max_depth": None,  # unlimited
-        "min_samples_split": 2,
-        "min_samples_leaf": 1,
+        "min_samples_split": DEFAULT_MIN_SAMPLES_SPLIT,
+        "min_samples_leaf": DEFAULT_MIN_SAMPLES_LEAF,
         "trainer": "native",
         "n_jobs": None,
         "random_seed": None,
@@ -155,9 +157,9 @@ _BUILTIN_CONFIGS: dict[str, dict[str, Any]] = {
     "accurate": {
         # More thorough training for production
         "forest": True,
-        "n_estimators": 100,
-        "min_samples_split": 2,
-        "min_samples_leaf": 1,
+        "n_estimators": DEFAULT_N_ESTIMATORS,
+        "min_samples_split": DEFAULT_MIN_SAMPLES_SPLIT,
+        "min_samples_leaf": DEFAULT_MIN_SAMPLES_LEAF,
     },
     "small": {
         # Smaller model size
@@ -1457,17 +1459,17 @@ Examples:
         "-s",
         "--min-samples-split",
         type=int,
-        default=2,
+        default=DEFAULT_MIN_SAMPLES_SPLIT,
         metavar="N",
-        help="Minimum samples to split (default: 2)",
+        help=f"Minimum samples to split (default: {DEFAULT_MIN_SAMPLES_SPLIT})",
     )
     train_parser.add_argument(
         "-l",
         "--min-samples-leaf",
         type=int,
-        default=1,
+        default=DEFAULT_MIN_SAMPLES_LEAF,
         metavar="N",
-        help="Minimum samples in leaf (default: 1)",
+        help=f"Minimum samples in leaf (default: {DEFAULT_MIN_SAMPLES_LEAF})",
     )
     train_parser.add_argument(
         "-S",
