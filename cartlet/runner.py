@@ -11,8 +11,8 @@ Usage:
     result = predict(model, ["red", "large"])
     results = predict_batch(model, [["red", "large"], ["blue", "small"]])
 
-Or as standalone script:
-    python runner.py model.cart '["feature1", "feature2", ...]'
+Or as a module (relative imports require -m, not `python runner.py`):
+    python -m cartlet.runner model.cart '["feature1", "feature2", ...]'
 """
 
 from __future__ import annotations
@@ -167,6 +167,22 @@ def _load_cart_from_bytes(data: bytes) -> dict[str, Any]:
         has_distributions = bool(flags & FLAG_HAS_DISTRIBUTIONS)
         is_xgboost = bool(flags & FLAG_IS_XGBOOST)
 
+        # Reject internally-inconsistent headers rather than silently
+        # misparsing. A positive n_dists with the distribution flag clear would
+        # desync the case-table offset (W1-L7); n_trees > 1 with neither the
+        # forest nor xgboost flag set would make runners disagree on whether to
+        # use tree 0 or aggregate (W1-L8).
+        if n_dists > 0 and not has_distributions:
+            raise ValueError(
+                "Inconsistent .cart header: n_dists > 0 but "
+                "FLAG_HAS_DISTRIBUTIONS is clear"
+            )
+        if n_trees > 1 and not is_forest and not is_xgboost:
+            raise ValueError(
+                "Inconsistent .cart header: n_trees > 1 but neither "
+                "FLAG_IS_FOREST nor FLAG_IS_XGBOOST is set"
+            )
+
         # String table
         strings, pos = _parse_string_table(data, pos)
 
@@ -235,6 +251,7 @@ def _load_cart_from_bytes(data: bytes) -> dict[str, Any]:
             "is_xgboost": is_xgboost,
             "has_distributions": has_distributions,
             "n_trees": n_trees if is_forest else 1,
+            "version": version,
         }
 
     except struct.error as e:

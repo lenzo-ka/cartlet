@@ -39,6 +39,7 @@ from .evaluation import evaluate_predictions, per_class_metrics, regression_metr
 from .forest import RandomForest
 from .io import detect_delimiter, detect_format, load_training_data, resolve_format
 from .io.bytes import bundle
+from .io.cart_format import VERSION
 from .isolation import (
     ANOMALY_SCORE_MIDPOINT,
     DEFAULT_MAX_SAMPLES,
@@ -367,6 +368,24 @@ def _cmd_train_isolation_forest(
     feature_names: list[str],
 ) -> int:
     """Train an IsolationForest (called from cmd_train)."""
+    # IsolationForest is unsupervised: several supervised-training flags have no
+    # effect here. Warn instead of silently ignoring them.
+    ignored = []
+    if getattr(args, "prune", False):
+        ignored.append("--prune")
+    if getattr(args, "task", TASK_AUTO) != TASK_AUTO:
+        ignored.append("--task")
+    if getattr(args, "criterion", "entropy") != "entropy":
+        ignored.append("--criterion")
+    if getattr(args, "test_file", None):
+        ignored.append("--test-file")
+    if ignored:
+        print(
+            "Warning: isolation-forest training ignores "
+            f"{', '.join(ignored)} (unsupervised model).",
+            file=sys.stderr,
+        )
+
     max_samples = min(DEFAULT_MAX_SAMPLES, len(X))
     print(
         f"Training IsolationForest with {args.n_estimators} trees, "
@@ -557,14 +576,6 @@ def cmd_train(args: argparse.Namespace) -> int:
 
     if getattr(args, "isolation_forest", False):
         return _cmd_train_isolation_forest(args, X, feature_names)
-
-    if getattr(args, "validation_file", None):
-        print(
-            "Error: --validation-file is not yet implemented; "
-            "use --validation-split to set a fraction instead.",
-            file=sys.stderr,
-        )
-        return 2
 
     # Load or infer feature specs
     if args.features:
@@ -1127,7 +1138,9 @@ def _print_stats_human(
     p(f"\nFeatures ({len(features_list)}):")
     for f in features_list:
         ftype = f.get("type", "?")
-        dtype = "str"
+        # .cart does not persist the original dtype; show it only when a codec
+        # actually carries it, and "-" otherwise instead of a misleading "str".
+        dtype = f.get("dtype", "-")
         values = f.get("values", [])
         if values and len(values) <= _MAX_CAT_VALUES_DISPLAY:
             p(f"  {f.get('name'):<20} {ftype:<5} {dtype:<6} values: {values}")
@@ -1210,7 +1223,7 @@ def cmd_stats(args: argparse.Namespace) -> int:
     stats_dict: dict[str, Any] = {
         "model_type": "RandomForest" if is_forest else "DecisionTree",
         "task": meta.get("task", "unknown"),
-        "format_version": "cart-1.0",
+        "format_version": f"cart-{model_data.get('version', VERSION)}",
         "cartlet_version": __version__,
         "features": meta.get("features", []),
         "target": meta.get("target"),
@@ -1475,12 +1488,6 @@ Examples:
         default=DEFAULT_VALIDATION_SPLIT,
         metavar="FRAC",
         help=f"Fraction for validation/pruning (default: {DEFAULT_VALIDATION_SPLIT})",
-    )
-    train_parser.add_argument(
-        "-E",
-        "--validation-file",
-        metavar="FILE",
-        help="(not yet implemented) Separate validation data file",
     )
     train_parser.add_argument(
         "-P",

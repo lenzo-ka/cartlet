@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import math
 import random
+from collections.abc import Collection
 from time import time
 from typing import TYPE_CHECKING, Any
 
@@ -22,6 +23,12 @@ from ..utils import is_leaf
 from .base import Trainer, make_classification_distribution, normalize_importances
 
 _PROGRESS_INTERVAL_SEC = 30
+
+# Hard ceiling on native tree depth when no max_depth is set. Real trees are
+# rarely deeper than a few dozen levels; hitting this means degenerate data.
+# Kept well below CPython's default recursion limit so build/predict/prune
+# recursion stays safe.
+_MAX_NATIVE_DEPTH = 500
 
 if TYPE_CHECKING:
     from ..tree import DecisionTree
@@ -193,6 +200,19 @@ class Native(Trainer):
 
         total = self._sum_counts(tree, row_ids)
 
+        # Guard against unbounded recursion when max_depth is None. A degenerate
+        # chain (e.g. an ID-like feature that peels off one row at a time) would
+        # otherwise recurse until Python's frame limit and crash with an opaque
+        # RecursionError -- and even if built, such a tree could not be inferred
+        # recursively. Fail early with actionable guidance instead.
+        if depth >= _MAX_NATIVE_DEPTH:
+            raise ValueError(
+                f"Tree depth exceeded {_MAX_NATIVE_DEPTH} without a max_depth "
+                "limit; this usually means near-duplicate rows or an ID-like "
+                "feature. Set max_depth or increase min_samples_leaf/"
+                "min_samples_split to bound the tree."
+            )
+
         # Early stopping conditions
         if self.max_depth is not None and depth >= self.max_depth:
             return self._make_leaf(tree, row_ids)
@@ -361,11 +381,13 @@ class Native(Trainer):
 
     # --- Helper methods ---
 
-    def _sum_counts(self, tree: DecisionTree, row_ids) -> int:
+    def _sum_counts(self, tree: DecisionTree, row_ids: Collection[int]) -> int:
         """Sum instance counts for given row indices."""
         return sum(tree.counts[i] for i in row_ids)
 
-    def _cat_counts(self, tree: DecisionTree, row_ids) -> tuple[dict[Any, int], int]:
+    def _cat_counts(
+        self, tree: DecisionTree, row_ids: Collection[int]
+    ) -> tuple[dict[Any, int], int]:
         """Accumulate counts for each category using instance weights."""
         counts: dict[Any, int] = {}
         total = 0
@@ -375,7 +397,7 @@ class Native(Trainer):
             total += tree.counts[i]
         return counts, total
 
-    def _entropy_for_rows(self, tree: DecisionTree, row_ids) -> float:
+    def _entropy_for_rows(self, tree: DecisionTree, row_ids: Collection[int]) -> float:
         """Calculate entropy for a set of rows (classification)."""
         counts, total = self._cat_counts(tree, row_ids)
         if total == 0:
@@ -383,7 +405,7 @@ class Native(Trainer):
         probs = [count / total for count in counts.values()]
         return -sum(p * math.log2(p) for p in probs if p > 0)
 
-    def _gini_for_rows(self, tree: DecisionTree, row_ids) -> float:
+    def _gini_for_rows(self, tree: DecisionTree, row_ids: Collection[int]) -> float:
         """Calculate Gini impurity for a set of rows (classification)."""
         counts, total = self._cat_counts(tree, row_ids)
         if total == 0:
@@ -391,7 +413,9 @@ class Native(Trainer):
         probs = [count / total for count in counts.values()]
         return 1.0 - sum(p * p for p in probs)
 
-    def _mean_for_rows(self, tree: DecisionTree, row_ids) -> tuple[float, float, int]:
+    def _mean_for_rows(
+        self, tree: DecisionTree, row_ids: Collection[int]
+    ) -> tuple[float, float, int]:
         """Calculate weighted mean, variance, and count for regression."""
         if not row_ids:
             return 0.0, 0.0, 0
@@ -410,12 +434,12 @@ class Native(Trainer):
 
         return mean, variance, total_weight
 
-    def _variance_for_rows(self, tree: DecisionTree, row_ids) -> float:
+    def _variance_for_rows(self, tree: DecisionTree, row_ids: Collection[int]) -> float:
         """Calculate weighted variance for a set of rows (regression)."""
         _, variance, _ = self._mean_for_rows(tree, row_ids)
         return variance
 
-    def _impurity_for_rows(self, tree: DecisionTree, row_ids) -> float:
+    def _impurity_for_rows(self, tree: DecisionTree, row_ids: Collection[int]) -> float:
         """Calculate impurity (entropy/gini for classification, variance for regression)."""
         if tree._is_regression():
             return self._variance_for_rows(tree, row_ids)
@@ -758,7 +782,7 @@ class Native(Trainer):
         )
 
     def _make_leaf(
-        self, tree: DecisionTree, row_ids
+        self, tree: DecisionTree, row_ids: Collection[int]
     ) -> str | dict[str, float] | list[float]:
         """Create a leaf node."""
         if tree._is_regression():
@@ -766,7 +790,7 @@ class Native(Trainer):
         return self._make_classification_leaf(tree, row_ids)
 
     def _make_classification_leaf(
-        self, tree: DecisionTree, row_ids
+        self, tree: DecisionTree, row_ids: Collection[int]
     ) -> str | dict[str, float]:
         """Create a classification leaf node."""
         cat_counts, total = self._cat_counts(tree, row_ids)
@@ -793,7 +817,9 @@ class Native(Trainer):
             items, tree.store_distributions, tree.min_confidence
         )
 
-    def _make_regression_leaf(self, tree: DecisionTree, row_ids) -> list[float]:
+    def _make_regression_leaf(
+        self, tree: DecisionTree, row_ids: Collection[int]
+    ) -> list[float]:
         """Create a regression leaf node: [mean, variance, n]."""
         mean, variance, n = self._mean_for_rows(tree, row_ids)
         return [mean, variance, n]

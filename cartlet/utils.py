@@ -56,6 +56,30 @@ def get_children(node: Any) -> tuple[Any, Any]:
     return node[3], node[4]  # [feature, op, value, left, right]
 
 
+def collapse_distributions(node: Any) -> Any:
+    """
+    Return a copy of ``node`` with every probability-distribution leaf reduced
+    to its most likely class label (a bare string).
+
+    Used by ``export(..., store_distributions=False)`` for the JSON/JSONL/
+    pickle codecs so the produced file matches the documented behaviour (leaves
+    store only the best class). Regression leaves (``[mean, var, n]``) and plain
+    string leaves are returned unchanged.
+    """
+    if isinstance(node, dict):
+        return max(node, key=lambda k: node[k])
+    if is_decision_node(node):
+        feature, op, value, left, right = node
+        return [
+            feature,
+            op,
+            value,
+            collapse_distributions(left),
+            collapse_distributions(right),
+        ]
+    return node
+
+
 def count_nodes(node: Any) -> int:
     """
     Count total nodes in a decision tree.

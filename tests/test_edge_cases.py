@@ -15,6 +15,24 @@ from cartlet.runner import load_model, predict
 _SKLEARN_MISSING = importlib.util.find_spec("sklearn") is None
 
 
+class TestPublicNamespace:
+    """W4-8: public API hygiene of the top-level cartlet namespace."""
+
+    def test_regression_metrics_is_public(self):
+        import cartlet
+
+        assert hasattr(cartlet, "regression_metrics")
+        assert "regression_metrics" in cartlet.__all__
+        m = cartlet.regression_metrics([1.0, 2.0, 3.0], [1.0, 2.0, 3.0])
+        assert m["mae"] == 0.0
+
+    def test_format_internals_not_leaked(self):
+        import cartlet
+
+        for name in ("MAGIC", "HEADER_SIZE", "OFF_FLAGS", "FLAG_IS_FOREST"):
+            assert not hasattr(cartlet, name), f"{name} should not be public"
+
+
 class TestMalformedModelFiles:
     """Test handling of malformed .cart model files."""
 
@@ -57,6 +75,41 @@ class TestMalformedModelFiles:
             with pytest.raises(ValueError, match="Unreasonable n_features"):
                 dt.load_model(f.name)
             os.unlink(f.name)
+
+    def _valid_model_bytes(self, tmp_path):
+        dt = DecisionTree(feature_names=["x"])
+        dt.load_data([["a"], ["b"], ["a"], ["b"]], ["1", "2", "1", "2"])
+        dt.train()
+        path = tmp_path / "m.cart"
+        dt.export(str(path))
+        return bytearray(path.read_bytes())
+
+    def test_n_trees_gt_one_without_forest_flag_rejected(self, tmp_path):
+        """n_trees > 1 with neither forest nor xgboost flag is inconsistent (W1-L8)."""
+        import struct
+
+        raw = self._valid_model_bytes(tmp_path)
+        # n_trees is the 5th u16 after the 4-byte magic (offset 12).
+        struct.pack_into("<H", raw, 12, 2)
+        bad = tmp_path / "bad_trees.cart"
+        bad.write_bytes(raw)
+        dt = DecisionTree()
+        with pytest.raises(ValueError, match="n_trees > 1"):
+            dt.load_model(str(bad))
+
+    def test_n_dists_without_flag_rejected(self, tmp_path):
+        """n_dists > 0 with FLAG_HAS_DISTRIBUTIONS clear is inconsistent (W1-L7)."""
+        import struct
+
+        raw = self._valid_model_bytes(tmp_path)
+        # Second header group starts at offset 14; n_dists is the 5th field
+        # (I,I,I,H,H,...) -> offset 14 + 4+4+4+2 = 28.
+        struct.pack_into("<H", raw, 28, 1)
+        bad = tmp_path / "bad_dists.cart"
+        bad.write_bytes(raw)
+        dt = DecisionTree()
+        with pytest.raises(ValueError, match="FLAG_HAS_DISTRIBUTIONS"):
+            dt.load_model(str(bad))
 
 
 class TestMinSamplesLeafEdgeCases:
@@ -219,6 +272,26 @@ class TestMaxDepthConstraint:
         # Should be able to go deeper than any reasonable limit
         # (exact depth depends on data)
         assert dt.get_depth() >= 1
+
+    def test_unbounded_depth_raises_clear_error(self, monkeypatch):
+        """With max_depth=None, a degenerate deep build must raise a clear
+        error rather than an opaque RecursionError.
+
+        The real ceiling is high; monkeypatch it low so a small dataset that
+        needs several split levels trips the guard deterministically.
+        """
+        import cartlet.trainer.native as native_mod
+
+        monkeypatch.setattr(native_mod, "_MAX_NATIVE_DEPTH", 2)
+        dt = DecisionTree(
+            features=[{"name": "x", "dtype": "float", "type": "num"}],
+            max_depth=None,
+        )
+        X = [[float(i)] for i in range(16)]
+        y = [str(i) for i in range(16)]  # all distinct -> forces depth > 2
+        dt.load_data(X, y)
+        with pytest.raises(ValueError, match="Tree depth exceeded"):
+            dt.train(trainer="native")
 
     def test_max_depth_preserved_in_export(self):
         """max_depth should be saved and restored."""
@@ -386,6 +459,35 @@ class TestSklearnTrainer:
         pred = dt.predict([2.5])
         assert isinstance(pred, float)
         assert 15.0 <= pred <= 35.0
+
+    @pytest.mark.skipif(_SKLEARN_MISSING, reason="sklearn not installed")
+    def test_sklearn_regression_leaf_variance(self):
+        """Regression leaves must carry the node's real variance, not 0.0.
+
+        With a depth-1 stump each leaf still spans several distinct targets,
+        so the stored variance (sklearn's node MSE) must be positive.
+        """
+        from cartlet.utils import is_leaf
+
+        dt = DecisionTree(
+            features=[{"name": "x", "dtype": "float", "type": "num"}],
+            task=TASK_REGRESSION,
+            max_depth=1,
+        )
+        X = [[float(i)] for i in range(10)]
+        y = [1.0, 1.0, 9.0, 1.0, 9.0, 9.0, 1.0, 9.0, 1.0, 9.0]
+        dt.load_data(X, y)
+        dt.train(trainer="sklearn")
+
+        def leaf_variances(node):
+            if is_leaf(node):
+                # regression leaf shape is [mean, variance, n]
+                return [node[1]] if isinstance(node, list) else []
+            return leaf_variances(node[3]) + leaf_variances(node[4])
+
+        variances = leaf_variances(dt.model)
+        assert variances, "expected regression leaves"
+        assert any(v > 0.0 for v in variances)
 
     @pytest.mark.skipif(_SKLEARN_MISSING, reason="sklearn not installed")
     def test_sklearn_max_depth(self):

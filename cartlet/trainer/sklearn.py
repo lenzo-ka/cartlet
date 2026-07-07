@@ -139,7 +139,10 @@ def convert_sklearn_tree(
             if is_regression or classes is None:
                 mean = float(sk_tree.value[node_id, 0, 0])
                 n = int(sk_tree.n_node_samples[node_id])
-                return [mean, 0.0, n]
+                # sklearn's regression impurity is the node MSE (variance),
+                # matching native's [mean, variance, n] leaf shape.
+                variance = float(sk_tree.impurity[node_id])
+                return [mean, variance, n]
 
             # Classification: build class distribution
             values = sk_tree.value[node_id, 0]
@@ -402,7 +405,8 @@ class Sklearn(Trainer):
                 else:
                     mean = float(sk_tree.value[node_id, 0, 0])
                     n = int(sk_tree.n_node_samples[node_id])
-                    return [mean, 0.0, n]
+                    variance = float(sk_tree.impurity[node_id])
+                    return [mean, variance, n]
 
             feat_idx = sk_tree.feature[node_id]
             threshold = float(sk_tree.threshold[node_id])

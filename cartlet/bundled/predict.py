@@ -338,6 +338,17 @@ def _load_cart_from_bytes_impl(data):
     has_distributions = bool(flags & FLAG_HAS_DISTRIBUTIONS)
     is_xgboost = bool(flags & FLAG_IS_XGBOOST)
 
+    # Reject internally-inconsistent headers (kept in lockstep with runner.py).
+    if n_dists > 0 and not has_distributions:
+        raise ValueError(
+            "Inconsistent .cart header: n_dists > 0 but FLAG_HAS_DISTRIBUTIONS is clear"
+        )
+    if n_trees > 1 and not is_forest and not is_xgboost:
+        raise ValueError(
+            "Inconsistent .cart header: n_trees > 1 but neither "
+            "FLAG_IS_FOREST nor FLAG_IS_XGBOOST is set"
+        )
+
     # String table
     (n_strings,) = struct.unpack_from("<H", data, pos)
     pos += 2
@@ -786,7 +797,13 @@ def parse_line(line, delimiter, model_features):
     parsed = []
     for i, val in enumerate(parts):
         if i < len(model_features) and model_features[i]["type"] == "num":
-            parsed.append(float(val))
+            feat = model_features[i].get("name", i)
+            try:
+                parsed.append(float(val))
+            except ValueError:
+                raise ValueError(
+                    f"expected a number for feature {feat!r}, got {val!r}"
+                ) from None
         else:
             parsed.append(val)
     return parsed
@@ -818,8 +835,9 @@ def show_info(model):
 
 
 def main():
-    embedded_model = load_embedded()
-    has_embedded = embedded_model is not None
+    # Only detect the embedded marker here; defer the (potentially large)
+    # base64-decode + parse until we know no -m/positional model overrides it.
+    has_embedded = "_EMBEDDED_MODEL_B64" in globals()
 
     parser = argparse.ArgumentParser(
         description="Predict using a .cart decision tree model.",
@@ -902,7 +920,7 @@ Examples:
     if model_file:
         model = load_cart(model_file)
     elif has_embedded:
-        model = embedded_model
+        model = load_embedded()
     else:
         parser.error(
             "No model specified. Use -m MODEL or provide model.cart as first argument."
@@ -928,15 +946,19 @@ Examples:
                 line = line.strip()
                 if not line:
                     continue
-                if delimiter:
-                    row = parse_line(line, delimiter, model["features"])
-                else:
-                    row = parse_line(line, None, model["features"])
-                    if len(row) == 1:
-                        # Try tab, then comma
-                        row = parse_line(line, "\t", model["features"])
+                try:
+                    if delimiter:
+                        row = parse_line(line, delimiter, model["features"])
+                    else:
+                        row = parse_line(line, None, model["features"])
                         if len(row) == 1:
-                            row = parse_line(line, ",", model["features"])
+                            # Try tab, then comma
+                            row = parse_line(line, "\t", model["features"])
+                            if len(row) == 1:
+                                row = parse_line(line, ",", model["features"])
+                except ValueError as e:
+                    print(f"Error: {e}", file=sys.stderr)
+                    return 1
                 result = predict(model, row, return_dist=args.dist)
                 if args.dist:
                     print(json.dumps(result))
@@ -955,7 +977,15 @@ Examples:
     parsed_row = []
     for i, val in enumerate(features):
         if i < len(model["features"]) and model["features"][i]["type"] == "num":
-            parsed_row.append(float(val))
+            try:
+                parsed_row.append(float(val))
+            except ValueError:
+                feat = model["features"][i].get("name", i)
+                print(
+                    f"Error: expected a number for feature {feat!r}, got {val!r}",
+                    file=sys.stderr,
+                )
+                return 1
         else:
             parsed_row.append(val)
 

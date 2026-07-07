@@ -79,6 +79,59 @@ class TestPythonRunner:
         lines = result.stdout.strip().split("\n")
         assert len(lines) == 2
 
+    @pytest.fixture
+    def numeric_model_path(self, tmp_path):
+        """A model whose sole feature is explicitly numeric."""
+        dt = DecisionTree(
+            features=[{"name": "x", "dtype": "float", "type": "num"}],
+        )
+        X = [[1.0], [2.0], [3.0], [4.0]]
+        y = ["low", "low", "high", "high"]
+        dt.load_data(X, y)
+        dt.train()
+        path = tmp_path / "num.cart"
+        dt.export(str(path))
+        return str(path)
+
+    def test_non_numeric_value_clean_error_single(self, numeric_model_path):
+        """A non-numeric value for a numeric feature -> clean error, not a
+        raw traceback (W1-L9)."""
+        result = subprocess.run(
+            [
+                sys.executable,
+                "cartlet/bundled/predict.py",
+                "-m",
+                numeric_model_path,
+                "notanumber",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 1
+        assert "Error:" in result.stderr
+        assert "notanumber" in result.stderr
+        assert "Traceback" not in result.stderr
+
+    def test_non_numeric_value_clean_error_batch(self, numeric_model_path, tmp_path):
+        """Batch mode also reports a clean error on a bad numeric cell."""
+        input_file = tmp_path / "bad.txt"
+        input_file.write_text("notanumber\n")
+        result = subprocess.run(
+            [
+                sys.executable,
+                "cartlet/bundled/predict.py",
+                "-m",
+                numeric_model_path,
+                "-f",
+                str(input_file),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 1
+        assert "Error:" in result.stderr
+        assert "Traceback" not in result.stderr
+
     def test_predict_from_file(self, model_path, tmp_path):
         """Predict from file."""
         input_file = tmp_path / "input.txt"
