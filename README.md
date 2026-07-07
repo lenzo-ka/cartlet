@@ -600,18 +600,18 @@ Or provide a path to a YAML/JSON config file. CLI args override preset values.
 ### predict
 
 ```
-cartlet predict MODEL DATA [-o FILE] [-t TARGET] [-d DELIM] [-D DELIM]
-                           [-H] [-m MODE] [-c NAME] [-f FORMAT]
+cartlet predict MODEL DATA [-o FILE] [-t TARGET] [-d DELIM] [--output-delimiter DELIM]
+                           [-H] [-m MODE] [-p NAME] [-f FORMAT]
 
   MODEL             Model file (.cart only; use `cartlet convert` for other formats)
   DATA              Input data (CSV/TSV/JSONL)
   -o, --output      Output file (default: stdout)
   -t, --target      Target column (default: last)
   -d, --delimiter   Input column delimiter (auto-detect)
-  -D, --output-delimiter  Output column delimiter
+  --output-delimiter  Output column delimiter
   -H, --no-header   Data has no header row
   -m, --mode        Output mode: values, append, inplace
-  -c, --prediction-column  Column name (default: "prediction")
+  -p, --prediction-column  Column name (default: "prediction")
   -f, --output-format  Output format: csv, tsv, ssv, json, jsonl
 ```
 

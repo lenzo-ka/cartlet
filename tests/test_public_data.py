@@ -465,7 +465,7 @@ class TestIrisCLI:
                 str(pred_out),
                 "-m",
                 "append",
-                "-c",
+                "-p",
                 "predicted",
             ]
         )

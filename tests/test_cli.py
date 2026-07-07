@@ -312,7 +312,7 @@ class TestPredictCommand:
     def test_predict_custom_column(self, model_and_data, capsys):
         model_path, test_path = model_and_data
         result = main(
-            ["predict", model_path, test_path, "-m", "append", "-c", "predicted_fruit"]
+            ["predict", model_path, test_path, "-m", "append", "-p", "predicted_fruit"]
         )
         assert result == 0
         captured = capsys.readouterr()
@@ -823,3 +823,67 @@ class TestConfigPresets:
         assert result == 1
         err = capsys.readouterr().err
         assert "Unknown config preset" in err and "fastt" in err
+
+
+class TestShortFlagConsistency:
+    """Guard against short flags meaning different things across subcommands.
+
+    A short flag reused for two unrelated options (historically ``-c`` was
+    ``--config`` in ``train`` but ``--prediction-column`` in ``predict``, and
+    ``-D`` was ``--max-depth`` vs ``--output-delimiter``) is a muscle-memory
+    trap and a breaking change to fix after 1.0. This test pins the audited
+    mapping so any future reuse fails loudly.
+
+    A short flag may pair with more than one *long* name only when the names
+    denote the same concept; the sole audited exception is ``-f``, used for
+    both ``--format`` (inspect) and ``--output-format`` (predict), which are
+    both "output format".
+    """
+
+    _ALLOWED_MULTI = {"-f": {"--format", "--output-format"}}
+
+    def _iter_subparsers(self):
+        import argparse
+
+        from cartlet.cli import _build_parser
+
+        parser = _build_parser()
+        for action in parser._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                # choices maps every name *and alias* to its subparser; dedupe
+                # by identity so aliases are not double-counted.
+                seen = set()
+                for name, sub in action.choices.items():
+                    if id(sub) in seen:
+                        continue
+                    seen.add(id(sub))
+                    yield name, sub
+
+    def test_short_flags_have_one_meaning(self):
+        short_to_longs: dict[str, set[str]] = {}
+        for _name, sub in self._iter_subparsers():
+            for act in sub._actions:
+                shorts = [o for o in act.option_strings if len(o) == 2]
+                longs = [o for o in act.option_strings if o.startswith("--")]
+                for s in shorts:
+                    short_to_longs.setdefault(s, set()).update(longs)
+
+        offenders = {
+            s: sorted(longs)
+            for s, longs in short_to_longs.items()
+            if len(longs) > 1 and longs != self._ALLOWED_MULTI.get(s)
+        }
+        assert not offenders, f"Short flags with inconsistent meanings: {offenders}"
+
+    def test_known_collisions_are_resolved(self):
+        short_to_longs: dict[str, set[str]] = {}
+        for _name, sub in self._iter_subparsers():
+            for act in sub._actions:
+                for s in (o for o in act.option_strings if len(o) == 2):
+                    longs = {o for o in act.option_strings if o.startswith("--")}
+                    short_to_longs.setdefault(s, set()).update(longs)
+
+        # -c is config-only; -D is max-depth-only; prediction-column moved to -p.
+        assert short_to_longs.get("-c") == {"--config"}
+        assert short_to_longs.get("-D") == {"--max-depth"}
+        assert short_to_longs.get("-p") == {"--prediction-column"}
