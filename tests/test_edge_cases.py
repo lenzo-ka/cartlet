@@ -1,8 +1,6 @@
 """Tests for edge cases, malformed inputs, and trainer backends."""
 
 import importlib.util
-import os
-import tempfile
 
 import pytest
 
@@ -36,45 +34,33 @@ class TestPublicNamespace:
 class TestMalformedModelFiles:
     """Test handling of malformed .cart model files."""
 
-    def test_empty_file_raises(self):
-        with tempfile.NamedTemporaryFile(suffix=".cart", delete=False) as f:
-            f.write(b"")
-            f.flush()
-            dt = DecisionTree()
-            with pytest.raises(ValueError):
-                dt.load_model(f.name)
-            os.unlink(f.name)
+    def test_empty_file_raises(self, tmp_path):
+        p = tmp_path / "empty.cart"
+        p.write_bytes(b"")
+        with pytest.raises(ValueError):
+            DecisionTree().load_model(str(p))
 
-    def test_invalid_magic_raises(self):
-        with tempfile.NamedTemporaryFile(suffix=".cart", delete=False) as f:
-            f.write(b"XXXX" + b"\x00" * 100)  # Wrong magic
-            f.flush()
-            dt = DecisionTree()
-            with pytest.raises(ValueError, match="Invalid magic"):
-                dt.load_model(f.name)
-            os.unlink(f.name)
+    def test_invalid_magic_raises(self, tmp_path):
+        p = tmp_path / "badmagic.cart"
+        p.write_bytes(b"XXXX" + b"\x00" * 100)  # Wrong magic
+        with pytest.raises(ValueError, match="Invalid magic"):
+            DecisionTree().load_model(str(p))
 
-    def test_truncated_file_raises(self):
+    def test_truncated_file_raises(self, tmp_path):
         """Model file with truncated header."""
-        with tempfile.NamedTemporaryFile(suffix=".cart", delete=False) as f:
-            f.write(b"CART")  # Just magic, no header
-            f.flush()
-            dt = DecisionTree()
-            with pytest.raises(ValueError, match="header is 34 bytes"):
-                dt.load_model(f.name)
-            os.unlink(f.name)
+        p = tmp_path / "trunc.cart"
+        p.write_bytes(b"CART")  # Just magic, no header
+        with pytest.raises(ValueError, match="header is 34 bytes"):
+            DecisionTree().load_model(str(p))
 
-    def test_unreasonable_header_raises(self):
+    def test_unreasonable_header_raises(self, tmp_path):
         """Model file with insane header values."""
-        with tempfile.NamedTemporaryFile(suffix=".cart", delete=False) as f:
-            # CART (4) + version(2) + flags(2) + n_feat(2) + n_class(2) + n_trees(2)
-            # n_feat = 65535 (too high)
-            f.write(b"CART" + b"\x01\x00" + b"\x00\x00" + b"\xff\xff" + b"\x00" * 30)
-            f.flush()
-            dt = DecisionTree()
-            with pytest.raises(ValueError, match="Unreasonable n_features"):
-                dt.load_model(f.name)
-            os.unlink(f.name)
+        # CART (4) + version(2) + flags(2) + n_feat(2) + n_class(2) + n_trees(2)
+        # n_feat = 65535 (too high)
+        p = tmp_path / "insane.cart"
+        p.write_bytes(b"CART" + b"\x01\x00" + b"\x00\x00" + b"\xff\xff" + b"\x00" * 30)
+        with pytest.raises(ValueError, match="Unreasonable n_features"):
+            DecisionTree().load_model(str(p))
 
     def _valid_model_bytes(self, tmp_path):
         dt = DecisionTree(feature_names=["x"])
@@ -348,7 +334,7 @@ class TestMaxDepthConstraint:
         with pytest.raises(ValueError, match="Tree depth exceeded"):
             dt.train(trainer="native")
 
-    def test_max_depth_preserved_in_export(self):
+    def test_max_depth_preserved_in_export(self, tmp_path):
         """max_depth should be saved and restored."""
         dt = DecisionTree(feature_names=["x"], max_depth=3)
         X = [["a"], ["b"]]
@@ -356,13 +342,12 @@ class TestMaxDepthConstraint:
         dt.load_data(X, y)
         dt.train()
 
-        with tempfile.NamedTemporaryFile(suffix=".cart", delete=False) as f:
-            dt.export(f.name)
-            dt2 = DecisionTree()
-            dt2.load_model(f.name)
-            # max_depth not stored in .cart, but predictions should match
-            assert dt.predict(["a"]) == dt2.predict(["a"])
-            os.unlink(f.name)
+        p = tmp_path / "m.cart"
+        dt.export(str(p))
+        dt2 = DecisionTree()
+        dt2.load_model(str(p))
+        # max_depth not stored in .cart, but predictions should match
+        assert dt.predict(["a"]) == dt2.predict(["a"])
 
 
 class TestRegressionValidation:
@@ -401,7 +386,7 @@ class TestRegressionValidation:
             isinstance(pred, (int, float)) and pred >= 1e9
         )  # Should be in right ballpark
 
-    def test_regression_leaf_stats(self):
+    def test_regression_leaf_stats(self, tmp_path):
         """Regression leaves should have valid stats."""
         dt = DecisionTree(task=TASK_REGRESSION, feature_names=["x"])
         X = [["a"], ["a"], ["b"], ["b"]]
@@ -410,11 +395,10 @@ class TestRegressionValidation:
         dt.train()
 
         # Export and verify roundtrip
-        with tempfile.NamedTemporaryFile(suffix=".cart", delete=False) as f:
-            dt.export(f.name)
-            dt2 = DecisionTree()
-            dt2.load_model(f.name)
-            os.unlink(f.name)
+        p = tmp_path / "m.cart"
+        dt.export(str(p))
+        dt2 = DecisionTree()
+        dt2.load_model(str(p))
 
         # Predictions should match
         for x in X:
@@ -559,7 +543,7 @@ class TestSklearnTrainer:
         assert dt.get_depth() <= 2
 
     @pytest.mark.skipif(_SKLEARN_MISSING, reason="sklearn not installed")
-    def test_sklearn_export_import_roundtrip(self):
+    def test_sklearn_export_import_roundtrip(self, tmp_path):
         """Sklearn-trained model exports and imports correctly."""
         dt = DecisionTree(feature_names=["color", "size"])
         X = [["red", "small"], ["red", "large"], ["blue", "small"], ["blue", "large"]]
@@ -567,19 +551,17 @@ class TestSklearnTrainer:
         dt.load_data(X, y)
         dt.train(trainer="sklearn")
 
-        with tempfile.NamedTemporaryFile(suffix=".cart", delete=False) as f:
-            dt.export(f.name)
+        p = tmp_path / "m.cart"
+        dt.export(str(p))
 
-            # Load with runner
-            model_data = load_model(f.name)
+        # Load with runner
+        model_data = load_model(str(p))
 
-            # Predictions should work
-            for x, _expected in zip(X, y, strict=False):
-                pred = predict(model_data, x)
-                # May not be exact due to sklearn's different splitting
-                assert pred in y
-
-            os.unlink(f.name)
+        # Predictions should work
+        for x, _expected in zip(X, y, strict=False):
+            pred = predict(model_data, x)
+            # May not be exact due to sklearn's different splitting
+            assert pred in y
 
 
 class TestBatchPrediction:
@@ -635,27 +617,25 @@ class TestBatchPrediction:
 class TestRunnerPredictBatch:
     """Test runner.predict_batch function."""
 
-    def test_runner_predict_batch(self):
+    def test_runner_predict_batch(self, tmp_path):
         dt = DecisionTree(feature_names=["x"])
         X = [["a"], ["b"], ["c"]]
         y = ["1", "2", "3"]
         dt.load_data(X, y)
         dt.train()
 
-        with tempfile.NamedTemporaryFile(suffix=".cart", delete=False) as f:
-            dt.export(f.name)
-            model_data = load_model(f.name)
+        p = tmp_path / "m.cart"
+        dt.export(str(p))
+        model_data = load_model(str(p))
 
-            from cartlet.runner import predict_batch
+        from cartlet.runner import predict_batch
 
-            preds = predict_batch(model_data, [["a"], ["b"], ["c"]])
+        preds = predict_batch(model_data, [["a"], ["b"], ["c"]])
 
-            assert len(preds) == 3
-            assert preds[0] == "1"
-            assert preds[1] == "2"
-            assert preds[2] == "3"
-
-            os.unlink(f.name)
+        assert len(preds) == 3
+        assert preds[0] == "1"
+        assert preds[1] == "2"
+        assert preds[2] == "3"
 
 
 class TestForestEdgeCases:
