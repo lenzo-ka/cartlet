@@ -834,3 +834,63 @@ class TestStatsHonesty:
         assert "Loading model from" not in content
         assert content.lstrip().startswith("=")  # the stats banner
         assert "Loading model from" in capsys.readouterr().err
+
+
+class TestCliEndToEndCoverage:
+    """End-to-end CLI flows that were previously untested (T5.3)."""
+
+    def test_regression_train_predict_evaluate(self, tmp_path, capsys):
+        """A numeric-target flow reports regression metrics (mse/mae) via CLI."""
+        data = tmp_path / "reg.csv"
+        data.write_text(
+            "x,y,target\n1,2,10.5\n2,4,20.5\n3,6,30.5\n4,8,40.5\n5,10,50.5\n6,12,60.5\n"
+        )
+        model = tmp_path / "reg.cart"
+        assert main(["train", str(data), "-o", str(model), "-T", "regression"]) == 0
+
+        capsys.readouterr()
+        assert main(["predict", str(model), str(data)]) == 0
+        pred_out = capsys.readouterr().out.strip().splitlines()
+        assert len(pred_out) == 6
+        # Predictions parse as floats in the training-target range.
+        for line in pred_out:
+            assert 10.0 <= float(line) <= 61.0
+
+        capsys.readouterr()
+        assert main(["evaluate", str(model), str(data)]) == 0
+        eval_out = capsys.readouterr().out
+        assert "MSE" in eval_out and "MAE" in eval_out
+
+    def test_unicode_labels_through_cli(self, tmp_path, capsys):
+        """Unicode class labels survive a CLI train -> predict round trip."""
+        data = tmp_path / "u.csv"
+        data.write_text("x,label\na,café\nb,naïve\na,café\nb,naïve\n")
+        model = tmp_path / "u.cart"
+        assert main(["train", str(data), "-o", str(model)]) == 0
+
+        capsys.readouterr()
+        assert main(["predict", str(model), str(data)]) == 0
+        out = capsys.readouterr().out
+        assert "café" in out and "naïve" in out
+
+    def test_isolation_forest_cli_train_json(self, tmp_path, capsys):
+        """--isolation-forest trains, reports anomaly stats, and saves JSON."""
+        data = tmp_path / "iso.csv"
+        data.write_text("a,b\n1,1\n2,2\n3,3\n2,3\n1,2\n100,100\n")
+        model = tmp_path / "iso.json"
+        assert main(["train", str(data), "--isolation-forest", "-o", str(model)]) == 0
+        assert model.exists()
+        assert "Anomaly scores" in capsys.readouterr().err
+
+    def test_cart_gz_predict_via_cli(self, tmp_path, capsys):
+        """A gzipped .cart model trains and predicts through the CLI."""
+        data = tmp_path / "d.csv"
+        data.write_text("color,label\nred,apple\nblue,berry\nred,apple\nblue,berry\n")
+        model = tmp_path / "m.cart.gz"
+        assert main(["train", str(data), "-o", str(model)]) == 0
+        assert model.exists()
+
+        capsys.readouterr()
+        assert main(["predict", str(model), str(data)]) == 0
+        out = capsys.readouterr().out
+        assert "apple" in out and "berry" in out
