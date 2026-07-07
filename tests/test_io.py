@@ -240,3 +240,31 @@ class TestStreamingBatchParity:
         assert stream_labels == batch_y
         # The malformed 2-column row was skipped by both paths.
         assert len(batch_X) == 2
+
+
+class TestTryNumericAndBool:
+    """try_numeric / normalize_bool value-coercion edge cases (T6.8)."""
+
+    def test_try_numeric_plain_forms(self):
+        from cartlet.io.utils import try_numeric
+
+        assert try_numeric("42") == 42
+        assert try_numeric("3.5") == 3.5
+        assert try_numeric("abc") == "abc"
+        # Non-strings pass through untouched.
+        assert try_numeric(7) == 7
+
+    def test_try_numeric_rejects_underscore_separator(self):
+        from cartlet.io.utils import try_numeric
+
+        # Must NOT silently become 1000 via Python's underscore int literals.
+        assert try_numeric("1_000") == "1_000"
+
+    def test_normalize_bool_unhashable_raises_valueerror(self):
+        import pytest
+
+        from cartlet.types import normalize_bool
+
+        # Unhashable input must raise ValueError, not leak a TypeError.
+        with pytest.raises(ValueError, match="Cannot convert"):
+            normalize_bool(["not", "a", "bool"])

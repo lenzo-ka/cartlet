@@ -53,15 +53,18 @@ def encode_categorical(
     Returns:
         Tuple of (encoded_X, encoded_feature_names, cat_columns, cat_values)
     """
-    cat_columns: list[int] = []
-    cat_values: dict[int, list[Any]] = {}
-
-    # Identify categorical columns and collect their values
-    for col, spec in enumerate(feature_specs):
-        if spec.type == TYPE_CAT:
-            cat_columns.append(col)
-            values = sorted({row[col] for row in X}, key=str)
-            cat_values[col] = values
+    # Identify categorical columns, then collect all their distinct values in a
+    # single pass over X (rather than a full scan of X per categorical column).
+    cat_columns: list[int] = [
+        col for col, spec in enumerate(feature_specs) if spec.type == TYPE_CAT
+    ]
+    value_sets: dict[int, set] = {col: set() for col in cat_columns}
+    for row in X:
+        for col in cat_columns:
+            value_sets[col].add(row[col])
+    cat_values: dict[int, list[Any]] = {
+        col: sorted(value_sets[col], key=str) for col in cat_columns
+    }
 
     # Build encoded feature names
     encoded_names: list[str] = []
@@ -97,6 +100,7 @@ def convert_sklearn_tree(
     is_regression: bool = False,
     store_distributions: bool = True,
     min_confidence: float = PROB_HIGH_CONFIDENCE,
+    min_dist_entropy: float = 0.0,
 ) -> Any:
     """
     Convert sklearn tree structure to our nested list format.
@@ -159,7 +163,7 @@ def convert_sklearn_tree(
             items.sort(key=lambda x: x[1], reverse=True)
 
             return make_classification_distribution(
-                items, store_distributions, min_confidence
+                items, store_distributions, min_confidence, min_dist_entropy
             )
 
         # Decision node
@@ -304,14 +308,16 @@ class Sklearn(Trainer):
         sklearn_tree.fit(X_encoded, y_train, sample_weight=weights)
 
         # Store sklearn model for potential export
-        tree._sklearn_model = sklearn_tree
+        tree.set_sklearn_model(sklearn_tree)
 
         # Store feature importances (mapped to original features)
-        tree._feature_importances = map_feature_importances(
-            list(sklearn_tree.feature_importances_),
-            tree.feature_names,
-            cat_cols,
-            cat_vals,
+        tree.set_feature_importances(
+            map_feature_importances(
+                list(sklearn_tree.feature_importances_),
+                tree.feature_names,
+                cat_cols,
+                cat_vals,
+            )
         )
 
         # Convert to our format
@@ -326,6 +332,7 @@ class Sklearn(Trainer):
             is_regression=is_regression,
             store_distributions=tree.store_distributions,
             min_confidence=tree.min_confidence,
+            min_dist_entropy=tree.min_dist_entropy,
         )
 
     @classmethod
@@ -375,49 +382,27 @@ class Sklearn(Trainer):
         from sklearn.tree import DecisionTreeClassifier
 
         is_classifier = isinstance(sklearn_tree, DecisionTreeClassifier)
-        sk_tree = sklearn_tree.tree_
         classes = sklearn_tree.classes_ if is_classifier else None
 
         # Determine task
         if task == "auto":
             task = "classification" if is_classifier else "regression"
 
-        def convert_node(node_id: int) -> Any:
-            if sk_tree.children_left[node_id] == -1:
-                if is_classifier and classes is not None:
-                    values = sk_tree.value[node_id, 0]
-                    total = values.sum()
-                    if total == 0:
-                        return "-"
-
-                    # Build sorted (class, prob) list
-                    probs = values / total
-                    items = [
-                        (str(classes[idx]), float(prob))
-                        for idx, prob in enumerate(probs)
-                        if prob > 0
-                    ]
-                    items.sort(key=lambda x: x[1], reverse=True)
-
-                    return make_classification_distribution(
-                        items, store_distributions, min_confidence
-                    )
-                else:
-                    mean = float(sk_tree.value[node_id, 0, 0])
-                    n = int(sk_tree.n_node_samples[node_id])
-                    variance = float(sk_tree.impurity[node_id])
-                    return [mean, variance, n]
-
-            feat_idx = sk_tree.feature[node_id]
-            threshold = float(sk_tree.threshold[node_id])
-            feat_name = feature_names[feat_idx]
-
-            left = convert_node(sk_tree.children_left[node_id])
-            right = convert_node(sk_tree.children_right[node_id])
-
-            return [feat_name, "<", threshold, left, right]
-
-        model = convert_node(0)
+        # An externally-trained sklearn model carries no cartlet one-hot
+        # encoding, so every feature is a plain numeric column: reuse the shared
+        # converter with empty categorical maps instead of a second, drifting
+        # convert_node implementation.
+        model = convert_sklearn_tree(
+            sklearn_tree,
+            feature_names,
+            feature_names,
+            [],
+            {},
+            classes=classes,
+            is_regression=not is_classifier,
+            store_distributions=store_distributions,
+            min_confidence=min_confidence,
+        )
 
         config = {
             "features": [

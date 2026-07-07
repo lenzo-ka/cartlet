@@ -4,6 +4,7 @@ Base trainer class for decision trees.
 
 from __future__ import annotations
 
+import math
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
@@ -17,6 +18,7 @@ def make_classification_distribution(
     class_probs: list[tuple[Any, float]],
     store_distributions: bool = True,
     min_confidence: float = PROB_HIGH_CONFIDENCE,
+    min_dist_entropy: float = 0.0,
 ) -> Any:
     """
     Build a classification leaf value from class probabilities.
@@ -27,6 +29,9 @@ def make_classification_distribution(
         min_confidence: If best-class probability exceeds this, store only the
             class label instead of the full distribution.  Set to 1.0 to always
             keep distributions.
+        min_dist_entropy: If the distribution's entropy (bits) is below this,
+            collapse to the best class. Applied consistently across backends so
+            native and sklearn leaves agree (0.0 disables the gate).
 
     Returns:
         Best class label (str) or distribution dict
@@ -41,6 +46,11 @@ def make_classification_distribution(
 
     if len(class_probs) == 1 or best_prob > min_confidence:
         return best_class
+
+    if min_dist_entropy > 0.0:
+        entropy = -sum(p * math.log2(p) for _, p in class_probs if p > 0)
+        if entropy < min_dist_entropy:
+            return best_class
 
     dist = {cls: prob for cls, prob in class_probs if prob >= PROB_MIN_THRESHOLD}
 

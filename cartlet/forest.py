@@ -22,6 +22,8 @@ from .tree import DecisionTree
 from .types import (
     _MAX_RANDOM_SEED,
     CRITERION_ENTROPY,
+    DEFAULT_MIN_SAMPLES_LEAF,
+    DEFAULT_MIN_SAMPLES_SPLIT,
     DEFAULT_N_ESTIMATORS,
     TASK_AUTO,
     TASK_CLASSIFICATION,
@@ -63,9 +65,10 @@ class RandomForest(BaseModel):
         target: dict[str, Any] | None = None,
         task: str = TASK_AUTO,
         max_depth: int | None = None,
-        min_samples_split: int = 2,
-        min_samples_leaf: int = 1,
+        min_samples_split: int = DEFAULT_MIN_SAMPLES_SPLIT,
+        min_samples_leaf: int = DEFAULT_MIN_SAMPLES_LEAF,
         criterion: str = CRITERION_ENTROPY,
+        categorical_split: str = "exact",
         verbose: bool = False,
         logger=None,
     ):
@@ -109,6 +112,7 @@ class RandomForest(BaseModel):
         self.min_samples_split = min_samples_split
         self.min_samples_leaf = min_samples_leaf
         self.criterion = criterion
+        self.categorical_split = categorical_split
 
         # Store feature config for creating trees
         self._features = features
@@ -226,7 +230,7 @@ class RandomForest(BaseModel):
             n_jobs: Parallel jobs for sklearn (None/1 = sequential, -1 = all cores)
 
         Returns:
-            Dict with training info
+            ``{"n_estimators": <int>}`` — the number of trees trained.
         """
         if not self.X:
             raise ValueError("No training data loaded. Call load_data() first.")
@@ -296,6 +300,7 @@ class RandomForest(BaseModel):
             max_features=max_features,
             criterion=self.criterion,
             extra_trees=self.extra_trees,
+            categorical_split=self.categorical_split,
         )
 
         tree.train(trainer=tree_trainer)
@@ -405,7 +410,10 @@ class RandomForest(BaseModel):
         if not self.trees:
             raise ValueError("Forest not trained. Call train() first.")
 
-        predictions = [tree.predict(vector) for tree in self.trees]
+        # All trees share the same feature schema, so normalize the input once
+        # and reuse it across every tree rather than re-normalizing per tree.
+        normalized = self.trees[0]._normalize_vector(vector)
+        predictions = [t._eval_normalized(normalized) for t in self.trees]
 
         if self._is_regression():
             # In regression mode, predictions are numeric (mypy can't infer from runtime check)
@@ -432,7 +440,8 @@ class RandomForest(BaseModel):
         if self._is_regression():
             raise ValueError("predict_proba not available for regression")
 
-        predictions = [tree.predict(vector) for tree in self.trees]
+        normalized = self.trees[0]._normalize_vector(vector)
+        predictions = [t._eval_normalized(normalized) for t in self.trees]
         votes = Counter(predictions)
         total = len(predictions)
         return {cls: count / total for cls, count in votes.items()}

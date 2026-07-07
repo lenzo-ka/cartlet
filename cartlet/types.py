@@ -71,7 +71,8 @@ class CaseTable(TypedDict):
     """Case table for OP_SWITCH nodes."""
 
     default: int  # default child index
-    cases: list[tuple[int, int]]  # [(cat_val_idx, child_idx), ...]
+    cases: list[tuple[int, int]]  # [(cat_val_idx, child_idx), ...] (for rebuild)
+    lookup: dict[str, int]  # {category_string: child_idx} (O(1) prediction path)
 
 
 class ModelData(TypedDict):
@@ -174,6 +175,8 @@ DEFAULT_N_ESTIMATORS = 100
 DEFAULT_VALIDATION_SPLIT = 0.05
 DEFAULT_TEST_SPLIT = 0.05
 DEFAULT_MIN_DIST_ENTROPY = 0.1
+DEFAULT_MIN_SAMPLES_SPLIT = 2
+DEFAULT_MIN_SAMPLES_LEAF = 1
 
 
 # =============================================================================
@@ -185,11 +188,19 @@ _BOOL_FALSE = {False, "0", "false", "False", "FALSE", "no", "No", "NO"}
 
 
 def normalize_bool(value: Any) -> int:
-    """Normalize boolean-like values to 0 or 1."""
-    if value in _BOOL_TRUE:
-        return 1
-    if value in _BOOL_FALSE:
-        return 0
+    """Normalize boolean-like values to 0 or 1.
+
+    Always raises ``ValueError`` for anything not recognized as a bool,
+    including unhashable inputs (which would otherwise leak a ``TypeError``
+    from the set-membership test).
+    """
+    try:
+        if value in _BOOL_TRUE:
+            return 1
+        if value in _BOOL_FALSE:
+            return 0
+    except TypeError:
+        pass  # unhashable value -> not a valid bool
     raise ValueError(f"Cannot convert {value!r} to bool")
 
 

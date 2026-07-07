@@ -545,8 +545,14 @@ class TestRegressionCLI:
             text=True,
         )
         assert result.returncode == 0
+        # The CLI must produce the same value the library predicts, and it must
+        # lie within the training-target range [1, 58].
+        from cartlet.runner import load_model, predict
+
+        expected = predict(load_model(reg_model), [5.0, 10.0])
         val = float(result.stdout.strip())
-        assert isinstance(val, float)
+        assert val == pytest.approx(expected)
+        assert 1.0 <= val <= 58.0
 
     def test_regression_batch_from_file(self, reg_model, tmp_path):
         """Batch regression prediction from file."""
@@ -678,7 +684,8 @@ class TestForestRegression:
 
         model = load_model(forest_reg_model)
         result = predict(model, [5.0, 25.0])
-        assert isinstance(result, float)
+        # Forest mean must fall within the training-target range [0.5, 58.5].
+        assert 0.5 <= result <= 58.5
 
     def test_forest_regression_via_cli(self, forest_reg_model):
         """Forest regression prediction via standalone CLI."""
@@ -689,7 +696,7 @@ class TestForestRegression:
         )
         assert result.returncode == 0
         val = float(result.stdout.strip())
-        assert isinstance(val, float)
+        assert 0.5 <= val <= 58.5
 
     def test_forest_regression_parity(self, forest_reg_model):
         """Library and standalone runners agree on forest regression."""

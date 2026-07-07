@@ -23,6 +23,9 @@ from ..utils import is_leaf
 from .base import Trainer, make_classification_distribution, normalize_importances
 
 _PROGRESS_INTERVAL_SEC = 30
+# Sample the wall clock only once every N nodes built, so verbose progress
+# logging costs one time() syscall per N nodes rather than one per node.
+_PROGRESS_CHECK_NODES = 2048
 
 # Hard ceiling on native tree depth when no max_depth is set. Real trees are
 # rarely deeper than a few dozen levels; hitting this means degenerate data.
@@ -108,6 +111,7 @@ class Native(Trainer):
         max_features: int | None = None,
         criterion: str = "entropy",
         extra_trees: bool = False,
+        categorical_split: str = "exact",
     ):
         """
         Initialize the native trainer.
@@ -119,11 +123,25 @@ class Native(Trainer):
             max_features: Max features to consider per split (None = all)
             criterion: Split criterion for classification ("entropy" or "gini")
             extra_trees: Use random splits instead of best splits (Extra-Trees)
+            categorical_split: Categorical split-search strategy.
+                ``"exact"`` (default) rescans each candidate partition's
+                impurity -- O(n * distinct_values) per feature but the historical,
+                fully reproducible behaviour. ``"fast"`` accumulates per-value
+                aggregates in a single pass -- O(n + distinct_values * classes),
+                a large win for high-cardinality categorical features. The two
+                can pick different splits on exact ties (fast also uses the
+                moment-form variance the numeric path already uses), so trees
+                are not guaranteed byte-identical between the modes.
         """
         if criterion not in ("entropy", "gini"):
             raise ValueError(
                 f"Unknown criterion {criterion!r}; expected 'entropy' or 'gini'. "
                 "(Regression always uses variance reduction regardless.)"
+            )
+        if categorical_split not in ("exact", "fast"):
+            raise ValueError(
+                f"Unknown categorical_split {categorical_split!r}; "
+                "expected 'exact' or 'fast'."
             )
         self.max_depth = max_depth
         self.prune = prune
@@ -131,6 +149,7 @@ class Native(Trainer):
         self.max_features = max_features
         self.criterion = criterion
         self.extra_trees = extra_trees
+        self.categorical_split = categorical_split
         self._nodes_built = 0
         self._last_progress_time = 0.0
         self._tree_start_time = 0.0
@@ -172,7 +191,7 @@ class Native(Trainer):
             model = self._prune_with_validation(tree, model, train_rows, val_rows)
 
         # Store computed feature importances on the tree
-        tree._feature_importances = self._normalize_importances()
+        tree.set_feature_importances(self._normalize_importances())
 
         return model
 
@@ -185,18 +204,19 @@ class Native(Trainer):
     ) -> str | dict[str, float] | list[Any]:
         """Recursively build a subtree for the given row indices."""
         self._nodes_built += 1
-        current_time = time()
-        if (
-            tree.verbose
-            and current_time - self._last_progress_time > _PROGRESS_INTERVAL_SEC
-        ):
-            elapsed = current_time - self._tree_start_time
-            tree.logger.info(
-                "  Progress: %d nodes built (%.1f sec elapsed)",
-                self._nodes_built,
-                elapsed,
-            )
-            self._last_progress_time = current_time
+        # Progress logging only matters in verbose mode; avoid a time() syscall
+        # on every single node by sampling the clock every _PROGRESS_CHECK_NODES
+        # nodes (the 30s interval is still what actually gates a log line).
+        if tree.verbose and self._nodes_built % _PROGRESS_CHECK_NODES == 0:
+            current_time = time()
+            if current_time - self._last_progress_time > _PROGRESS_INTERVAL_SEC:
+                elapsed = current_time - self._tree_start_time
+                tree.logger.info(
+                    "  Progress: %d nodes built (%.1f sec elapsed)",
+                    self._nodes_built,
+                    elapsed,
+                )
+                self._last_progress_time = current_time
 
         total = self._sum_counts(tree, row_ids)
 
@@ -454,9 +474,30 @@ class Native(Trainer):
         feat_id: int,
         impurity0: float | None = None,
     ) -> tuple[Any, float]:
-        """Find the best value for a categorical feature (equality split)."""
+        """Find the best value for a categorical feature (equality split).
+
+        Dispatches on ``self.categorical_split``:
+        - ``"exact"`` (default): for each distinct value, materialise the
+          ``outside`` partition and rescan both sides' impurity. This is
+          O(n * distinct_values) but fully reproducible (byte-identical to the
+          historical behaviour).
+        - ``"fast"``: accumulate per-value class counts / weighted moments in a
+          single pass and derive ``outside = total - inside`` -- O(n +
+          distinct_values * classes). Best for high-cardinality features; can
+          pick a different split on exact gain ties.
+        Tie-break in both: first-seen value wins via strict ``gain > best_gain``.
+        """
         if impurity0 is None:
             impurity0 = self._impurity_for_rows(tree, row_ids)
+
+        if self.categorical_split == "fast":
+            if tree._is_regression():
+                return self._best_gain_categorical_fast_regression(
+                    tree, row_ids, feat_id, impurity0
+                )
+            return self._best_gain_categorical_fast_classification(
+                tree, row_ids, feat_id, impurity0
+            )
 
         # Group rows by feature value (single pass)
         value_ids: dict[Any, set[int]] = {}
@@ -493,6 +534,121 @@ class Native(Trainer):
                 (total - count) / total * self._impurity_for_rows(tree, outside)
             )
 
+            gain = impurity0 - impurity1
+            if gain > best_gain:
+                best_value = value
+                best_gain = gain
+
+        return best_value, best_gain
+
+    def _best_gain_categorical_fast_classification(
+        self,
+        tree: DecisionTree,
+        row_ids: set[int],
+        feat_id: int,
+        impurity0: float,
+    ) -> tuple[Any, float]:
+        """Single-pass categorical split search (classification).
+
+        Accumulate per-value class counts and node totals in one pass, then
+        score each value in O(classes) by deriving the ``outside`` counts as
+        ``total - inside``. See ``_best_gain_categorical`` for the exact/fast
+        contract.
+        """
+        gini = self.criterion == "gini"
+        min_leaf = tree.min_samples_leaf
+        X, y, counts = tree.X, tree.y, tree.counts
+
+        value_class_counts: dict[Any, dict[Any, float]] = {}
+        value_total: dict[Any, float] = {}
+        total_class_counts: dict[Any, float] = {}
+        total = 0.0
+        for i in row_ids:
+            value = X[i][feat_id]
+            label = y[i]
+            w = counts[i]
+            inside = value_class_counts.get(value)
+            if inside is None:
+                inside = {}
+                value_class_counts[value] = inside
+                value_total[value] = 0.0
+            inside[label] = inside.get(label, 0.0) + w
+            value_total[value] += w
+            total_class_counts[label] = total_class_counts.get(label, 0.0) + w
+            total += w
+
+        best_gain = 0.0
+        best_value = None
+        for value, inside_counts in value_class_counts.items():
+            in_total = value_total[value]
+            out_total = total - in_total
+            if in_total < min_leaf or out_total < min_leaf:
+                continue
+            outside_counts = {
+                label: c - inside_counts.get(label, 0.0)
+                for label, c in total_class_counts.items()
+                if c - inside_counts.get(label, 0.0) > 0
+            }
+            impurity1 = in_total / total * self._impurity_from_counts(
+                inside_counts, in_total, gini
+            ) + out_total / total * self._impurity_from_counts(
+                outside_counts, out_total, gini
+            )
+            gain = impurity0 - impurity1
+            if gain > best_gain:
+                best_value = value
+                best_gain = gain
+
+        return best_value, best_gain
+
+    def _best_gain_categorical_fast_regression(
+        self,
+        tree: DecisionTree,
+        row_ids: set[int],
+        feat_id: int,
+        impurity0: float,
+    ) -> tuple[Any, float]:
+        """Single-pass categorical split search (regression).
+
+        Per-value weighted moments (w, wy, wyy) accumulated in one pass; each
+        partition's variance is derived as E[y^2] - E[y]^2 (the same moment
+        form the numeric split path uses).
+        """
+        min_leaf = tree.min_samples_leaf
+        X, y, counts = tree.X, tree.y, tree.counts
+
+        value_w: dict[Any, float] = {}
+        value_wy: dict[Any, float] = {}
+        value_wyy: dict[Any, float] = {}
+        total_w = 0.0
+        total_wy = 0.0
+        total_wyy = 0.0
+        for i in row_ids:
+            value = X[i][feat_id]
+            w = counts[i]
+            yi = y[i]
+            wy = w * yi
+            wyy = wy * yi
+            value_w[value] = value_w.get(value, 0.0) + w
+            value_wy[value] = value_wy.get(value, 0.0) + wy
+            value_wyy[value] = value_wyy.get(value, 0.0) + wyy
+            total_w += w
+            total_wy += wy
+            total_wyy += wyy
+
+        best_gain = 0.0
+        best_value = None
+        for value, in_w in value_w.items():
+            out_w = total_w - in_w
+            if in_w < min_leaf or out_w < min_leaf:
+                continue
+            in_wy = value_wy[value]
+            in_wyy = value_wyy[value]
+            var_in = max(0.0, in_wyy / in_w - (in_wy / in_w) ** 2)
+            out_wy = total_wy - in_wy
+            out_wyy = total_wyy - in_wyy
+            var_out = max(0.0, out_wyy / out_w - (out_wy / out_w) ** 2)
+            impurity1 = in_w / total_w * var_in + out_w / total_w * var_out
             gain = impurity0 - impurity1
             if gain > best_gain:
                 best_value = value
@@ -668,7 +824,8 @@ class Native(Trainer):
         if min_val == max_val:
             return None, 0.0
 
-        assert self._rng is not None
+        if self._rng is None:  # only reached via extra_trees/max_features paths
+            raise RuntimeError("random generator not initialized for random split")
         threshold = self._rng.uniform(min_val, max_val)
 
         total = sum(tree.counts[i] for i in row_ids)
@@ -698,7 +855,8 @@ class Native(Trainer):
         if len(values) <= 1:
             return None, 0.0
 
-        assert self._rng is not None
+        if self._rng is None:  # only reached via extra_trees/max_features paths
+            raise RuntimeError("random generator not initialized for random split")
         value = self._rng.choice(values)
 
         total = sum(tree.counts[i] for i in row_ids)
@@ -802,19 +960,13 @@ class Native(Trainer):
         items = [(cat, count / total) for cat, count in cat_counts.items()]
         items.sort(key=lambda x: x[1], reverse=True)
 
-        # Early exit if not storing distributions
-        if not tree.store_distributions:
-            return items[0][0]
-
-        # Check entropy threshold (native-specific)
-        if len(items) > 1:
-            probs = [prob for _, prob in items]
-            entropy = -sum(p * math.log2(p) for p in probs if p > 0)
-            if entropy < tree.min_dist_entropy:
-                return items[0][0]
-
+        # The min_dist_entropy gate now lives in make_classification_distribution
+        # so every backend applies it identically.
         return make_classification_distribution(
-            items, tree.store_distributions, tree.min_confidence
+            items,
+            tree.store_distributions,
+            tree.min_confidence,
+            tree.min_dist_entropy,
         )
 
     def _make_regression_leaf(

@@ -443,19 +443,29 @@ def _load_cart_from_bytes_impl(data):
                 dist.append((class_idx, prob))
             distributions.append(dist)
 
-    # Case tables (for OP_SWITCH nodes)
+    # Case tables (for OP_SWITCH nodes). Resolve cases to a
+    # {category_string: child_idx} lookup once so switch traversal is O(1) per
+    # node instead of a linear scan per prediction row (kept in sync with
+    # runner.py). First-match-wins via setdefault.
     case_tables = []
     for _ in range(n_case_tables):
         (n_cases,) = struct.unpack_from("<H", data, pos)
         pos += 2
         default_child, pos = decode_varint(data, pos)
         cases = []
+        lookup: dict = {}
         for _ in range(n_cases):
             (cat_val_idx,) = struct.unpack_from("<H", data, pos)
             pos += 2
             child_idx, pos = decode_varint(data, pos)
             cases.append((cat_val_idx, child_idx))
-        case_tables.append({"default": default_child, "cases": cases})
+            if cat_val_idx >= len(cat_vals):
+                continue
+            actual_cat_idx = cat_vals[cat_val_idx]
+            if actual_cat_idx >= len(strings):
+                continue
+            lookup.setdefault(strings[actual_cat_idx], child_idx)
+        case_tables.append({"default": default_child, "cases": cases, "lookup": lookup})
 
     # Trailing metadata blob (JSON); carries XGBoost base_score and friends.
     metadata = {}
@@ -607,16 +617,7 @@ def _predict_tree_recursive(
             table = case_tables[val]
             idx = table["default"]
             if feat_val is not None:
-                feat_str = str(feat_val)
-                for cat_val_idx, child_idx in table["cases"]:
-                    if cat_val_idx >= len(cat_vals):
-                        continue
-                    actual_cat_idx = cat_vals[cat_val_idx]
-                    if actual_cat_idx >= len(strings):
-                        continue
-                    if strings[actual_cat_idx] == feat_str:
-                        idx = child_idx
-                        break
+                idx = table["lookup"].get(str(feat_val), table["default"])
 
     raise RuntimeError("Max tree depth exceeded (possible corrupted model)")
 

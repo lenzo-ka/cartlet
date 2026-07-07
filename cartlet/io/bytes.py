@@ -255,6 +255,7 @@ class ByteWriter:
     # these must raise a clear error rather than silently truncate (feature
     # index) or emit a cryptic struct.error (everything else).
     _MAX_FEAT_IDX = FEAT_MASK  # 6-bit packed feature index (0-63)
+    _MAX_U8 = 0xFF
     _MAX_U16 = 0xFFFF
 
     def _validate_capacity(
@@ -286,7 +287,7 @@ class ByteWriter:
 
         # Per-feature categorical value count is a u8.
         for _name_idx, _type_flags, n_cat, _cat_indices in feature_info:
-            _check(n_cat, 0xFF, "categorical values for a single feature")
+            _check(n_cat, self._MAX_U8, "categorical values for a single feature")
 
         # Decision-node feature index is a packed 6-bit field; val is a u16.
         for feat, _op, val, _left, _right in self.decisions:
@@ -330,8 +331,9 @@ class ByteWriter:
         # Add class labels to string table
         class_indices = [self._add_string(str(c)) for c in class_labels]
 
-        # Build string table
-        string_data = b""
+        # Build string table into a bytearray so appends are amortized O(1)
+        # (bytes concatenation in a loop is O(n^2) for large string pools).
+        string_data = bytearray()
         string_offsets: list[int] = []
         for s in self.strings:
             string_offsets.append(len(string_data))

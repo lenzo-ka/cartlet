@@ -41,8 +41,12 @@ from .io.cart_format import (
     OP_MASK,
     OP_SHIFT,
     OP_SWITCH,
+    SIZE_DECISION_HEADER,
     SIZE_DIST_ENTRY,
+    SIZE_F32,
     SIZE_FEAT_HEADER,
+    SIZE_HEADER_COUNTS1,
+    SIZE_HEADER_COUNTS2,
     SIZE_LEAF,
     SIZE_U16,
     TYPE_MASK,
@@ -115,7 +119,25 @@ def load_model(path: str) -> ModelData:
 
 
 def _load_cart_from_bytes(data: bytes) -> dict[str, Any]:
-    """Load model from bytes, return model dict."""
+    """Parse ``.cart`` bytes into the model dict consumed by ``predict``.
+
+    Returned keys:
+      - ``meta``: ``{"features": [...], "task": str, "metadata": dict}`` where
+        each feature is ``{"name", "type", "values"}``.
+      - ``class_labels``: list[str] (classification).
+      - ``floats`` / ``cat_vals`` / ``strings``: the deduped value pools.
+      - ``decisions`` / ``leaves`` / ``distributions`` / ``case_tables``: the
+        flat node tables (case tables carry both raw ``cases`` and a resolved
+        ``lookup``; see ``_parse_case_tables``).
+      - ``tree_offsets``: per-tree start index into ``decisions``/``leaves``.
+      - ``is_regression`` / ``is_forest`` / ``is_xgboost`` /
+        ``has_distributions``: bool flags; ``n_trees``: int; ``version``: int.
+
+    Note: the bundled runner (``cartlet/bundled/predict.py``) returns a
+    deliberately flatter dict (feature list at the top level, not under
+    ``meta``); the two are kept behaviourally in lockstep but not
+    key-for-key identical.
+    """
     if len(data) < HEADER_SIZE:
         raise ValueError(
             f"File too small ({len(data)} bytes), minimum header is {HEADER_SIZE} bytes"
@@ -133,7 +155,7 @@ def _load_cart_from_bytes(data: bytes) -> dict[str, Any]:
         version, flags, n_features, n_classes, n_trees = struct.unpack_from(
             "<HHHHH", data, pos
         )
-        pos += 10
+        pos += SIZE_HEADER_COUNTS1
 
         if version != VERSION:
             raise ValueError(
@@ -149,7 +171,7 @@ def _load_cart_from_bytes(data: bytes) -> dict[str, Any]:
             n_case_tables,
             metadata_len,
         ) = struct.unpack_from("<IIIHHHH", data, pos)
-        pos += 20
+        pos += SIZE_HEADER_COUNTS2
 
         if n_features > _CART_MAX_FEATURES:
             raise ValueError(f"Unreasonable n_features: {n_features}")
@@ -194,7 +216,7 @@ def _load_cart_from_bytes(data: bytes) -> dict[str, Any]:
 
         # Float pool
         floats = list(struct.unpack_from(f"<{n_floats}f", data, pos))
-        pos += 4 * n_floats
+        pos += SIZE_F32 * n_floats
 
         # Cat value pool
         cat_vals = list(struct.unpack_from(f"<{n_cat_vals}H", data, pos))
@@ -216,7 +238,9 @@ def _load_cart_from_bytes(data: bytes) -> dict[str, Any]:
         distributions, pos = _parse_distributions(data, pos, n_dists, has_distributions)
 
         # Case tables (for OP_SWITCH nodes)
-        case_tables, pos = _parse_case_tables(data, pos, n_case_tables)
+        case_tables, pos = _parse_case_tables(
+            data, pos, n_case_tables, cat_vals, strings
+        )
 
         # Trailing metadata blob (JSON, may carry XGBoost base_score etc.).
         # Length 0 is the common case for plain DecisionTree/RandomForest exports.
@@ -322,7 +346,7 @@ def _parse_decision_nodes(
     decisions = []
     for _ in range(n_decisions):
         feat_op, val = struct.unpack_from("<BH", data, pos)
-        pos += 3
+        pos += SIZE_DECISION_HEADER
         feat = feat_op & FEAT_MASK
         op = (feat_op & OP_MASK) >> OP_SHIFT
         if op == OP_SWITCH:
@@ -363,21 +387,41 @@ def _parse_distributions(
 
 
 def _parse_case_tables(
-    data: bytes, pos: int, n_case_tables: int
+    data: bytes,
+    pos: int,
+    n_case_tables: int,
+    cat_vals: list[int],
+    strings: list[str],
 ) -> tuple[list[dict], int]:
-    """Parse case tables for OP_SWITCH nodes."""
+    """Parse case tables for OP_SWITCH nodes.
+
+    Each table's cases are resolved once to a ``{category_string: child_idx}``
+    lookup so switch traversal is an O(1) dict get per node instead of a linear
+    scan (with per-entry ``cat_vals``/``strings`` dereferences) on every
+    prediction row. First-match-wins is preserved via ``setdefault``.
+    """
     case_tables: list[dict[str, Any]] = []
     for _ in range(n_case_tables):
         (n_cases,) = struct.unpack_from("<H", data, pos)
         pos += SIZE_U16
         default_child, pos = decode_varint(data, pos)
         cases: list[tuple[int, int]] = []
+        lookup: dict[str, int] = {}
         for _ in range(n_cases):
             (cat_val_idx,) = struct.unpack_from("<H", data, pos)
             pos += SIZE_U16
             child_idx, pos = decode_varint(data, pos)
             cases.append((cat_val_idx, child_idx))
-        case_tables.append({"default": default_child, "cases": cases})
+            if cat_val_idx >= len(cat_vals):
+                continue
+            actual_cat_idx = cat_vals[cat_val_idx]
+            if actual_cat_idx >= len(strings):
+                continue
+            lookup.setdefault(strings[actual_cat_idx], child_idx)
+        # "cases" retains the raw (cat_val_idx, child_idx) pairs for tree
+        # rebuild (cart_format.rebuild_tree_from_cart); "lookup" is the resolved
+        # O(1) prediction path.
+        case_tables.append({"default": default_child, "cases": cases, "lookup": lookup})
     return case_tables, pos
 
 
@@ -514,16 +558,7 @@ def _predict_tree_recursive(
             table = case_tables[val]
             idx = table["default"]
             if feat_val is not None:
-                feat_str = str(feat_val)
-                for cat_val_idx, child_idx in table["cases"]:
-                    if cat_val_idx >= len(cat_vals):
-                        continue
-                    actual_cat_idx = cat_vals[cat_val_idx]
-                    if actual_cat_idx >= len(strings):
-                        continue
-                    if strings[actual_cat_idx] == feat_str:
-                        idx = child_idx
-                        break
+                idx = table["lookup"].get(str(feat_val), table["default"])
 
     raise RuntimeError("Max tree depth exceeded (possible corrupted model)")
 

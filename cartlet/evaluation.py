@@ -26,8 +26,9 @@ def evaluate_predictions(
         y_pred: Predicted labels (same length as `y_true`).
 
     Returns:
-        Dict with `accuracy`, `correct`, and `total` keys. Returns
-        `{"accuracy": 0.0, "total": 0}` if both lists are empty.
+        Dict with `accuracy`, `correct`, and `total` keys (always all three,
+        so callers can index any of them). Returns
+        `{"accuracy": 0.0, "correct": 0, "total": 0}` if both lists are empty.
 
     Raises:
         ValueError: If `len(y_true) != len(y_pred)`.
@@ -36,7 +37,7 @@ def evaluate_predictions(
         raise ValueError("y_true and y_pred must have same length")
 
     if not y_true:
-        return {"accuracy": 0.0, "total": 0}
+        return {"accuracy": 0.0, "correct": 0, "total": 0}
 
     correct = sum(1 for true, pred in zip(y_true, y_pred, strict=False) if true == pred)
     total = len(y_true)
@@ -186,12 +187,21 @@ def per_class_metrics(
     cm = confusion_matrix(y_true, y_pred)
     classes = set(y_true) | set(y_pred)
 
+    # Row sums (support = # true==cls) and column sums (# predicted==cls) in a
+    # single pass over the matrix cells, so per-class fp/fn are O(1) derivations
+    # rather than nested O(classes) sums, and support isn't re-counted over
+    # y_true per class.
+    row_sum: dict[Any, int] = {}
+    col_sum: dict[Any, int] = {}
+    for (true, pred), count in cm.items():
+        row_sum[true] = row_sum.get(true, 0) + count
+        col_sum[pred] = col_sum.get(pred, 0) + count
+
     results = {}
     for cls in classes:
-        # True positives, false positives, false negatives
         tp = cm.get((cls, cls), 0)
-        fp = sum(cm.get((other, cls), 0) for other in classes if other != cls)
-        fn = sum(cm.get((cls, other), 0) for other in classes if other != cls)
+        fp = col_sum.get(cls, 0) - tp  # predicted cls but true != cls
+        fn = row_sum.get(cls, 0) - tp  # true cls but predicted != cls
 
         precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
         recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
@@ -205,7 +215,7 @@ def per_class_metrics(
             "f1": f1,
             "precision": precision,
             "recall": recall,
-            "support": sum(1 for y in y_true if y == cls),
+            "support": row_sum.get(cls, 0),
         }
 
     return results

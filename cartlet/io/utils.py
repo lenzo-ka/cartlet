@@ -132,8 +132,16 @@ def detect_delimiter(path: str) -> str:
 
 
 def try_numeric(val: Any) -> Any:
-    """Try to convert a value to int or float."""
+    """Try to convert a value to int or float.
+
+    Conservative: a string is coerced only if it is a plain integer or a
+    decimal-point float. Python's underscore digit separators are rejected so
+    a data value like ``"1_000"`` stays a string instead of silently becoming
+    ``1000`` (Python's ``int("1_000")`` would accept it).
+    """
     if not isinstance(val, str):
+        return val
+    if "_" in val:
         return val
     try:
         return float(val) if "." in val else int(val)

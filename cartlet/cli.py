@@ -48,6 +48,8 @@ from .isolation import (
 from .runner import load_model, predict_batch
 from .tree import DecisionTree
 from .types import (
+    DEFAULT_MIN_SAMPLES_LEAF,
+    DEFAULT_MIN_SAMPLES_SPLIT,
     DEFAULT_N_ESTIMATORS,
     DEFAULT_TEST_SPLIT,
     DEFAULT_VALIDATION_SPLIT,
@@ -137,8 +139,8 @@ _BUILTIN_CONFIGS: dict[str, dict[str, Any]] = {
         "extra_trees": False,
         "n_estimators": DEFAULT_N_ESTIMATORS,
         "max_depth": None,  # unlimited
-        "min_samples_split": 2,
-        "min_samples_leaf": 1,
+        "min_samples_split": DEFAULT_MIN_SAMPLES_SPLIT,
+        "min_samples_leaf": DEFAULT_MIN_SAMPLES_LEAF,
         "trainer": "native",
         "n_jobs": None,
         "random_seed": None,
@@ -155,9 +157,9 @@ _BUILTIN_CONFIGS: dict[str, dict[str, Any]] = {
     "accurate": {
         # More thorough training for production
         "forest": True,
-        "n_estimators": 100,
-        "min_samples_split": 2,
-        "min_samples_leaf": 1,
+        "n_estimators": DEFAULT_N_ESTIMATORS,
+        "min_samples_split": DEFAULT_MIN_SAMPLES_SPLIT,
+        "min_samples_leaf": DEFAULT_MIN_SAMPLES_LEAF,
     },
     "small": {
         # Smaller model size
@@ -270,44 +272,14 @@ def save_config(args: argparse.Namespace, path: str) -> None:
     print(f"Config saved to {path}", file=sys.stderr)
 
 
-def merge_config_with_argv(config: dict[str, Any], argv: list[str]) -> list[str]:
-    """
-    Merge config values into argv. CLI args take precedence.
-
-    Args:
-        config: Config dict
-        argv: Original command line args
-
-    Returns:
-        New argv with config values inserted as defaults
-    """
-    # Build set of args already in argv (to avoid overriding)
-    provided = set()
-    for arg in argv:
-        if arg.startswith("-"):
-            # Strip leading dashes and get the dest name
-            clean = arg.lstrip("-").replace("-", "_")
-            provided.add(clean)
-
-    # Build new argv with config values prepended (CLI will override)
-    new_args = []
-    for key, value in config.items():
-        if key in provided or key in _CONFIG_EXCLUDE:
-            continue
-        if key == "data":
-            continue  # Positional, handled separately
-
-        # Convert to CLI arg format
-        cli_key = f"--{key.replace('_', '-')}"
-
-        if isinstance(value, bool):
-            if value:
-                new_args.append(cli_key)
-        elif value is not None:
-            new_args.append(cli_key)
-            new_args.append(str(value))
-
-    return new_args + argv
+def _get_subparser(
+    parser: argparse.ArgumentParser, name: str
+) -> argparse.ArgumentParser | None:
+    """Return the named subparser (e.g. "train") from a parser, or None."""
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return action.choices.get(name)
+    return None
 
 
 def load_feature_specs(spec_input: str, feature_names: list[str]) -> list[dict]:
@@ -440,6 +412,7 @@ def _create_model(
         "min_samples_split": args.min_samples_split,
         "min_samples_leaf": args.min_samples_leaf,
         "criterion": getattr(args, "criterion", "entropy"),
+        "categorical_split": getattr(args, "categorical_split", "exact"),
         "verbose": args.verbose,
     }
 
@@ -1123,7 +1096,9 @@ def _print_stats_human(
     def p(msg: str) -> None:
         print(msg, file=out)
 
-    p(f"Loading model from {args.model}...")
+    # Status line goes to stderr so it never contaminates the stats written to
+    # ``out`` (which may be a file via ``-o``).
+    print(f"Loading model from {args.model}...", file=sys.stderr)
     p("\n" + "=" * 50)
     p("MODEL STATISTICS")
     p("=" * 50)
@@ -1366,7 +1341,21 @@ def _build_parser() -> argparse.ArgumentParser:
     """Build the CLI argument parser with all subcommands."""
     parser = argparse.ArgumentParser(
         prog="cartlet",
-        description="Decision tree training and inference CLI",
+        description=(
+            "Train, run, and convert cartlet models: decision trees, random "
+            "forests, extra-trees, and isolation forests, plus prediction, "
+            "evaluation, schema inspection, format conversion, and standalone "
+            "runner bundling."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  cartlet train data.csv -o model.cart\n"
+            "  cartlet train data.csv -o rf.cart -F -n 100   # random forest\n"
+            "  cartlet predict model.cart data.csv\n"
+            "  cartlet evaluate model.cart test.csv\n"
+            "  cartlet convert model.cart model.json\n"
+        ),
     )
     parser.add_argument(
         "--version",
@@ -1449,23 +1438,27 @@ Examples:
         help=f"Number of trees for forest (default: {DEFAULT_N_ESTIMATORS})",
     )
     train_parser.add_argument(
-        "-D", "--max-depth", type=int, metavar="N", help="Maximum tree depth"
+        "-D",
+        "--max-depth",
+        type=int,
+        metavar="N",
+        help="Maximum tree depth (default: unlimited)",
     )
     train_parser.add_argument(
         "-s",
         "--min-samples-split",
         type=int,
-        default=2,
+        default=DEFAULT_MIN_SAMPLES_SPLIT,
         metavar="N",
-        help="Minimum samples to split (default: 2)",
+        help=f"Minimum samples to split (default: {DEFAULT_MIN_SAMPLES_SPLIT})",
     )
     train_parser.add_argument(
         "-l",
         "--min-samples-leaf",
         type=int,
-        default=1,
+        default=DEFAULT_MIN_SAMPLES_LEAF,
         metavar="N",
-        help="Minimum samples in leaf (default: 1)",
+        help=f"Minimum samples in leaf (default: {DEFAULT_MIN_SAMPLES_LEAF})",
     )
     train_parser.add_argument(
         "-S",
@@ -1500,7 +1493,7 @@ Examples:
         "--random-seed",
         type=int,
         metavar="SEED",
-        help="Random seed for reproducibility",
+        help="Random seed for reproducibility (default: none / nondeterministic)",
     )
     train_parser.add_argument(
         "-C",
@@ -1521,7 +1514,16 @@ Examples:
         "--n-jobs",
         type=int,
         metavar="N",
-        help="Parallel jobs for sklearn trainer only (-1=all cores)",
+        help="Parallel jobs for sklearn trainer only (-1=all cores; default: 1)",
+    )
+    train_parser.add_argument(
+        "--categorical-split",
+        choices=["exact", "fast"],
+        default="exact",
+        help=(
+            "Native categorical split search: 'exact' (default, reproducible) "
+            "or 'fast' (O(n), best for high-cardinality categoricals)"
+        ),
     )
     train_parser.add_argument(
         "--no-distributions",
@@ -1573,7 +1575,10 @@ Examples:
         "--prediction-column",
         default="prediction",
         metavar="NAME",
-        help="Column name for predictions in append mode (default: 'prediction')",
+        help=(
+            "Name of the prediction column (append mode) or JSON/JSONL key "
+            "(default: 'prediction')"
+        ),
     )
     predict_parser.add_argument(
         "-f",
@@ -1680,17 +1685,22 @@ Examples:
     )
     convert_parser.add_argument("input", help="Input model file")
     convert_parser.add_argument("output", help="Output model file")
+    _convert_formats = ["cart", "json", "jsonl", "pkl", "pickle", "skl", "joblib"]
     convert_parser.add_argument(
         "--input-format",
         dest="input_format",
+        metavar="FMT",
+        choices=_convert_formats,
         default=None,
-        help="Override input format detection (e.g. jsonl, json, cart)",
+        help="Override input format detection (default: from extension)",
     )
     convert_parser.add_argument(
         "--output-format",
         dest="output_format",
+        metavar="FMT",
+        choices=_convert_formats,
         default=None,
-        help="Override output format selection (e.g. jsonl, json, cart)",
+        help="Override output format selection (default: from extension)",
     )
     convert_parser.set_defaults(func=cmd_convert)
 
@@ -1779,7 +1789,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if len(argv) >= 1 and argv[0] == "train":
-            config_name, rest = _extract_config_option(argv[1:])
+            config_name, _ = _extract_config_option(argv[1:])
             if config_name:
                 config = load_config(config_name)
                 if config_name in _BUILTIN_CONFIGS:
@@ -1788,7 +1798,19 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     config_file_used = config_name
                     print(f"Loaded config from {config_name}", file=sys.stderr)
-                argv = [argv[0]] + merge_config_with_argv(config, rest)
+                # Apply the config as the train subparser's defaults. argparse
+                # then lets any explicitly-provided CLI flag override them --
+                # no argv string surgery, and short flags (e.g. -D) are handled
+                # by argparse's own dest resolution.
+                train_parser = _get_subparser(parser, "train")
+                if train_parser is not None:
+                    train_parser.set_defaults(
+                        **{
+                            k: v
+                            for k, v in config.items()
+                            if k not in _CONFIG_EXCLUDE and k != "data"
+                        }
+                    )
 
         args = parser.parse_args(argv)
 

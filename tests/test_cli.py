@@ -618,6 +618,56 @@ class TestConfigPresets:
             magic = rf.read(4)
         assert magic == b"CART"
 
+    def test_preset_value_applied_and_overridable(self, tmp_path):
+        """The preset value reaches args (config-as-default), and an explicit
+        flag overrides it -- verified via --save-config, which dumps the
+        effective args (guards the set_defaults-based config handling)."""
+
+        from cartlet.cli import load_config
+
+        data = tmp_path / "d.csv"
+        data.write_text("x,label\n" + "".join(f"{i},{i % 2}\n" for i in range(10)))
+
+        # 'fast' preset -> max_depth 10 flows through to the saved config.
+        cfg1 = tmp_path / "c1.json"
+        assert (
+            main(
+                [
+                    "train",
+                    str(data),
+                    "-o",
+                    str(tmp_path / "a.cart"),
+                    "-c",
+                    "fast",
+                    "--save-config",
+                    str(cfg1),
+                ]
+            )
+            == 0
+        )
+        assert load_config(str(cfg1))["max_depth"] == 10
+
+        # Explicit -D 2 overrides the preset.
+        cfg2 = tmp_path / "c2.json"
+        assert (
+            main(
+                [
+                    "train",
+                    str(data),
+                    "-o",
+                    str(tmp_path / "b.cart"),
+                    "-c",
+                    "fast",
+                    "-D",
+                    "2",
+                    "--save-config",
+                    str(cfg2),
+                ]
+            )
+            == 0
+        )
+        assert load_config(str(cfg2))["max_depth"] == 2
+
     def test_train_with_equals_form_preset(self, tmp_path, capsys):
         """--config=NAME (equals form) must be honored, not silently ignored."""
         data = tmp_path / "d.csv"
@@ -822,3 +872,75 @@ class TestStatsHonesty:
         # .cart does not store dtype; the feature rows must not claim "str".
         assert "Features" in out
         assert " str " not in out
+
+    def test_stats_output_file_has_no_status_line(self, tmp_path, capsys):
+        """The 'Loading model from' status must go to stderr, not into the
+        stats written to -o (it would otherwise head the saved file)."""
+        model = self._model(tmp_path)
+        capsys.readouterr()
+        out_file = tmp_path / "stats.txt"
+        assert main(["stats", model, "-o", str(out_file)]) == 0
+        content = out_file.read_text()
+        assert "Loading model from" not in content
+        assert content.lstrip().startswith("=")  # the stats banner
+        assert "Loading model from" in capsys.readouterr().err
+
+
+class TestCliEndToEndCoverage:
+    """End-to-end CLI flows that were previously untested (T5.3)."""
+
+    def test_regression_train_predict_evaluate(self, tmp_path, capsys):
+        """A numeric-target flow reports regression metrics (mse/mae) via CLI."""
+        data = tmp_path / "reg.csv"
+        data.write_text(
+            "x,y,target\n1,2,10.5\n2,4,20.5\n3,6,30.5\n4,8,40.5\n5,10,50.5\n6,12,60.5\n"
+        )
+        model = tmp_path / "reg.cart"
+        assert main(["train", str(data), "-o", str(model), "-T", "regression"]) == 0
+
+        capsys.readouterr()
+        assert main(["predict", str(model), str(data)]) == 0
+        pred_out = capsys.readouterr().out.strip().splitlines()
+        assert len(pred_out) == 6
+        # Predictions parse as floats in the training-target range.
+        for line in pred_out:
+            assert 10.0 <= float(line) <= 61.0
+
+        capsys.readouterr()
+        assert main(["evaluate", str(model), str(data)]) == 0
+        eval_out = capsys.readouterr().out
+        assert "MSE" in eval_out and "MAE" in eval_out
+
+    def test_unicode_labels_through_cli(self, tmp_path, capsys):
+        """Unicode class labels survive a CLI train -> predict round trip."""
+        data = tmp_path / "u.csv"
+        data.write_text("x,label\na,café\nb,naïve\na,café\nb,naïve\n")
+        model = tmp_path / "u.cart"
+        assert main(["train", str(data), "-o", str(model)]) == 0
+
+        capsys.readouterr()
+        assert main(["predict", str(model), str(data)]) == 0
+        out = capsys.readouterr().out
+        assert "café" in out and "naïve" in out
+
+    def test_isolation_forest_cli_train_json(self, tmp_path, capsys):
+        """--isolation-forest trains, reports anomaly stats, and saves JSON."""
+        data = tmp_path / "iso.csv"
+        data.write_text("a,b\n1,1\n2,2\n3,3\n2,3\n1,2\n100,100\n")
+        model = tmp_path / "iso.json"
+        assert main(["train", str(data), "--isolation-forest", "-o", str(model)]) == 0
+        assert model.exists()
+        assert "Anomaly scores" in capsys.readouterr().err
+
+    def test_cart_gz_predict_via_cli(self, tmp_path, capsys):
+        """A gzipped .cart model trains and predicts through the CLI."""
+        data = tmp_path / "d.csv"
+        data.write_text("color,label\nred,apple\nblue,berry\nred,apple\nblue,berry\n")
+        model = tmp_path / "m.cart.gz"
+        assert main(["train", str(data), "-o", str(model)]) == 0
+        assert model.exists()
+
+        capsys.readouterr()
+        assert main(["predict", str(model), str(data)]) == 0
+        out = capsys.readouterr().out
+        assert "apple" in out and "berry" in out

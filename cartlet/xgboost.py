@@ -258,13 +258,14 @@ class XGBoostTree(BaseModel):
             raw = self._xgb_model.attr("base_score")
         if raw is None:
             return _DEFAULT_BASE_SCORE
-        # XGBoost may serialize values like "[3E0]" (hex-encoded float).
+        # XGBoost serializes the value wrapped in brackets, in decimal
+        # scientific notation, e.g. "[5E-1]" == 0.5 or "[3E0]" == 3.0. (It is
+        # NOT a hex float: reading "5E-1" as hex 0x5p-1 gives 2.5, which for a
+        # binary model is added as a bogus margin offset and inverts the
+        # predictions.)
         text = str(raw).strip()
         if text.startswith("[") and text.endswith("]"):
-            try:
-                return float.fromhex("0x" + text[1:-1].replace("E", "p"))
-            except ValueError:
-                pass
+            text = text[1:-1]
         return float(text)
 
     def _prepare_data(self, X: list[list[Any]]) -> tuple[list[list[Any]], set[int]]:

@@ -23,6 +23,13 @@ def default_logger():
 # Tree structure utilities
 # =============================================================================
 
+# Nested-tree node shapes (list-based):
+#   decision node = [feature, op, value, left, right]  (5 elements)
+#   regression leaf = [mean, variance, n]              (3 numbers)
+# (classification leaves are str or dict, not lists.)
+DECISION_ARITY = 5
+REGRESSION_LEAF_ARITY = 3
+
 
 def is_leaf(node: Any) -> bool:
     """
@@ -37,7 +44,7 @@ def is_leaf(node: Any) -> bool:
         return True
     if isinstance(node, dict):
         return True
-    if isinstance(node, list) and len(node) == 3:
+    if isinstance(node, list) and len(node) == REGRESSION_LEAF_ARITY:
         return all(isinstance(x, (int, float)) for x in node)
     return False
 
@@ -48,7 +55,7 @@ def is_decision_node(node: Any) -> bool:
 
     Format: [feature, op, value, left, right]
     """
-    return isinstance(node, list) and len(node) == 5
+    return isinstance(node, list) and len(node) == DECISION_ARITY
 
 
 def get_children(node: Any) -> tuple[Any, Any]:
@@ -214,13 +221,13 @@ def eval_tree(
     # Leaf: regression [mean, variance, n]
     if (
         isinstance(node, list)
-        and len(node) == 3
+        and len(node) == REGRESSION_LEAF_ARITY
         and all(isinstance(x, (int, float)) for x in node)
     ):
         return node[0]  # Return mean
 
     # Decision node: [feature, op, value, left, right]
-    if isinstance(node, list) and len(node) == 5:
+    if is_decision_node(node):
         feature, op, value, left, right = node
 
         # Get feature index. Fail loudly on unknown feature names rather than

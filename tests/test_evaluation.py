@@ -39,6 +39,8 @@ class TestEvaluatePredictions:
         result = evaluate_predictions([], [])
         assert result["accuracy"] == 0.0
         assert result["total"] == 0
+        # Schema is stable: "correct" is present even on empty input.
+        assert result["correct"] == 0
 
     def test_mismatched_lengths_raises(self):
         with pytest.raises(ValueError):
@@ -102,7 +104,10 @@ class TestCrossValidate:
         assert "scores" in result
         assert result["metric"] == "accuracy"
         assert len(result["scores"]) == 3
-        assert 0 <= result["mean"] <= 1
+        # Data is perfectly separable (a->1, b->2, c->3), so CV accuracy should
+        # be high, not just "somewhere in [0, 1]".
+        assert result["mean"] >= 0.8
+        assert all(0.0 <= s <= 1.0 for s in result["scores"])
 
     def test_cv_with_shuffle(self):
         X = [["a"]] * 10 + [["b"]] * 10

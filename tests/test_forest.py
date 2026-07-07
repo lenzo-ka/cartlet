@@ -69,14 +69,56 @@ class TestBasicTraining:
 
         assert len(rf.trees) == 5
 
-    def test_bootstrap_false(self):
-        rf = RandomForest(n_estimators=3, bootstrap=False, feature_names=["x"])
-        X = [["a"], ["b"], ["c"]] * 10
-        y = ["1", "2", "3"] * 10
-        rf.load_data(X, y)
-        rf.train()
+    @staticmethod
+    def _multi_feature_data():
+        X = [["a", "p"], ["b", "q"], ["c", "r"], ["a", "q"], ["b", "r"]] * 8
+        y = ["1", "2", "3", "1", "2"] * 8
+        return X, y
 
-        assert len(rf.trees) == 3
+    def test_no_bootstrap_no_sampling_gives_identical_trees(self):
+        """bootstrap=False + max_features=None is fully deterministic, so every
+        tree in the forest must be identical (guards that the flags do
+        something rather than being silently ignored)."""
+        X, y = self._multi_feature_data()
+        rf = RandomForest(
+            n_estimators=4,
+            bootstrap=False,
+            max_features=None,
+            feature_names=["x", "y"],
+        )
+        rf.load_data(X, y)
+        rf.train(random_state=42)
+        models = [t.model for t in rf.trees]
+        assert all(m == models[0] for m in models)
+
+    def test_bootstrap_true_varies_trees(self):
+        """With bootstrap on, resampling must make at least some trees differ."""
+        X, y = self._multi_feature_data()
+        rf = RandomForest(
+            n_estimators=6,
+            bootstrap=True,
+            max_features=None,
+            feature_names=["x", "y"],
+        )
+        rf.load_data(X, y)
+        rf.train(random_state=42)
+        models = [t.model for t in rf.trees]
+        assert any(m != models[0] for m in models)
+
+    def test_max_features_restricts_split_search(self):
+        """max_features=1 draws a single feature per split, so trees differ
+        across estimators even without bootstrap."""
+        X, y = self._multi_feature_data()
+        rf = RandomForest(
+            n_estimators=6,
+            bootstrap=False,
+            max_features=1,
+            feature_names=["x", "y"],
+        )
+        rf.load_data(X, y)
+        rf.train(random_state=42)
+        models = [t.model for t in rf.trees]
+        assert any(m != models[0] for m in models)
 
 
 class TestPrediction:
@@ -125,7 +167,7 @@ class TestFeatureImportances:
         X = [["a", "x"], ["a", "y"], ["b", "x"], ["b", "y"]] * 10
         y = ["A", "A", "B", "B"] * 10
         rf.load_data(X, y)
-        rf.train()
+        rf.train(random_state=42)
 
         importances = rf.feature_importances_
         assert "important" in importances

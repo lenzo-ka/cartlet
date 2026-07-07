@@ -99,6 +99,18 @@ class BaseModel(ABC):
         # Feature importances (set by trainer)
         self._feature_importances: dict[str, float] = {}
 
+    def set_feature_importances(self, importances: dict[str, float]) -> None:
+        """Record trainer-computed feature importances on this model.
+
+        Called by trainer backends so they populate the model through a defined
+        method rather than writing the private attribute directly.
+        """
+        self._feature_importances = importances
+
+    def set_sklearn_model(self, model: Any) -> None:
+        """Record the underlying sklearn estimator (sklearn/forest backends)."""
+        self._sklearn_model = model
+
     def _rebuild_name_to_col(self) -> dict[str, int]:
         """Rebuild name-to-column index mapping from feature_names."""
         self.name_to_col = {name: idx for idx, name in enumerate(self.feature_names)}

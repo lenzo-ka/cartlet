@@ -29,6 +29,8 @@ from .trainer.base import normalize_importances
 from .types import (
     CRITERION_ENTROPY,
     DEFAULT_MIN_DIST_ENTROPY,
+    DEFAULT_MIN_SAMPLES_LEAF,
+    DEFAULT_MIN_SAMPLES_SPLIT,
     DEFAULT_VALIDATION_SPLIT,
     DTYPE_BOOL,
     DTYPE_STR,
@@ -46,6 +48,7 @@ from .utils import (
     collapse_distributions,
     count_nodes,
     eval_tree,
+    is_decision_node,
 )
 from .utils import (
     max_depth as compute_max_depth,
@@ -100,12 +103,13 @@ class DecisionTree(BaseModel):
         target: dict[str, Any] | None = None,
         task: str = TASK_AUTO,
         max_depth: int | None = None,
-        min_samples_split: int = 2,
-        min_samples_leaf: int = 1,
+        min_samples_split: int = DEFAULT_MIN_SAMPLES_SPLIT,
+        min_samples_leaf: int = DEFAULT_MIN_SAMPLES_LEAF,
         store_distributions: bool = True,
         min_dist_entropy: float = DEFAULT_MIN_DIST_ENTROPY,
         min_confidence: float = PROB_HIGH_CONFIDENCE,
         criterion: str = CRITERION_ENTROPY,
+        categorical_split: str = "exact",
         verbose: bool = False,
         logger=None,
     ):
@@ -129,6 +133,10 @@ class DecisionTree(BaseModel):
                 class label instead of the full distribution (default 0.95).
                 Set to 1.0 to always keep distributions.
             criterion: Split criterion for classification ("entropy" or "gini")
+            categorical_split: Categorical split-search strategy for the native
+                backend: "exact" (default, fully reproducible) or "fast" (O(n)
+                single pass, big win for high-cardinality categoricals; may pick
+                different splits on ties). See ``Native``.
             verbose: Enable verbose output
             logger: Custom logger (uses default if None)
         """
@@ -148,6 +156,7 @@ class DecisionTree(BaseModel):
         self.min_dist_entropy = min_dist_entropy
         self.min_confidence = min_confidence
         self.criterion = criterion
+        self.categorical_split = categorical_split
 
         # Trained model
         self.model: Any = None
@@ -183,16 +192,25 @@ class DecisionTree(BaseModel):
         self.y = list(y)  # Copy so caller mutations don't reach into the model
         self.counts = list(counts) if counts is not None else [1] * len(y)
 
-        # Normalize bool features to 0/1 and collect known values for categorical features
+        # Normalize bool features to 0/1 and collect known categorical values in
+        # a single pass per column (bool + categorical features would otherwise
+        # walk every row twice). Normalization happens before collection, so a
+        # bool categorical still records the normalized 0/1 values.
         if self.feature_specs:
             for col, spec in enumerate(self.feature_specs):
-                if spec.dtype == DTYPE_BOOL:
-                    for row in self.X:
-                        if col < len(row):
+                is_bool = spec.dtype == DTYPE_BOOL
+                is_cat = spec.type == TYPE_CAT
+                if not is_bool and not is_cat:
+                    continue
+                values: set[Any] | None = set() if is_cat else None
+                for row in self.X:
+                    if col < len(row):
+                        if is_bool:
                             row[col] = normalize_bool(row[col])
-                # Track known values for categorical features
-                if spec.type == TYPE_CAT:
-                    spec.values = {row[col] for row in self.X if col < len(row)}
+                        if values is not None:
+                            values.add(row[col])
+                if values is not None:
+                    spec.values = values
 
         if not self.feature_names and X:
             # Auto-generate feature names and specs
@@ -394,6 +412,7 @@ class DecisionTree(BaseModel):
                 prune=prune,
                 random_state=random_state,
                 criterion=self.criterion,
+                categorical_split=self.categorical_split,
             )
         if trainer == "sklearn":
             from .trainer import Sklearn
@@ -446,7 +465,18 @@ class DecisionTree(BaseModel):
             if oov_features:
                 raise ValueError(f"OOV values for features: {oov_features}")
 
-        # Evaluate using the nested-list tree interpreter from utils
+        return self._eval_normalized(normalized, return_dist)
+
+    def _eval_normalized(
+        self, normalized: list[Any], return_dist: bool = False
+    ) -> Any | dict[str, float] | float:
+        """Evaluate an already-normalized vector against this tree.
+
+        Split out from ``predict`` so a RandomForest can normalize the input
+        once and reuse it across all trees instead of re-normalizing per tree.
+        """
+        if self.model is None:
+            raise ValueError("Model not trained. Call train() first.")
         return eval_tree(self.model, normalized, self.name_to_col, return_dist)
 
     def _check_oov(self, vector: list[Any]) -> list[tuple[str, Any]]:
@@ -554,10 +584,10 @@ class DecisionTree(BaseModel):
         importances: dict[str, float] = dict.fromkeys(self.feature_names, 0.0)
 
         def count_splits(node: Any, depth: int = 0) -> None:
-            if not isinstance(node, list) or len(node) != 5:
+            if not is_decision_node(node):
                 return  # Leaf node
 
-            feature, op, value, left, right = node
+            feature, _op, _value, left, right = node
 
             # Weight by depth (higher nodes affect more samples)
             weight = 1.0 / (depth + 1)
