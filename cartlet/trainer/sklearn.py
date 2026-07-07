@@ -379,49 +379,27 @@ class Sklearn(Trainer):
         from sklearn.tree import DecisionTreeClassifier
 
         is_classifier = isinstance(sklearn_tree, DecisionTreeClassifier)
-        sk_tree = sklearn_tree.tree_
         classes = sklearn_tree.classes_ if is_classifier else None
 
         # Determine task
         if task == "auto":
             task = "classification" if is_classifier else "regression"
 
-        def convert_node(node_id: int) -> Any:
-            if sk_tree.children_left[node_id] == -1:
-                if is_classifier and classes is not None:
-                    values = sk_tree.value[node_id, 0]
-                    total = values.sum()
-                    if total == 0:
-                        return "-"
-
-                    # Build sorted (class, prob) list
-                    probs = values / total
-                    items = [
-                        (str(classes[idx]), float(prob))
-                        for idx, prob in enumerate(probs)
-                        if prob > 0
-                    ]
-                    items.sort(key=lambda x: x[1], reverse=True)
-
-                    return make_classification_distribution(
-                        items, store_distributions, min_confidence
-                    )
-                else:
-                    mean = float(sk_tree.value[node_id, 0, 0])
-                    n = int(sk_tree.n_node_samples[node_id])
-                    variance = float(sk_tree.impurity[node_id])
-                    return [mean, variance, n]
-
-            feat_idx = sk_tree.feature[node_id]
-            threshold = float(sk_tree.threshold[node_id])
-            feat_name = feature_names[feat_idx]
-
-            left = convert_node(sk_tree.children_left[node_id])
-            right = convert_node(sk_tree.children_right[node_id])
-
-            return [feat_name, "<", threshold, left, right]
-
-        model = convert_node(0)
+        # An externally-trained sklearn model carries no cartlet one-hot
+        # encoding, so every feature is a plain numeric column: reuse the shared
+        # converter with empty categorical maps instead of a second, drifting
+        # convert_node implementation.
+        model = convert_sklearn_tree(
+            sklearn_tree,
+            feature_names,
+            feature_names,
+            [],
+            {},
+            classes=classes,
+            is_regression=not is_classifier,
+            store_distributions=store_distributions,
+            min_confidence=min_confidence,
+        )
 
         config = {
             "features": [
