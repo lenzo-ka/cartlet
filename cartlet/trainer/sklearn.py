@@ -97,6 +97,7 @@ def convert_sklearn_tree(
     is_regression: bool = False,
     store_distributions: bool = True,
     min_confidence: float = PROB_HIGH_CONFIDENCE,
+    min_dist_entropy: float = 0.0,
 ) -> Any:
     """
     Convert sklearn tree structure to our nested list format.
@@ -159,7 +160,7 @@ def convert_sklearn_tree(
             items.sort(key=lambda x: x[1], reverse=True)
 
             return make_classification_distribution(
-                items, store_distributions, min_confidence
+                items, store_distributions, min_confidence, min_dist_entropy
             )
 
         # Decision node
@@ -328,6 +329,7 @@ class Sklearn(Trainer):
             is_regression=is_regression,
             store_distributions=tree.store_distributions,
             min_confidence=tree.min_confidence,
+            min_dist_entropy=tree.min_dist_entropy,
         )
 
     @classmethod

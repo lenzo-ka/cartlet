@@ -960,19 +960,13 @@ class Native(Trainer):
         items = [(cat, count / total) for cat, count in cat_counts.items()]
         items.sort(key=lambda x: x[1], reverse=True)
 
-        # Early exit if not storing distributions
-        if not tree.store_distributions:
-            return items[0][0]
-
-        # Check entropy threshold (native-specific)
-        if len(items) > 1:
-            probs = [prob for _, prob in items]
-            entropy = -sum(p * math.log2(p) for p in probs if p > 0)
-            if entropy < tree.min_dist_entropy:
-                return items[0][0]
-
+        # The min_dist_entropy gate now lives in make_classification_distribution
+        # so every backend applies it identically.
         return make_classification_distribution(
-            items, tree.store_distributions, tree.min_confidence
+            items,
+            tree.store_distributions,
+            tree.min_confidence,
+            tree.min_dist_entropy,
         )
 
     def _make_regression_leaf(
