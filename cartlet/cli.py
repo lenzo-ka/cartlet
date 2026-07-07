@@ -1123,7 +1123,9 @@ def _print_stats_human(
     def p(msg: str) -> None:
         print(msg, file=out)
 
-    p(f"Loading model from {args.model}...")
+    # Status line goes to stderr so it never contaminates the stats written to
+    # ``out`` (which may be a file via ``-o``).
+    print(f"Loading model from {args.model}...", file=sys.stderr)
     p("\n" + "=" * 50)
     p("MODEL STATISTICS")
     p("=" * 50)

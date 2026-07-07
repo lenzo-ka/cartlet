@@ -822,3 +822,15 @@ class TestStatsHonesty:
         # .cart does not store dtype; the feature rows must not claim "str".
         assert "Features" in out
         assert " str " not in out
+
+    def test_stats_output_file_has_no_status_line(self, tmp_path, capsys):
+        """The 'Loading model from' status must go to stderr, not into the
+        stats written to -o (it would otherwise head the saved file)."""
+        model = self._model(tmp_path)
+        capsys.readouterr()
+        out_file = tmp_path / "stats.txt"
+        assert main(["stats", model, "-o", str(out_file)]) == 0
+        content = out_file.read_text()
+        assert "Loading model from" not in content
+        assert content.lstrip().startswith("=")  # the stats banner
+        assert "Loading model from" in capsys.readouterr().err

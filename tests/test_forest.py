@@ -125,7 +125,7 @@ class TestFeatureImportances:
         X = [["a", "x"], ["a", "y"], ["b", "x"], ["b", "y"]] * 10
         y = ["A", "A", "B", "B"] * 10
         rf.load_data(X, y)
-        rf.train()
+        rf.train(random_state=42)
 
         importances = rf.feature_importances_
         assert "important" in importances
