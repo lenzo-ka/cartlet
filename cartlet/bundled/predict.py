@@ -786,7 +786,13 @@ def parse_line(line, delimiter, model_features):
     parsed = []
     for i, val in enumerate(parts):
         if i < len(model_features) and model_features[i]["type"] == "num":
-            parsed.append(float(val))
+            feat = model_features[i].get("name", i)
+            try:
+                parsed.append(float(val))
+            except ValueError:
+                raise ValueError(
+                    f"expected a number for feature {feat!r}, got {val!r}"
+                ) from None
         else:
             parsed.append(val)
     return parsed
@@ -928,15 +934,19 @@ Examples:
                 line = line.strip()
                 if not line:
                     continue
-                if delimiter:
-                    row = parse_line(line, delimiter, model["features"])
-                else:
-                    row = parse_line(line, None, model["features"])
-                    if len(row) == 1:
-                        # Try tab, then comma
-                        row = parse_line(line, "\t", model["features"])
+                try:
+                    if delimiter:
+                        row = parse_line(line, delimiter, model["features"])
+                    else:
+                        row = parse_line(line, None, model["features"])
                         if len(row) == 1:
-                            row = parse_line(line, ",", model["features"])
+                            # Try tab, then comma
+                            row = parse_line(line, "\t", model["features"])
+                            if len(row) == 1:
+                                row = parse_line(line, ",", model["features"])
+                except ValueError as e:
+                    print(f"Error: {e}", file=sys.stderr)
+                    return 1
                 result = predict(model, row, return_dist=args.dist)
                 if args.dist:
                     print(json.dumps(result))
@@ -955,7 +965,15 @@ Examples:
     parsed_row = []
     for i, val in enumerate(features):
         if i < len(model["features"]) and model["features"][i]["type"] == "num":
-            parsed_row.append(float(val))
+            try:
+                parsed_row.append(float(val))
+            except ValueError:
+                feat = model["features"][i].get("name", i)
+                print(
+                    f"Error: expected a number for feature {feat!r}, got {val!r}",
+                    file=sys.stderr,
+                )
+                return 1
         else:
             parsed_row.append(val)
 
