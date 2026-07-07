@@ -235,6 +235,7 @@ def _load_cart_from_bytes(data: bytes) -> dict[str, Any]:
             "is_xgboost": is_xgboost,
             "has_distributions": has_distributions,
             "n_trees": n_trees if is_forest else 1,
+            "version": version,
         }
 
     except struct.error as e:

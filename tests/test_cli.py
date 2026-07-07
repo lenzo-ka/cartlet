@@ -887,3 +887,124 @@ class TestShortFlagConsistency:
         assert short_to_longs.get("-c") == {"--config"}
         assert short_to_longs.get("-D") == {"--max-depth"}
         assert short_to_longs.get("-p") == {"--prediction-column"}
+
+
+class TestConfigFile:
+    """Save/load of config *files* (W3-6) — previously untested."""
+
+    def _data(self, tmp_path):
+        d = tmp_path / "d.csv"
+        d.write_text("x,label\na,yes\nb,no\nc,yes\nd,no\n")
+        return str(d)
+
+    def test_save_config_json_then_train_with_it(self, tmp_path):
+        from cartlet.cli import load_config
+
+        data = self._data(tmp_path)
+        cfg = tmp_path / "cfg.json"
+        # --save-config writes the config and still trains.
+        rc = main(
+            [
+                "train",
+                data,
+                "-o",
+                str(tmp_path / "m.cart"),
+                "-D",
+                "3",
+                "--save-config",
+                str(cfg),
+            ]
+        )
+        assert rc == 0
+        assert cfg.exists()
+
+        loaded = load_config(str(cfg))
+        assert loaded["max_depth"] == 3
+
+        # The saved file is usable as a -c config.
+        rc2 = main(["train", data, "-o", str(tmp_path / "m2.cart"), "-c", str(cfg)])
+        assert rc2 == 0
+
+    def test_save_config_yaml_roundtrip(self, tmp_path):
+        pytest.importorskip("yaml")
+        from cartlet.cli import load_config
+
+        data = self._data(tmp_path)
+        cfg = tmp_path / "cfg.yaml"
+        rc = main(
+            [
+                "train",
+                data,
+                "-o",
+                str(tmp_path / "m.cart"),
+                "-D",
+                "4",
+                "--save-config",
+                str(cfg),
+            ]
+        )
+        assert rc == 0
+        assert load_config(str(cfg))["max_depth"] == 4
+
+
+class TestIsolationForestFlagWarnings:
+    """W3-8(b): isolation-forest warns on supervised flags it ignores."""
+
+    def test_warns_on_prune(self, tmp_path, capsys):
+        data = tmp_path / "d.csv"
+        data.write_text("x,y\n1,2\n3,4\n5,6\n7,8\n")
+        rc = main(
+            [
+                "train",
+                str(data),
+                "--isolation-forest",
+                "--prune",
+                "-o",
+                str(tmp_path / "if.json"),
+            ]
+        )
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert "ignores" in err and "--prune" in err
+
+
+class TestValidationFileRemoved:
+    """W3-8(c): the never-implemented --validation-file flag is gone."""
+
+    def test_validation_file_flag_rejected(self, tmp_path):
+        data = tmp_path / "d.csv"
+        data.write_text("x,label\na,yes\nb,no\n")
+        # argparse exits(2) on an unknown option.
+        with pytest.raises(SystemExit) as exc:
+            main(["train", str(data), "-E", "val.csv"])
+        assert exc.value.code == 2
+
+
+class TestStatsHonesty:
+    """W3-8(a): stats reports the real format version and no fake dtype."""
+
+    def _model(self, tmp_path):
+        data = tmp_path / "d.csv"
+        data.write_text("x,label\na,yes\nb,no\nc,yes\nd,no\n")
+        model = tmp_path / "m.cart"
+        assert main(["train", str(data), "-o", str(model)]) == 0
+        return str(model)
+
+    def test_format_version_reflects_header(self, tmp_path, capsys):
+        from cartlet.io.cart_format import VERSION
+
+        model = self._model(tmp_path)
+        capsys.readouterr()  # drop training output
+        assert main(["stats", model, "--json"]) == 0
+        out = capsys.readouterr().out
+        stats = json.loads(out)
+        assert stats["format_version"] == f"cart-{VERSION}"
+
+    def test_human_stats_no_fake_str_dtype(self, tmp_path, capsys):
+        model = self._model(tmp_path)
+        capsys.readouterr()
+        assert main(["stats", model]) == 0
+        out = capsys.readouterr().out
+        # .cart does not store dtype; the feature rows must not claim "str".
+        assert "Features" in out
+        assert " str " not in out

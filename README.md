@@ -548,7 +548,7 @@ All of the above are re-exported at the package root - subpath imports like
 cartlet train DATA [-o MODEL] [-c CONFIG] [-t TARGET] [-d DELIM] [-H] [-N NAMES]
                     [-X FEATURES] [-T TASK] [-F] [--extra-trees] [--isolation-forest]
                     [-n N] [-D N] [-s N] [-l N] [-C {entropy,gini}] [-S FRAC]
-                    [-e FILE] [-V FRAC] [-E FILE] [-P] [-R SEED]
+                    [-e FILE] [-V FRAC] [-P] [-R SEED]
                     [-B {native,sklearn}] [-j N] [--no-distributions] [-v]
 
   DATA              Training data (CSV/TSV/JSONL)
@@ -572,7 +572,6 @@ cartlet train DATA [-o MODEL] [-c CONFIG] [-t TARGET] [-d DELIM] [-H] [-N NAMES]
   -S, --test-split  Fraction for test eval
   -e, --test-file   Separate test file
   -V, --validation-split  Fraction for pruning validation
-  -E, --validation-file   Separate validation data file
   -P, --prune       Enable pruning (auto 5% validation if -V not set)
   -R, --random-seed Random seed
   -B, --trainer     Backend: native or sklearn
