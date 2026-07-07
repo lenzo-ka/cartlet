@@ -11,8 +11,8 @@ Usage:
     result = predict(model, ["red", "large"])
     results = predict_batch(model, [["red", "large"], ["blue", "small"]])
 
-Or as standalone script:
-    python runner.py model.cart '["feature1", "feature2", ...]'
+Or as a module (relative imports require -m, not `python runner.py`):
+    python -m cartlet.runner model.cart '["feature1", "feature2", ...]'
 """
 
 from __future__ import annotations

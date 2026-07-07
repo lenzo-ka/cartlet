@@ -45,6 +45,9 @@ dev = [
     "pytest-cov>=4.0",
     "ruff>=0.1.0",
     "mypy>=1.0",
+    # Included so the YAML config tests actually run under the base test
+    # matrix (which installs .[dev]) instead of silently skipping.
+    "pyyaml>=6.0",
 ]
 sklearn = ["scikit-learn>=1.0", "joblib>=1.0"]
 yaml = ["pyyaml>=6.0"]
