@@ -388,6 +388,35 @@ class TestSklearnTrainer:
         assert 15.0 <= pred <= 35.0
 
     @pytest.mark.skipif(_SKLEARN_MISSING, reason="sklearn not installed")
+    def test_sklearn_regression_leaf_variance(self):
+        """Regression leaves must carry the node's real variance, not 0.0.
+
+        With a depth-1 stump each leaf still spans several distinct targets,
+        so the stored variance (sklearn's node MSE) must be positive.
+        """
+        from cartlet.utils import is_leaf
+
+        dt = DecisionTree(
+            features=[{"name": "x", "dtype": "float", "type": "num"}],
+            task=TASK_REGRESSION,
+            max_depth=1,
+        )
+        X = [[float(i)] for i in range(10)]
+        y = [1.0, 1.0, 9.0, 1.0, 9.0, 9.0, 1.0, 9.0, 1.0, 9.0]
+        dt.load_data(X, y)
+        dt.train(trainer="sklearn")
+
+        def leaf_variances(node):
+            if is_leaf(node):
+                # regression leaf shape is [mean, variance, n]
+                return [node[1]] if isinstance(node, list) else []
+            return leaf_variances(node[3]) + leaf_variances(node[4])
+
+        variances = leaf_variances(dt.model)
+        assert variances, "expected regression leaves"
+        assert any(v > 0.0 for v in variances)
+
+    @pytest.mark.skipif(_SKLEARN_MISSING, reason="sklearn not installed")
     def test_sklearn_max_depth(self):
         """Sklearn respects max_depth."""
         dt = DecisionTree(
