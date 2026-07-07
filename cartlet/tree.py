@@ -192,16 +192,25 @@ class DecisionTree(BaseModel):
         self.y = list(y)  # Copy so caller mutations don't reach into the model
         self.counts = list(counts) if counts is not None else [1] * len(y)
 
-        # Normalize bool features to 0/1 and collect known values for categorical features
+        # Normalize bool features to 0/1 and collect known categorical values in
+        # a single pass per column (bool + categorical features would otherwise
+        # walk every row twice). Normalization happens before collection, so a
+        # bool categorical still records the normalized 0/1 values.
         if self.feature_specs:
             for col, spec in enumerate(self.feature_specs):
-                if spec.dtype == DTYPE_BOOL:
-                    for row in self.X:
-                        if col < len(row):
+                is_bool = spec.dtype == DTYPE_BOOL
+                is_cat = spec.type == TYPE_CAT
+                if not is_bool and not is_cat:
+                    continue
+                values: set[Any] | None = set() if is_cat else None
+                for row in self.X:
+                    if col < len(row):
+                        if is_bool:
                             row[col] = normalize_bool(row[col])
-                # Track known values for categorical features
-                if spec.type == TYPE_CAT:
-                    spec.values = {row[col] for row in self.X if col < len(row)}
+                        if values is not None:
+                            values.add(row[col])
+                if values is not None:
+                    spec.values = values
 
         if not self.feature_names and X:
             # Auto-generate feature names and specs

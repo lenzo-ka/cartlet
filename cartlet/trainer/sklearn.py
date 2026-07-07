@@ -53,15 +53,18 @@ def encode_categorical(
     Returns:
         Tuple of (encoded_X, encoded_feature_names, cat_columns, cat_values)
     """
-    cat_columns: list[int] = []
-    cat_values: dict[int, list[Any]] = {}
-
-    # Identify categorical columns and collect their values
-    for col, spec in enumerate(feature_specs):
-        if spec.type == TYPE_CAT:
-            cat_columns.append(col)
-            values = sorted({row[col] for row in X}, key=str)
-            cat_values[col] = values
+    # Identify categorical columns, then collect all their distinct values in a
+    # single pass over X (rather than a full scan of X per categorical column).
+    cat_columns: list[int] = [
+        col for col, spec in enumerate(feature_specs) if spec.type == TYPE_CAT
+    ]
+    value_sets: dict[int, set] = {col: set() for col in cat_columns}
+    for row in X:
+        for col in cat_columns:
+            value_sets[col].add(row[col])
+    cat_values: dict[int, list[Any]] = {
+        col: sorted(value_sets[col], key=str) for col in cat_columns
+    }
 
     # Build encoded feature names
     encoded_names: list[str] = []
