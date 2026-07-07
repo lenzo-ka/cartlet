@@ -622,7 +622,6 @@ class TestConfigPresets:
         """The preset value reaches args (config-as-default), and an explicit
         flag overrides it -- verified via --save-config, which dumps the
         effective args (guards the set_defaults-based config handling)."""
-        import json
 
         from cartlet.cli import load_config
 
