@@ -117,6 +117,33 @@ class TestMinSamplesLeafEdgeCases:
         # With weight 5 each, splitting would give < 10 per leaf
         assert dt.get_depth() == 0
 
+    def test_min_samples_leaf_falls_back_to_valid_split(self):
+        """A min_samples_leaf-violating best split must not veto a valid one.
+
+        The maximum-gain threshold here isolates the single ``B`` row
+        (``x <= 1.5`` -> a pure but 1-sample leaf), which violates
+        ``min_samples_leaf=2``. A slightly-worse threshold (``x <= 2.5``)
+        yields a valid split with two rows on each side. The old code enforced
+        the leaf-size constraint only *after* choosing the best threshold, so
+        it collapsed the whole node into a single leaf; the search must instead
+        skip the violating candidate and keep the node splitting.
+        """
+        from cartlet import count_nodes
+
+        dt = DecisionTree(
+            features=[{"name": "x", "dtype": "float", "type": "num"}],
+            min_samples_leaf=2,
+        )
+        X = [[1.0], [2.0], [3.0], [4.0], [5.0]]
+        y = ["B", "A", "A", "A", "A"]
+        dt.load_data(X, y)
+        dt.train(trainer="native")
+
+        # The node kept splitting instead of collapsing to a single leaf.
+        assert count_nodes(dt.model) > 1
+        # And the majority class is still recovered on the clean side.
+        assert dt.predict([5.0]) == "A"
+
 
 class TestMaxDepthConstraint:
     """Test max_depth constraint."""

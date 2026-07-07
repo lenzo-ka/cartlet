@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import math
 import random
-from collections import Counter
 from time import time
 from typing import TYPE_CHECKING, Any
 
@@ -154,7 +153,7 @@ class Native(Trainer):
         model = self._build_tree(tree, set(train_rows))
 
         if self.prune and val_rows:
-            model = self._prune_with_validation(tree, model, val_rows)
+            model = self._prune_with_validation(tree, model, train_rows, val_rows)
 
         # Store computed feature importances on the tree
         tree._feature_importances = self._normalize_importances()
@@ -241,7 +240,11 @@ class Native(Trainer):
         return [best_name, best_op, best_value, left, right]
 
     def _prune_with_validation(
-        self, tree: DecisionTree, node: Any, val_rows: list[int]
+        self,
+        tree: DecisionTree,
+        node: Any,
+        train_rows: list[int],
+        val_rows: list[int],
     ) -> Any:
         """
         Reduced-error pruning using validation data.
@@ -251,28 +254,42 @@ class Native(Trainer):
         recurse), and per-subtree correctness counts are accumulated by
         summing the children's counts rather than re-walking the whole
         validation set through every internal node. Total cost is
-        roughly ``O(|val_rows| * tree_depth)`` plus a single linear
-        majority-class tally at each internal node visited, instead of
-        the old ``O(internal_nodes * |val_rows| * avg_subtree_depth)``.
+        roughly ``O((|train_rows| + |val_rows|) * tree_depth)`` plus a
+        single leaf construction at each internal node visited, instead
+        of the old ``O(internal_nodes * |val_rows| * avg_subtree_depth)``.
+
+        The candidate leaf at each node is labelled from the *training*
+        rows reaching it (the same weighted-majority rule used when the
+        tree was grown); the validation set only decides whether
+        collapsing to that leaf is at least as accurate as keeping the
+        subtree. Scoring the leaf on the training-derived label rather
+        than the validation majority avoids the optimistic bias of the
+        earlier implementation, which both labelled and scored the leaf
+        on the same validation rows.
 
         Regression trees are returned unchanged: there is no accuracy
         signal to prune against, matching the original behavior.
         """
-        pruned, _ = self._prune_recursive(tree, node, val_rows, tree._is_regression())
+        pruned, _ = self._prune_recursive(
+            tree, node, list(train_rows), val_rows, tree._is_regression()
+        )
         return pruned
 
     def _prune_recursive(
         self,
         tree: DecisionTree,
         node: Any,
+        train_rows: list[int],
         val_rows: list[int],
         is_regression: bool,
     ) -> tuple[Any, int]:
         """
         Bottom-up pruning helper.
 
-        ``val_rows`` contains only the indices that reach this subtree
-        (already filtered by the ancestor predicates above us).
+        ``train_rows`` and ``val_rows`` each contain only the indices
+        that reach this subtree (both already filtered by the ancestor
+        predicates above us). ``train_rows`` is used to label a candidate
+        collapsed leaf; ``val_rows`` is used to score it.
 
         Returns ``(pruned_node, correct_count)`` where ``correct_count``
         is the number of rows in ``val_rows`` that ``pruned_node``
@@ -296,13 +313,16 @@ class Native(Trainer):
         else:
             col = int(feature)
 
-        left_rows, right_rows = _partition_val_rows(val_rows, tree.X, col, op, value)
+        left_train, right_train = _partition_val_rows(
+            train_rows, tree.X, col, op, value
+        )
+        left_val, right_val = _partition_val_rows(val_rows, tree.X, col, op, value)
 
         pruned_left, left_correct = self._prune_recursive(
-            tree, left, left_rows, is_regression
+            tree, left, left_train, left_val, is_regression
         )
         pruned_right, right_correct = self._prune_recursive(
-            tree, right, right_rows, is_regression
+            tree, right, right_train, right_val, is_regression
         )
 
         if pruned_left == pruned_right and is_leaf(pruned_left):
@@ -318,12 +338,15 @@ class Native(Trainer):
 
         current_correct = left_correct + right_correct
 
-        val_classes = [tree.y[i] for i in val_rows]
-        most_common = Counter(val_classes).most_common(1)[0][0]
-        leaf_correct = sum(1 for c in val_classes if c == most_common)
+        # Candidate replacement leaf: labelled from the training rows that
+        # reach this node (same weighted-majority rule as when the tree was
+        # grown), then scored on the held-out validation rows. Labelling and
+        # scoring on independent sets is what keeps REP unbiased.
+        leaf = self._make_classification_leaf(tree, train_rows)
+        leaf_correct = _count_leaf_correct(leaf, tree, val_rows)
 
         if leaf_correct >= current_correct:
-            return most_common, leaf_correct
+            return leaf, leaf_correct
 
         return current_node, current_correct
 
@@ -419,9 +442,16 @@ class Native(Trainer):
         # Find best split value
         best_gain = 0.0
         best_value = None
+        min_leaf = tree.min_samples_leaf
 
         for value, inside in value_ids.items():
             count = value_counts[value]
+            outside_count = total - count
+            # Skip values that would leave either side below min_samples_leaf,
+            # so a valid alternative category can still be chosen instead of
+            # collapsing the node post-hoc.
+            if count < min_leaf or outside_count < min_leaf:
+                continue
             outside = row_ids - inside
 
             # Calculate weighted impurity after split
@@ -501,6 +531,7 @@ class Native(Trainer):
             return None, 0.0
 
         gini = self.criterion == "gini"
+        min_leaf = tree.min_samples_leaf
         left_counts: dict[Any, float] = {}
         left_count = 0
         best_gain = 0.0
@@ -510,7 +541,10 @@ class Native(Trainer):
         for value, idx, count in values_with_ids:
             if prev_value is not None and value != prev_value:
                 right_count = total - left_count
-                if left_count > 0 and right_count > 0:
+                # Skip candidates that would leave either side below
+                # min_samples_leaf, so a valid alternative threshold can still
+                # win instead of the node collapsing to a leaf post-hoc.
+                if left_count >= min_leaf and right_count >= min_leaf:
                     imp_left = self._impurity_from_counts(left_counts, left_count, gini)
                     imp_right = self._impurity_from_counts(
                         right_counts, right_count, gini
@@ -552,6 +586,7 @@ class Native(Trainer):
         if total_w == 0:
             return None, 0.0
 
+        min_leaf = tree.min_samples_leaf
         left_w = 0.0
         left_wy = 0.0
         left_wyy = 0.0
@@ -562,7 +597,9 @@ class Native(Trainer):
         for value, idx, count in values_with_ids:
             if prev_value is not None and value != prev_value:
                 right_w = total_w - left_w
-                if left_w > 0 and right_w > 0:
+                # Skip candidates violating min_samples_leaf (see the
+                # classification sweep) so a valid split isn't discarded.
+                if left_w >= min_leaf and right_w >= min_leaf:
                     var_left = max(0.0, left_wyy / left_w - (left_wy / left_w) ** 2)
                     right_wy = total_wy - left_wy
                     right_wyy = total_wyy - left_wyy
@@ -609,6 +646,8 @@ class Native(Trainer):
 
         left_count = sum(tree.counts[i] for i in left)
         right_count = total - left_count
+        if left_count < tree.min_samples_leaf or right_count < tree.min_samples_leaf:
+            return None, 0.0
         impurity1 = left_count / total * self._impurity_for_rows(
             tree, left
         ) + right_count / total * self._impurity_for_rows(tree, right)
@@ -637,6 +676,8 @@ class Native(Trainer):
 
         in_count = sum(tree.counts[i] for i in inside)
         out_count = total - in_count
+        if in_count < tree.min_samples_leaf or out_count < tree.min_samples_leaf:
+            return None, 0.0
         impurity1 = in_count / total * self._impurity_for_rows(
             tree, inside
         ) + out_count / total * self._impurity_for_rows(tree, outside)
