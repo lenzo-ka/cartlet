@@ -456,7 +456,18 @@ class DecisionTree(BaseModel):
             if oov_features:
                 raise ValueError(f"OOV values for features: {oov_features}")
 
-        # Evaluate using the nested-list tree interpreter from utils
+        return self._eval_normalized(normalized, return_dist)
+
+    def _eval_normalized(
+        self, normalized: list[Any], return_dist: bool = False
+    ) -> Any | dict[str, float] | float:
+        """Evaluate an already-normalized vector against this tree.
+
+        Split out from ``predict`` so a RandomForest can normalize the input
+        once and reuse it across all trees instead of re-normalizing per tree.
+        """
+        if self.model is None:
+            raise ValueError("Model not trained. Call train() first.")
         return eval_tree(self.model, normalized, self.name_to_col, return_dist)
 
     def _check_oov(self, vector: list[Any]) -> list[tuple[str, Any]]:

@@ -410,7 +410,10 @@ class RandomForest(BaseModel):
         if not self.trees:
             raise ValueError("Forest not trained. Call train() first.")
 
-        predictions = [tree.predict(vector) for tree in self.trees]
+        # All trees share the same feature schema, so normalize the input once
+        # and reuse it across every tree rather than re-normalizing per tree.
+        normalized = self.trees[0]._normalize_vector(vector)
+        predictions = [t._eval_normalized(normalized) for t in self.trees]
 
         if self._is_regression():
             # In regression mode, predictions are numeric (mypy can't infer from runtime check)
@@ -437,7 +440,8 @@ class RandomForest(BaseModel):
         if self._is_regression():
             raise ValueError("predict_proba not available for regression")
 
-        predictions = [tree.predict(vector) for tree in self.trees]
+        normalized = self.trees[0]._normalize_vector(vector)
+        predictions = [t._eval_normalized(normalized) for t in self.trees]
         votes = Counter(predictions)
         total = len(predictions)
         return {cls: count / total for cls, count in votes.items()}
