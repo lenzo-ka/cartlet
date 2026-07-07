@@ -43,6 +43,7 @@ from .types import (
     normalize_bool,
 )
 from .utils import (
+    collapse_distributions,
     count_nodes,
     eval_tree,
 )
@@ -601,10 +602,15 @@ class DecisionTree(BaseModel):
 
         write_with_optional_gzip(path, use_gzip, _write)
 
-    def _build_export_dict(self, metadata: dict | None = None) -> dict:
+    def _build_export_dict(
+        self, metadata: dict | None = None, store_distributions: bool = True
+    ) -> dict:
         """Build dictionary for JSON/pickle export."""
+        model = self.model
+        if not store_distributions:
+            model = collapse_distributions(model)
         return {
-            "model": self.model,
+            "model": model,
             "feature_specs": self._serialize_feature_specs(),
             "feature_names": self.feature_names,
             "task": self._effective_task(),

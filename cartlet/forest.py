@@ -28,6 +28,7 @@ from .types import (
     TASK_REGRESSION,
     TYPE_NUM,
 )
+from .utils import collapse_distributions
 
 # Verbose log cadence: print progress every Nth tree.
 _VERBOSE_TREE_INTERVAL = 10
@@ -495,10 +496,15 @@ class RandomForest(BaseModel):
 
         write_with_optional_gzip(path, use_gzip, _write)
 
-    def _build_export_dict(self, metadata: dict | None = None) -> dict:
+    def _build_export_dict(
+        self, metadata: dict | None = None, store_distributions: bool = True
+    ) -> dict:
         """Build dictionary for JSON/pickle export."""
+        trees = [tree.model for tree in self.trees]
+        if not store_distributions:
+            trees = [collapse_distributions(t) for t in trees]
         return {
-            "trees": [tree.model for tree in self.trees],
+            "trees": trees,
             "feature_specs": self._serialize_feature_specs(),
             "feature_names": self.feature_names,
             "task": self._effective_task(),

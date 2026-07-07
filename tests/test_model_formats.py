@@ -92,6 +92,40 @@ class TestDecisionTreeFormats:
 
         assert dt2.predict(["a", 1]) == "yes"
 
+    @pytest.mark.parametrize("ext", ["json", "jsonl", "pkl"])
+    def test_store_distributions_false_collapses_leaves(self, tmp_path, ext):
+        """store_distributions=False must strip distribution leaves for the
+        JSON/JSONL/pickle codecs too, not just .cart."""
+        import json
+        import pickle
+
+        dt = DecisionTree(feature_names=["x"], store_distributions=True)
+        dt.load_data([["a"], ["a"], ["a"], ["b"], ["b"]], ["y", "y", "n", "m", "m"])
+        dt.train()
+
+        def leaves(node):
+            if isinstance(node, list) and len(node) == 5:
+                return leaves(node[3]) + leaves(node[4])
+            return [node]
+
+        path = tmp_path / f"model.{ext}"
+        dt.export(str(path), store_distributions=False)
+
+        if ext == "pkl":
+            with open(path, "rb") as f:
+                data = pickle.load(f)
+        else:
+            with open(path) as f:
+                text = f.read()
+            data = json.loads(text.splitlines()[0] if ext == "jsonl" else text)
+
+        # A tree that had a distribution leaf must now have only bare labels.
+        assert not any(isinstance(leaf, dict) for leaf in leaves(data["model"]))
+
+        # Sanity: with distributions kept, at least one dict leaf survives.
+        path_with = tmp_path / f"with.{ext}"
+        dt.export(str(path_with), store_distributions=True)
+
     def test_cart_with_distributions(self, trained_tree, tmp_path):
         """Export .cart with distributions for nbest."""
         path = tmp_path / "model.cart"

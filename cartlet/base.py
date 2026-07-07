@@ -216,8 +216,14 @@ class BaseModel(ABC):
     ): ...
 
     @abstractmethod
-    def _build_export_dict(self, metadata: dict | None = None) -> dict: ...
+    def _build_export_dict(
+        self, metadata: dict | None = None, store_distributions: bool = True
+    ) -> dict: ...
 
+    # Note: gzip for these text/binary codecs is driven by a trailing ``.gz`` on
+    # ``path`` (open_file/open_file_binary sniff it), which resolve_format keeps
+    # in lockstep with ``use_gzip``. The ``use_gzip`` parameter is accepted for a
+    # uniform dispatch signature across all codecs.
     def _export_json(
         self,
         path: str,
@@ -226,7 +232,7 @@ class BaseModel(ABC):
         store_distributions: bool = True,
     ) -> None:
         """Export to JSON format."""
-        data = self._build_export_dict(metadata)
+        data = self._build_export_dict(metadata, store_distributions)
         with open_file(path, "w") as f:
             json.dump(data, f, indent=2)
 
@@ -238,7 +244,7 @@ class BaseModel(ABC):
         store_distributions: bool = True,
     ) -> None:
         """Export to JSON Lines format."""
-        data = self._build_export_dict(metadata)
+        data = self._build_export_dict(metadata, store_distributions)
         with open_file(path, "w") as f:
             f.write(json.dumps(data) + "\n")
 
@@ -250,7 +256,7 @@ class BaseModel(ABC):
         store_distributions: bool = True,
     ) -> None:
         """Export to pickle format."""
-        data = self._build_export_dict(metadata)
+        data = self._build_export_dict(metadata, store_distributions)
         with open_file_binary(path, "wb") as f:
             pickle.dump(data, f)
 
