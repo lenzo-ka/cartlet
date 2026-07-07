@@ -191,7 +191,7 @@ class Native(Trainer):
             model = self._prune_with_validation(tree, model, train_rows, val_rows)
 
         # Store computed feature importances on the tree
-        tree._feature_importances = self._normalize_importances()
+        tree.set_feature_importances(self._normalize_importances())
 
         return model
 

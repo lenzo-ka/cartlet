@@ -304,14 +304,16 @@ class Sklearn(Trainer):
         sklearn_tree.fit(X_encoded, y_train, sample_weight=weights)
 
         # Store sklearn model for potential export
-        tree._sklearn_model = sklearn_tree
+        tree.set_sklearn_model(sklearn_tree)
 
         # Store feature importances (mapped to original features)
-        tree._feature_importances = map_feature_importances(
-            list(sklearn_tree.feature_importances_),
-            tree.feature_names,
-            cat_cols,
-            cat_vals,
+        tree.set_feature_importances(
+            map_feature_importances(
+                list(sklearn_tree.feature_importances_),
+                tree.feature_names,
+                cat_cols,
+                cat_vals,
+            )
         )
 
         # Convert to our format
