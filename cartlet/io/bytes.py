@@ -330,8 +330,9 @@ class ByteWriter:
         # Add class labels to string table
         class_indices = [self._add_string(str(c)) for c in class_labels]
 
-        # Build string table
-        string_data = b""
+        # Build string table into a bytearray so appends are amortized O(1)
+        # (bytes concatenation in a loop is O(n^2) for large string pools).
+        string_data = bytearray()
         string_offsets: list[int] = []
         for s in self.strings:
             string_offsets.append(len(string_data))
