@@ -24,11 +24,17 @@ from .evaluation import (
     evaluate_predictions,
     evaluate_tree,
     per_class_metrics,
+    regression_metrics,
 )
 from .forest import RandomForest
 from .io import open_file, open_file_binary
 from .io.bytes import bundle
-from .io.cart_format import FLAG_IS_FOREST, HEADER_SIZE, MAGIC, OFF_FLAGS
+
+# Aliased to underscores: these are binary-format internals, not public API.
+from .io.cart_format import FLAG_IS_FOREST as _FLAG_IS_FOREST
+from .io.cart_format import HEADER_SIZE as _HEADER_SIZE
+from .io.cart_format import MAGIC as _MAGIC
+from .io.cart_format import OFF_FLAGS as _OFF_FLAGS
 from .io.utils import require_joblib, resolve_format
 from .isolation import IsolationForest
 from .runner import (
@@ -151,11 +157,11 @@ def _detect_is_forest(path: str, format: str | None = None) -> bool:
         # supervised RandomForest. No isolation-vs-supervised disambiguation
         # is needed here.
         with open_file_binary(path, "rb") as f:
-            header = f.read(HEADER_SIZE)
-        if header[:4] != MAGIC:
+            header = f.read(_HEADER_SIZE)
+        if header[:4] != _MAGIC:
             raise ValueError(f"Invalid model file (missing CART magic): {path}")
-        flags = struct.unpack_from("<H", header, OFF_FLAGS)[0]
-        return bool(flags & FLAG_IS_FOREST)
+        flags = struct.unpack_from("<H", header, _OFF_FLAGS)[0]
+        return bool(flags & _FLAG_IS_FOREST)
 
     if ext in (".json", ".jsonl", ".pkl", ".pickle"):
         # Read just enough to classify
@@ -233,6 +239,7 @@ __all__ = [
     "evaluate_predictions",
     "evaluate_tree",
     "per_class_metrics",
+    "regression_metrics",
     # Tree utilities
     "count_leaves",
     "count_nodes",

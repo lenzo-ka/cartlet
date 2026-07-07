@@ -15,6 +15,24 @@ from cartlet.runner import load_model, predict
 _SKLEARN_MISSING = importlib.util.find_spec("sklearn") is None
 
 
+class TestPublicNamespace:
+    """W4-8: public API hygiene of the top-level cartlet namespace."""
+
+    def test_regression_metrics_is_public(self):
+        import cartlet
+
+        assert hasattr(cartlet, "regression_metrics")
+        assert "regression_metrics" in cartlet.__all__
+        m = cartlet.regression_metrics([1.0, 2.0, 3.0], [1.0, 2.0, 3.0])
+        assert m["mae"] == 0.0
+
+    def test_format_internals_not_leaked(self):
+        import cartlet
+
+        for name in ("MAGIC", "HEADER_SIZE", "OFF_FLAGS", "FLAG_IS_FOREST"):
+            assert not hasattr(cartlet, name), f"{name} should not be public"
+
+
 class TestMalformedModelFiles:
     """Test handling of malformed .cart model files."""
 
