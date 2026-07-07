@@ -67,6 +67,8 @@ class TestXGBoostTree:
         assert "n_trees" in result
         assert result["n_trees"] > 0
         assert xgb_model._xgb_model is not None
+        # The trained model must actually predict a valid class label.
+        assert xgb_model.predict(["red", "small"]) in ("a", "b")
 
     def test_train_regression(self, regression_data):
         """Test training a regression model."""
@@ -82,6 +84,10 @@ class TestXGBoostTree:
 
         assert "n_trees" in result
         assert result["n_trees"] > 0
+        # Prediction is a float roughly within the training-target range [1.5, 4.5].
+        pred = xgb_model.predict([2.0, 3.0])
+        assert isinstance(pred, float)
+        assert 0.0 <= pred <= 6.0
 
     def test_predict_classification(self, classification_data):
         """Test prediction for classification."""
@@ -128,6 +134,14 @@ class TestXGBoostTree:
         xgb_model.export(path)
         assert os.path.exists(path)
         assert os.path.getsize(path) > 0
+
+        # Roundtrip: the runner reading the .cart must agree with the model's
+        # own predictions on every training row (classification labels).
+        from cartlet import Predictor
+
+        runner = Predictor(path)
+        for row in X:
+            assert runner.predict(row) == xgb_model.predict(row)
 
     def test_export_xgb(self, classification_data, tmp_path):
         """Test exporting to native .xgb format."""
