@@ -835,8 +835,9 @@ def show_info(model):
 
 
 def main():
-    embedded_model = load_embedded()
-    has_embedded = embedded_model is not None
+    # Only detect the embedded marker here; defer the (potentially large)
+    # base64-decode + parse until we know no -m/positional model overrides it.
+    has_embedded = "_EMBEDDED_MODEL_B64" in globals()
 
     parser = argparse.ArgumentParser(
         description="Predict using a .cart decision tree model.",
@@ -919,7 +920,7 @@ Examples:
     if model_file:
         model = load_cart(model_file)
     elif has_embedded:
-        model = embedded_model
+        model = load_embedded()
     else:
         parser.error(
             "No model specified. Use -m MODEL or provide model.cart as first argument."

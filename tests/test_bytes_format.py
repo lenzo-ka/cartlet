@@ -213,6 +213,44 @@ class TestBundledRunner:
             assert result.returncode == 0
             assert result.stdout.strip() == "apple"
 
+    def test_strip_cli_preserves_predict_py_layout(self):
+        """_strip_cli_code must keep every top-level library symbol and drop
+        only the CLI (W1-L4).
+
+        The resume-on-top-level-def/class rule silently deletes anything that
+        follows ``def main(`` up to EOF, so if predict.py ever grows a
+        top-level symbol below main() this pins the layout and fails loudly.
+        """
+        import ast
+        import pathlib
+
+        from cartlet.io.bytes import _strip_cli_code
+
+        src = pathlib.Path("cartlet/bundled/predict.py").read_bytes()
+        stripped = _strip_cli_code(src)
+
+        # Result must still be valid Python.
+        tree = ast.parse(stripped)
+        stripped_defs = {
+            n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.ClassDef))
+        }
+
+        orig = ast.parse(src)
+        orig_defs = {
+            n.name for n in orig.body if isinstance(n, (ast.FunctionDef, ast.ClassDef))
+        }
+
+        # Exactly main() is removed; every other top-level def/class survives.
+        assert "main" in orig_defs
+        assert stripped_defs == orig_defs - {"main"}
+
+        # Core library API is intact; CLI entrypoint is gone.
+        for sym in ("Predictor", "load_cart", "load_cart_from_bytes", "predict"):
+            assert sym in stripped_defs
+        text = stripped.decode("utf-8")
+        assert "def main(" not in text
+        assert '__name__ == "__main__"' not in text
+
 
 class TestPythonRunnerRegression:
     """Verify the Python runner handles regression trees end-to-end."""
