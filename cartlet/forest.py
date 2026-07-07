@@ -230,7 +230,7 @@ class RandomForest(BaseModel):
             n_jobs: Parallel jobs for sklearn (None/1 = sequential, -1 = all cores)
 
         Returns:
-            Dict with training info
+            ``{"n_estimators": <int>}`` — the number of trees trained.
         """
         if not self.X:
             raise ValueError("No training data loaded. Call load_data() first.")

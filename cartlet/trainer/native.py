@@ -472,8 +472,16 @@ class Native(Trainer):
     ) -> tuple[Any, float]:
         """Find the best value for a categorical feature (equality split).
 
-        Dispatches to the exact (rescan, byte-identical) or fast (single-pass
-        aggregates) strategy per ``self.categorical_split``.
+        Dispatches on ``self.categorical_split``:
+        - ``"exact"`` (default): for each distinct value, materialise the
+          ``outside`` partition and rescan both sides' impurity. This is
+          O(n * distinct_values) but fully reproducible (byte-identical to the
+          historical behaviour).
+        - ``"fast"``: accumulate per-value class counts / weighted moments in a
+          single pass and derive ``outside = total - inside`` -- O(n +
+          distinct_values * classes). Best for high-cardinality features; can
+          pick a different split on exact gain ties.
+        Tie-break in both: first-seen value wins via strict ``gain > best_gain``.
         """
         if impurity0 is None:
             impurity0 = self._impurity_for_rows(tree, row_ids)

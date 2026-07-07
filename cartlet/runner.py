@@ -119,7 +119,25 @@ def load_model(path: str) -> ModelData:
 
 
 def _load_cart_from_bytes(data: bytes) -> dict[str, Any]:
-    """Load model from bytes, return model dict."""
+    """Parse ``.cart`` bytes into the model dict consumed by ``predict``.
+
+    Returned keys:
+      - ``meta``: ``{"features": [...], "task": str, "metadata": dict}`` where
+        each feature is ``{"name", "type", "values"}``.
+      - ``class_labels``: list[str] (classification).
+      - ``floats`` / ``cat_vals`` / ``strings``: the deduped value pools.
+      - ``decisions`` / ``leaves`` / ``distributions`` / ``case_tables``: the
+        flat node tables (case tables carry both raw ``cases`` and a resolved
+        ``lookup``; see ``_parse_case_tables``).
+      - ``tree_offsets``: per-tree start index into ``decisions``/``leaves``.
+      - ``is_regression`` / ``is_forest`` / ``is_xgboost`` /
+        ``has_distributions``: bool flags; ``n_trees``: int; ``version``: int.
+
+    Note: the bundled runner (``cartlet/bundled/predict.py``) returns a
+    deliberately flatter dict (feature list at the top level, not under
+    ``meta``); the two are kept behaviourally in lockstep but not
+    key-for-key identical.
+    """
     if len(data) < HEADER_SIZE:
         raise ValueError(
             f"File too small ({len(data)} bytes), minimum header is {HEADER_SIZE} bytes"
