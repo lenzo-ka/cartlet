@@ -668,7 +668,8 @@ class Native(Trainer):
         if min_val == max_val:
             return None, 0.0
 
-        assert self._rng is not None
+        if self._rng is None:  # only reached via extra_trees/max_features paths
+            raise RuntimeError("random generator not initialized for random split")
         threshold = self._rng.uniform(min_val, max_val)
 
         total = sum(tree.counts[i] for i in row_ids)
@@ -698,7 +699,8 @@ class Native(Trainer):
         if len(values) <= 1:
             return None, 0.0
 
-        assert self._rng is not None
+        if self._rng is None:  # only reached via extra_trees/max_features paths
+            raise RuntimeError("random generator not initialized for random split")
         value = self._rng.choice(values)
 
         total = sum(tree.counts[i] for i in row_ids)
