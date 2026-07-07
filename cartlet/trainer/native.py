@@ -23,6 +23,9 @@ from ..utils import is_leaf
 from .base import Trainer, make_classification_distribution, normalize_importances
 
 _PROGRESS_INTERVAL_SEC = 30
+# Sample the wall clock only once every N nodes built, so verbose progress
+# logging costs one time() syscall per N nodes rather than one per node.
+_PROGRESS_CHECK_NODES = 2048
 
 # Hard ceiling on native tree depth when no max_depth is set. Real trees are
 # rarely deeper than a few dozen levels; hitting this means degenerate data.
@@ -201,18 +204,19 @@ class Native(Trainer):
     ) -> str | dict[str, float] | list[Any]:
         """Recursively build a subtree for the given row indices."""
         self._nodes_built += 1
-        current_time = time()
-        if (
-            tree.verbose
-            and current_time - self._last_progress_time > _PROGRESS_INTERVAL_SEC
-        ):
-            elapsed = current_time - self._tree_start_time
-            tree.logger.info(
-                "  Progress: %d nodes built (%.1f sec elapsed)",
-                self._nodes_built,
-                elapsed,
-            )
-            self._last_progress_time = current_time
+        # Progress logging only matters in verbose mode; avoid a time() syscall
+        # on every single node by sampling the clock every _PROGRESS_CHECK_NODES
+        # nodes (the 30s interval is still what actually gates a log line).
+        if tree.verbose and self._nodes_built % _PROGRESS_CHECK_NODES == 0:
+            current_time = time()
+            if current_time - self._last_progress_time > _PROGRESS_INTERVAL_SEC:
+                elapsed = current_time - self._tree_start_time
+                tree.logger.info(
+                    "  Progress: %d nodes built (%.1f sec elapsed)",
+                    self._nodes_built,
+                    elapsed,
+                )
+                self._last_progress_time = current_time
 
         total = self._sum_counts(tree, row_ids)
 

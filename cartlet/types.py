@@ -188,11 +188,19 @@ _BOOL_FALSE = {False, "0", "false", "False", "FALSE", "no", "No", "NO"}
 
 
 def normalize_bool(value: Any) -> int:
-    """Normalize boolean-like values to 0 or 1."""
-    if value in _BOOL_TRUE:
-        return 1
-    if value in _BOOL_FALSE:
-        return 0
+    """Normalize boolean-like values to 0 or 1.
+
+    Always raises ``ValueError`` for anything not recognized as a bool,
+    including unhashable inputs (which would otherwise leak a ``TypeError``
+    from the set-membership test).
+    """
+    try:
+        if value in _BOOL_TRUE:
+            return 1
+        if value in _BOOL_FALSE:
+            return 0
+    except TypeError:
+        pass  # unhashable value -> not a valid bool
     raise ValueError(f"Cannot convert {value!r} to bool")
 
 
