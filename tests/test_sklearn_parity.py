@@ -274,11 +274,8 @@ class TestFeatureImportanceParity:
 class TestRunnerVsSklearn:
     """Verify our runner produces identical predictions to sklearn."""
 
-    def test_decision_tree_runner_matches_sklearn(self):
+    def test_decision_tree_runner_matches_sklearn(self, tmp_path):
         """Runner predictions should match sklearn's raw predictions exactly."""
-        import os
-        import tempfile
-
         from cartlet import DecisionTree, load_model, predict
 
         data = load_iris()
@@ -298,31 +295,23 @@ class TestRunnerVsSklearn:
         sklearn_preds = [dt.predict(x) for x in X]
 
         # Export to .cart and load with runner
-        with tempfile.NamedTemporaryFile(suffix=".cart", delete=False) as f:
-            cart_path = f.name
+        cart_path = str(tmp_path / "m.cart")
+        dt.export(cart_path)
+        model = load_model(cart_path)
 
-        try:
-            dt.export(cart_path)
-            model = load_model(cart_path)
+        # Get runner predictions
+        runner_preds = [predict(model, x) for x in X]
 
-            # Get runner predictions
-            runner_preds = [predict(model, x) for x in X]
+        # Should be identical
+        mismatches = sum(
+            1 for s, r in zip(sklearn_preds, runner_preds, strict=False) if s != r
+        )
+        assert mismatches == 0, (
+            f"Runner disagrees with sklearn on {mismatches}/{len(X)} samples"
+        )
 
-            # Should be identical
-            mismatches = sum(
-                1 for s, r in zip(sklearn_preds, runner_preds, strict=False) if s != r
-            )
-            assert mismatches == 0, (
-                f"Runner disagrees with sklearn on {mismatches}/{len(X)} samples"
-            )
-        finally:
-            os.unlink(cart_path)
-
-    def test_random_forest_runner_matches_sklearn(self):
+    def test_random_forest_runner_matches_sklearn(self, tmp_path):
         """Forest runner predictions should match sklearn's raw predictions."""
-        import os
-        import tempfile
-
         from cartlet import RandomForest, load_model, predict
 
         data = load_wine()
@@ -342,22 +331,17 @@ class TestRunnerVsSklearn:
         sklearn_preds = [rf.predict(x) for x in X]
 
         # Export to .cart and load with runner
-        with tempfile.NamedTemporaryFile(suffix=".cart", delete=False) as f:
-            cart_path = f.name
+        cart_path = str(tmp_path / "rf.cart")
+        rf.export(cart_path)
+        model = load_model(cart_path)
 
-        try:
-            rf.export(cart_path)
-            model = load_model(cart_path)
+        # Get runner predictions
+        runner_preds = [predict(model, x) for x in X]
 
-            # Get runner predictions
-            runner_preds = [predict(model, x) for x in X]
-
-            # Should be identical
-            mismatches = sum(
-                1 for s, r in zip(sklearn_preds, runner_preds, strict=False) if s != r
-            )
-            assert mismatches == 0, (
-                f"Runner disagrees with sklearn on {mismatches}/{len(X)} samples"
-            )
-        finally:
-            os.unlink(cart_path)
+        # Should be identical
+        mismatches = sum(
+            1 for s, r in zip(sklearn_preds, runner_preds, strict=False) if s != r
+        )
+        assert mismatches == 0, (
+            f"Runner disagrees with sklearn on {mismatches}/{len(X)} samples"
+        )

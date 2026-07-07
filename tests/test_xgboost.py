@@ -1,7 +1,6 @@
 """Tests for XGBoost integration."""
 
 import os
-import tempfile
 
 import pytest
 
@@ -114,7 +113,7 @@ class TestXGBoostTree:
         assert len(proba) == 2  # Binary classification
         assert abs(sum(proba.values()) - 1.0) < 0.001  # Probabilities sum to 1
 
-    def test_export_cart(self, classification_data):
+    def test_export_cart(self, classification_data, tmp_path):
         """Test exporting to .cart format."""
         X, y = classification_data
         xgb_model = XGBoostTree(
@@ -125,18 +124,12 @@ class TestXGBoostTree:
         xgb_model.load_data(X, y)
         xgb_model.train(random_state=42)
 
-        with tempfile.NamedTemporaryFile(suffix=".cart", delete=False) as f:
-            path = f.name
+        path = str(tmp_path / "m.cart")
+        xgb_model.export(path)
+        assert os.path.exists(path)
+        assert os.path.getsize(path) > 0
 
-        try:
-            xgb_model.export(path)
-            assert os.path.exists(path)
-            assert os.path.getsize(path) > 0
-        finally:
-            if os.path.exists(path):
-                os.unlink(path)
-
-    def test_export_xgb(self, classification_data):
+    def test_export_xgb(self, classification_data, tmp_path):
         """Test exporting to native .xgb format."""
         X, y = classification_data
         xgb_model = XGBoostTree(
@@ -147,18 +140,12 @@ class TestXGBoostTree:
         xgb_model.load_data(X, y)
         xgb_model.train(random_state=42)
 
-        with tempfile.NamedTemporaryFile(suffix=".xgb", delete=False) as f:
-            path = f.name
+        path = str(tmp_path / "m.xgb")
+        xgb_model.export(path)
+        assert os.path.exists(path)
+        assert os.path.getsize(path) > 0
 
-        try:
-            xgb_model.export(path)
-            assert os.path.exists(path)
-            assert os.path.getsize(path) > 0
-        finally:
-            if os.path.exists(path):
-                os.unlink(path)
-
-    def test_load_xgb(self, classification_data):
+    def test_load_xgb(self, classification_data, tmp_path):
         """Test loading from native .xgb format."""
         X, y = classification_data
         xgb_model = XGBoostTree(
@@ -169,18 +156,12 @@ class TestXGBoostTree:
         xgb_model.load_data(X, y)
         xgb_model.train(random_state=42)
 
-        with tempfile.NamedTemporaryFile(suffix=".xgb", delete=False) as f:
-            path = f.name
+        path = str(tmp_path / "m.xgb")
+        xgb_model.export(path)
 
-        try:
-            xgb_model.export(path)
-
-            # Load it back
-            loaded = XGBoostTree.load(path)
-            assert loaded._xgb_model is not None
-        finally:
-            if os.path.exists(path):
-                os.unlink(path)
+        # Load it back
+        loaded = XGBoostTree.load(path)
+        assert loaded._xgb_model is not None
 
     def test_mixed_features(self, mixed_data):
         """Test with mixed categorical and numerical features."""
@@ -196,7 +177,7 @@ class TestXGBoostTree:
         pred = xgb_model.predict(["red", 1.5])
         assert pred in ["yes", "no"]
 
-    def test_cart_format_runner_compatible(self, classification_data):
+    def test_cart_format_runner_compatible(self, classification_data, tmp_path):
         """Test that .cart export can be loaded by minimal runner."""
         X, y = classification_data
         xgb_model = XGBoostTree(
@@ -207,25 +188,19 @@ class TestXGBoostTree:
         xgb_model.load_data(X, y)
         xgb_model.train(random_state=42)
 
-        with tempfile.NamedTemporaryFile(suffix=".cart", delete=False) as f:
-            path = f.name
+        path = str(tmp_path / "m.cart")
+        xgb_model.export(path)
 
-        try:
-            xgb_model.export(path)
+        # Try to load with minimal runner
+        from cartlet import load_model
 
-            # Try to load with minimal runner
-            from cartlet import load_model
+        model = load_model(path)
+        assert model is not None
+        assert model.get("is_xgboost", False) is True
+        # base_score round-trips through the trailing metadata blob
+        assert model["meta"]["metadata"].get("base_score") == xgb_model.base_score
 
-            model = load_model(path)
-            assert model is not None
-            assert model.get("is_xgboost", False) is True
-            # base_score round-trips through the trailing metadata blob
-            assert model["meta"]["metadata"].get("base_score") == xgb_model.base_score
-        finally:
-            if os.path.exists(path):
-                os.unlink(path)
-
-    def test_runner_base_score_parity_regression(self, regression_data):
+    def test_runner_base_score_parity_regression(self, regression_data, tmp_path):
         """Runner predictions must match XGBoostTree.predict for regression,
         which exercises the base_score additive offset (the runner used to
         hardcode 0.0 here)."""
@@ -239,25 +214,19 @@ class TestXGBoostTree:
         xgb_model.load_data(X, y)
         xgb_model.train(random_state=42)
 
-        with tempfile.NamedTemporaryFile(suffix=".cart", delete=False) as f:
-            path = f.name
+        path = str(tmp_path / "m.cart")
+        xgb_model.export(path)
+        from cartlet import Predictor
 
-        try:
-            xgb_model.export(path)
-            from cartlet import Predictor
-
-            p = Predictor(path)
-            for x in X[:10]:
-                native = xgb_model.predict(x)
-                runner = p.predict(x)
-                # XGBoost adds base_score as raw-score offset; values can
-                # differ slightly due to float32 round-trip in .cart.
-                assert abs(native - runner) < 1e-3, (
-                    f"diverged for {x}: native={native} runner={runner}"
-                )
-        finally:
-            if os.path.exists(path):
-                os.unlink(path)
+        p = Predictor(path)
+        for x in X[:10]:
+            native = xgb_model.predict(x)
+            runner = p.predict(x)
+            # XGBoost adds base_score as raw-score offset; values can
+            # differ slightly due to float32 round-trip in .cart.
+            assert abs(native - runner) < 1e-3, (
+                f"diverged for {x}: native={native} runner={runner}"
+            )
 
     def test_xgboost_export_rejects_unsupported_extensions(
         self, classification_data, tmp_path
