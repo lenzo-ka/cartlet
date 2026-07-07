@@ -117,6 +117,25 @@ class TestMinSamplesLeafEdgeCases:
         # With weight 5 each, splitting would give < 10 per leaf
         assert dt.get_depth() == 0
 
+    def test_min_samples_split_uses_weighted_counts(self):
+        """min_samples_split must be gated on weighted totals, consistently.
+
+        The best-split search re-checked min_samples_split against the *raw*
+        row count while the build loop used the *weighted* total. For
+        instance-weighted data with few rows but large weights, this could
+        wrongly veto a valid split. Two rows weighted 5 each (total 10) should
+        satisfy min_samples_split=3 and split.
+        """
+        dt = DecisionTree(feature_names=["x"], min_samples_split=3, min_samples_leaf=1)
+        X = [["a"], ["b"]]
+        y = ["X", "Y"]
+        counts = [5, 5]  # weighted total 10 >= 3, raw rows 2 < 3
+        dt.load_data(X, y, counts)
+        dt.train(trainer="native")
+
+        assert dt.predict(["a"]) == "X"
+        assert dt.predict(["b"]) == "Y"
+
     def test_min_samples_leaf_falls_back_to_valid_split(self):
         """A min_samples_leaf-violating best split must not veto a valid one.
 
@@ -143,6 +162,29 @@ class TestMinSamplesLeafEdgeCases:
         assert count_nodes(dt.model) > 1
         # And the majority class is still recovered on the clean side.
         assert dt.predict([5.0]) == "A"
+
+
+class TestCriterionValidation:
+    """The native trainer should reject unknown split criteria, not silently
+    fall back to entropy."""
+
+    def test_native_rejects_unknown_criterion(self):
+        from cartlet.trainer import Native
+
+        with pytest.raises(ValueError, match="Unknown criterion"):
+            Native(criterion="informationgain")
+
+    def test_decision_tree_bad_criterion_raises_on_train(self):
+        dt = DecisionTree(feature_names=["x"], criterion="nope")
+        dt.load_data([["a"], ["b"]], ["1", "2"])
+        with pytest.raises(ValueError, match="Unknown criterion"):
+            dt.train(trainer="native")
+
+    def test_valid_criteria_accepted(self):
+        from cartlet.trainer import Native
+
+        Native(criterion="entropy")
+        Native(criterion="gini")
 
 
 class TestMaxDepthConstraint:

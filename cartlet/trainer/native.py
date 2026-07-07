@@ -113,6 +113,11 @@ class Native(Trainer):
             criterion: Split criterion for classification ("entropy" or "gini")
             extra_trees: Use random splits instead of best splits (Extra-Trees)
         """
+        if criterion not in ("entropy", "gini"):
+            raise ValueError(
+                f"Unknown criterion {criterion!r}; expected 'entropy' or 'gini'. "
+                "(Regression always uses variance reduction regardless.)"
+            )
         self.max_depth = max_depth
         self.prune = prune
         self.random_state = random_state
@@ -691,7 +696,10 @@ class Native(Trainer):
         self, tree: DecisionTree, row_ids: set[int]
     ) -> tuple[str | None, int | None, Any | None, str, float]:
         """Find the best feature and value/threshold for splitting."""
-        if len(row_ids) < tree.min_samples_split:
+        # Weighted sample total, consistent with the min_samples_split gate in
+        # _build_tree (and with cartlet's weighted min_samples_leaf semantics).
+        # Using raw len(row_ids) here disagreed for instance-weighted data.
+        if self._sum_counts(tree, row_ids) < tree.min_samples_split:
             return None, None, None, "=", 0.0
 
         impurity0 = self._impurity_for_rows(tree, row_ids)
