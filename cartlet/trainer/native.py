@@ -23,6 +23,12 @@ from .base import Trainer, make_classification_distribution, normalize_importanc
 
 _PROGRESS_INTERVAL_SEC = 30
 
+# Hard ceiling on native tree depth when no max_depth is set. Real trees are
+# rarely deeper than a few dozen levels; hitting this means degenerate data.
+# Kept well below CPython's default recursion limit so build/predict/prune
+# recursion stays safe.
+_MAX_NATIVE_DEPTH = 500
+
 if TYPE_CHECKING:
     from ..tree import DecisionTree
 
@@ -192,6 +198,19 @@ class Native(Trainer):
             self._last_progress_time = current_time
 
         total = self._sum_counts(tree, row_ids)
+
+        # Guard against unbounded recursion when max_depth is None. A degenerate
+        # chain (e.g. an ID-like feature that peels off one row at a time) would
+        # otherwise recurse until Python's frame limit and crash with an opaque
+        # RecursionError -- and even if built, such a tree could not be inferred
+        # recursively. Fail early with actionable guidance instead.
+        if depth >= _MAX_NATIVE_DEPTH:
+            raise ValueError(
+                f"Tree depth exceeded {_MAX_NATIVE_DEPTH} without a max_depth "
+                "limit; this usually means near-duplicate rows or an ID-like "
+                "feature. Set max_depth or increase min_samples_leaf/"
+                "min_samples_split to bound the tree."
+            )
 
         # Early stopping conditions
         if self.max_depth is not None and depth >= self.max_depth:

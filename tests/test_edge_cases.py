@@ -220,6 +220,26 @@ class TestMaxDepthConstraint:
         # (exact depth depends on data)
         assert dt.get_depth() >= 1
 
+    def test_unbounded_depth_raises_clear_error(self, monkeypatch):
+        """With max_depth=None, a degenerate deep build must raise a clear
+        error rather than an opaque RecursionError.
+
+        The real ceiling is high; monkeypatch it low so a small dataset that
+        needs several split levels trips the guard deterministically.
+        """
+        import cartlet.trainer.native as native_mod
+
+        monkeypatch.setattr(native_mod, "_MAX_NATIVE_DEPTH", 2)
+        dt = DecisionTree(
+            features=[{"name": "x", "dtype": "float", "type": "num"}],
+            max_depth=None,
+        )
+        X = [[float(i)] for i in range(16)]
+        y = [str(i) for i in range(16)]  # all distinct -> forces depth > 2
+        dt.load_data(X, y)
+        with pytest.raises(ValueError, match="Tree depth exceeded"):
+            dt.train(trainer="native")
+
     def test_max_depth_preserved_in_export(self):
         """max_depth should be saved and restored."""
         dt = DecisionTree(feature_names=["x"], max_depth=3)
