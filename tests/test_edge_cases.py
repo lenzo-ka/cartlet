@@ -288,6 +288,31 @@ class TestSklearnTrainer:
         assert pred in ["w", "x", "y", "z"]
 
     @pytest.mark.skipif(_SKLEARN_MISSING, reason="sklearn not installed")
+    def test_sklearn_categorical_with_equals_in_name_and_value(self):
+        """One-hot decode must not parse '=' out of names/values.
+
+        The converter used to reconstruct categorical splits by splitting the
+        encoded name on '=', which mangled feature names or category values
+        that legitimately contained '='. The explicit origin map fixes this.
+        """
+        dt = DecisionTree(feature_names=["a=b"])
+        X = [["x=1"], ["x=1"], ["y=2"], ["y=2"]]
+        y = ["first", "first", "second", "second"]
+        dt.load_data(X, y)
+        dt.train(trainer="sklearn")
+
+        # The equality split must reference the true feature name and value,
+        # so routing (and therefore prediction) is correct.
+        assert dt.predict(["x=1"]) == "first"
+        assert dt.predict(["y=2"]) == "second"
+
+        # The decision node itself must carry the intact name/value.
+        node = dt.model
+        if isinstance(node, list) and node[1] == "=":
+            assert node[0] == "a=b"
+            assert node[2] in {"x=1", "y=2"}
+
+    @pytest.mark.skipif(_SKLEARN_MISSING, reason="sklearn not installed")
     def test_sklearn_numerical_features(self):
         """Sklearn with numerical features."""
         dt = DecisionTree(
