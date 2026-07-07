@@ -58,6 +58,41 @@ class TestMalformedModelFiles:
                 dt.load_model(f.name)
             os.unlink(f.name)
 
+    def _valid_model_bytes(self, tmp_path):
+        dt = DecisionTree(feature_names=["x"])
+        dt.load_data([["a"], ["b"], ["a"], ["b"]], ["1", "2", "1", "2"])
+        dt.train()
+        path = tmp_path / "m.cart"
+        dt.export(str(path))
+        return bytearray(path.read_bytes())
+
+    def test_n_trees_gt_one_without_forest_flag_rejected(self, tmp_path):
+        """n_trees > 1 with neither forest nor xgboost flag is inconsistent (W1-L8)."""
+        import struct
+
+        raw = self._valid_model_bytes(tmp_path)
+        # n_trees is the 5th u16 after the 4-byte magic (offset 12).
+        struct.pack_into("<H", raw, 12, 2)
+        bad = tmp_path / "bad_trees.cart"
+        bad.write_bytes(raw)
+        dt = DecisionTree()
+        with pytest.raises(ValueError, match="n_trees > 1"):
+            dt.load_model(str(bad))
+
+    def test_n_dists_without_flag_rejected(self, tmp_path):
+        """n_dists > 0 with FLAG_HAS_DISTRIBUTIONS clear is inconsistent (W1-L7)."""
+        import struct
+
+        raw = self._valid_model_bytes(tmp_path)
+        # Second header group starts at offset 14; n_dists is the 5th field
+        # (I,I,I,H,H,...) -> offset 14 + 4+4+4+2 = 28.
+        struct.pack_into("<H", raw, 28, 1)
+        bad = tmp_path / "bad_dists.cart"
+        bad.write_bytes(raw)
+        dt = DecisionTree()
+        with pytest.raises(ValueError, match="FLAG_HAS_DISTRIBUTIONS"):
+            dt.load_model(str(bad))
+
 
 class TestMinSamplesLeafEdgeCases:
     """Test min_samples_leaf constraint edge cases."""

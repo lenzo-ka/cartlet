@@ -338,6 +338,17 @@ def _load_cart_from_bytes_impl(data):
     has_distributions = bool(flags & FLAG_HAS_DISTRIBUTIONS)
     is_xgboost = bool(flags & FLAG_IS_XGBOOST)
 
+    # Reject internally-inconsistent headers (kept in lockstep with runner.py).
+    if n_dists > 0 and not has_distributions:
+        raise ValueError(
+            "Inconsistent .cart header: n_dists > 0 but FLAG_HAS_DISTRIBUTIONS is clear"
+        )
+    if n_trees > 1 and not is_forest and not is_xgboost:
+        raise ValueError(
+            "Inconsistent .cart header: n_trees > 1 but neither "
+            "FLAG_IS_FOREST nor FLAG_IS_XGBOOST is set"
+        )
+
     # String table
     (n_strings,) = struct.unpack_from("<H", data, pos)
     pos += 2
