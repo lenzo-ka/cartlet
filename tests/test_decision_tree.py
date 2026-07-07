@@ -320,6 +320,86 @@ class TestPruning:
 
         assert preds_before == preds_after
 
+    def test_prune_without_split_uses_default_and_prunes(self):
+        """prune=True with no validation_split must actually prune.
+
+        Previously the default validation_split of 0.0 produced an empty
+        validation set, so pruning silently never ran. It should now fall back
+        to DEFAULT_VALIDATION_SPLIT and reduce the tree relative to unpruned.
+        """
+        from cartlet import count_nodes
+
+        X, y = self._make_noisy_data()
+
+        unpruned = DecisionTree(feature_names=["color", "size"])
+        unpruned.load_data(X, y)
+        unpruned.train(prune=False, random_state=42)
+
+        pruned = DecisionTree(feature_names=["color", "size"])
+        pruned.load_data(X, y)
+        pruned.train(prune=True, random_state=42)  # no explicit validation_split
+
+        assert count_nodes(pruned.model) < count_nodes(unpruned.model)
+
+    def test_prune_with_sklearn_backend_warns_and_noops(self, caplog):
+        """The sklearn backend cannot prune; prune=True should warn, not lie."""
+        import logging
+
+        pytest.importorskip("sklearn")
+        X, y = self._make_noisy_data()
+        dt = DecisionTree(feature_names=["color", "size"])
+        dt.load_data(X, y)
+        with caplog.at_level(logging.WARNING, logger="cartlet"):
+            dt.train(prune=True, random_state=42, trainer="sklearn")
+        assert any("does not support pruning" in rec.message for rec in caplog.records)
+        assert dt.model is not None
+
+    def test_collapsed_leaf_uses_training_majority(self):
+        """REP must label a pruned leaf from the training rows, not validation.
+
+        Standard reduced-error pruning labels the candidate leaf with the
+        node's *training* majority and uses the validation set only to accept
+        or reject the collapse. The earlier implementation both labelled and
+        scored the leaf on the validation rows, which is optimistically biased
+        and can emit a class the training data never made the majority.
+
+        This scenario is constructed so the training majority ("P") differs
+        from the validation majority ("Q") while the collapse is still
+        accepted; the pruned leaf must be "P".
+        """
+        from cartlet.trainer import Native
+
+        # 8 training rows (majority "P": 6 vs 2) and 5 validation rows
+        # (majority "Q": 3 vs 2). Every row has feature "f" == "a", so all
+        # validation rows route to the left child of the hand-built node.
+        X = [["a"]] * 13
+        y = (
+            ["P", "P", "P", "P", "P", "P", "Q", "Q"]  # train rows 0-7
+            + ["P", "P", "Q", "Q", "Q"]  # val rows 8-12
+        )
+        train_rows = list(range(8))
+        val_rows = list(range(8, 13))
+
+        dt = DecisionTree(feature_names=["f"])
+        dt.load_data(X, y)
+
+        # Children differ so the identical-branch collapse does not fire first;
+        # the collapse must be driven by the accuracy comparison.
+        model = ["f", "=", "a", "P", "Q"]
+
+        trainer = Native()
+        pruned = trainer._prune_with_validation(dt, model, train_rows, val_rows)
+
+        # The collapse must fire (a leaf, not the original decision node)...
+        from cartlet.utils import is_leaf
+
+        assert is_leaf(pruned)
+        # ...and be labelled from the training majority "P". A distribution
+        # leaf is acceptable as long as its argmax is "P"; the biased
+        # implementation returned the validation majority "Q".
+        label = max(pruned, key=pruned.get) if isinstance(pruned, dict) else pruned
+        assert label == "P"
+
 
 class TestEdgeCases:
     """Test edge cases and error handling."""

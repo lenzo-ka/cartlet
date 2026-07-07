@@ -104,7 +104,10 @@ def convert_sklearn_tree(
     Args:
         sklearn_tree: Trained sklearn tree
         feature_names: Original feature names
-        encoded_names: Encoded feature names (after one-hot)
+        encoded_names: Encoded feature names (after one-hot). Retained for
+            signature compatibility; the origin of each encoded column is now
+            reconstructed from feature_names/cat_columns/cat_values instead of
+            parsing these strings.
         cat_columns: Indices of categorical columns
         cat_values: Mapping of column index to list of category values
         classes: Class labels (for classification)
@@ -116,6 +119,20 @@ def convert_sklearn_tree(
         Tree in our nested list format
     """
     sk_tree = sklearn_tree.tree_
+
+    # Explicit encoded-column -> origin map, built in the SAME order as
+    # encode_categorical expands columns. Each entry is either
+    # (False, orig_name, None) for a numeric passthrough column or
+    # (True, orig_name, category_value) for a one-hot column. This replaces
+    # parsing "=" out of the encoded name string, which misfired when a
+    # feature name or category value legitimately contained "=".
+    encoded_meta: list[tuple[bool, Any, Any]] = []
+    for col, name in enumerate(feature_names):
+        if col in cat_columns:
+            for val in cat_values[col]:
+                encoded_meta.append((True, name, val))
+        else:
+            encoded_meta.append((False, name, None))
 
     def convert_node(node_id: int) -> Any:
         if sk_tree.children_left[node_id] == -1:
@@ -145,34 +162,18 @@ def convert_sklearn_tree(
         # Decision node
         feat_idx = sk_tree.feature[node_id]
         threshold = float(sk_tree.threshold[node_id])
-        encoded_feat_name = encoded_names[feat_idx]
+        is_cat, orig_name, cat_value = encoded_meta[feat_idx]
 
         left = convert_node(sk_tree.children_left[node_id])
         right = convert_node(sk_tree.children_right[node_id])
 
-        # Check if this is a one-hot encoded feature
-        if "=" in encoded_feat_name:
-            # One-hot: "color=red" with threshold 0.5
-            # Left (<=0.5) = NOT equal, Right (>0.5) = EQUAL
-            orig_name_str, cat_value_str = encoded_feat_name.split("=", 1)
-
-            # Try to convert back to original type (feature name and category value)
-            orig_name: Any = orig_name_str  # Default to string
-            cat_value: Any = cat_value_str  # May be replaced with original type
-            for col, name in enumerate(feature_names):
-                if str(name) == orig_name_str and col in cat_values:
-                    orig_name = name  # Preserve original type (int, str, etc.)
-                    for stored_val in cat_values[col]:
-                        if str(stored_val) == cat_value_str:
-                            cat_value = stored_val
-                            break
-                    break
-
-            # Equality split: yes=right (equal), no=left (not equal)
+        if is_cat:
+            # One-hot column "orig_name == cat_value" with threshold 0.5:
+            # left (<=0.5) = NOT equal, right (>0.5) = EQUAL. Original name and
+            # value objects are carried through directly, preserving their type.
             return [orig_name, "=", cat_value, right, left]
-        else:
-            # Numerical: standard threshold split
-            return [encoded_feat_name, "<", threshold, left, right]
+        # Numerical: standard threshold split
+        return [orig_name, "<", threshold, left, right]
 
     return convert_node(0)
 

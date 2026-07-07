@@ -1550,7 +1550,6 @@ Examples:
         column_names=False,
     )
     predict_parser.add_argument(
-        "-D",
         "--output-delimiter",
         metavar="CHAR",
         help="Output delimiter (default: same as input)",
@@ -1563,7 +1562,7 @@ Examples:
         help="Output mode: 'values', 'append', or 'inplace' (default: values)",
     )
     predict_parser.add_argument(
-        "-c",
+        "-p",
         "--prediction-column",
         default="prediction",
         metavar="NAME",

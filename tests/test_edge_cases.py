@@ -117,6 +117,75 @@ class TestMinSamplesLeafEdgeCases:
         # With weight 5 each, splitting would give < 10 per leaf
         assert dt.get_depth() == 0
 
+    def test_min_samples_split_uses_weighted_counts(self):
+        """min_samples_split must be gated on weighted totals, consistently.
+
+        The best-split search re-checked min_samples_split against the *raw*
+        row count while the build loop used the *weighted* total. For
+        instance-weighted data with few rows but large weights, this could
+        wrongly veto a valid split. Two rows weighted 5 each (total 10) should
+        satisfy min_samples_split=3 and split.
+        """
+        dt = DecisionTree(feature_names=["x"], min_samples_split=3, min_samples_leaf=1)
+        X = [["a"], ["b"]]
+        y = ["X", "Y"]
+        counts = [5, 5]  # weighted total 10 >= 3, raw rows 2 < 3
+        dt.load_data(X, y, counts)
+        dt.train(trainer="native")
+
+        assert dt.predict(["a"]) == "X"
+        assert dt.predict(["b"]) == "Y"
+
+    def test_min_samples_leaf_falls_back_to_valid_split(self):
+        """A min_samples_leaf-violating best split must not veto a valid one.
+
+        The maximum-gain threshold here isolates the single ``B`` row
+        (``x <= 1.5`` -> a pure but 1-sample leaf), which violates
+        ``min_samples_leaf=2``. A slightly-worse threshold (``x <= 2.5``)
+        yields a valid split with two rows on each side. The old code enforced
+        the leaf-size constraint only *after* choosing the best threshold, so
+        it collapsed the whole node into a single leaf; the search must instead
+        skip the violating candidate and keep the node splitting.
+        """
+        from cartlet import count_nodes
+
+        dt = DecisionTree(
+            features=[{"name": "x", "dtype": "float", "type": "num"}],
+            min_samples_leaf=2,
+        )
+        X = [[1.0], [2.0], [3.0], [4.0], [5.0]]
+        y = ["B", "A", "A", "A", "A"]
+        dt.load_data(X, y)
+        dt.train(trainer="native")
+
+        # The node kept splitting instead of collapsing to a single leaf.
+        assert count_nodes(dt.model) > 1
+        # And the majority class is still recovered on the clean side.
+        assert dt.predict([5.0]) == "A"
+
+
+class TestCriterionValidation:
+    """The native trainer should reject unknown split criteria, not silently
+    fall back to entropy."""
+
+    def test_native_rejects_unknown_criterion(self):
+        from cartlet.trainer import Native
+
+        with pytest.raises(ValueError, match="Unknown criterion"):
+            Native(criterion="informationgain")
+
+    def test_decision_tree_bad_criterion_raises_on_train(self):
+        dt = DecisionTree(feature_names=["x"], criterion="nope")
+        dt.load_data([["a"], ["b"]], ["1", "2"])
+        with pytest.raises(ValueError, match="Unknown criterion"):
+            dt.train(trainer="native")
+
+    def test_valid_criteria_accepted(self):
+        from cartlet.trainer import Native
+
+        Native(criterion="entropy")
+        Native(criterion="gini")
+
 
 class TestMaxDepthConstraint:
     """Test max_depth constraint."""
@@ -259,6 +328,31 @@ class TestSklearnTrainer:
         # Should make predictions
         pred = dt.predict(["a", "1"])
         assert pred in ["w", "x", "y", "z"]
+
+    @pytest.mark.skipif(_SKLEARN_MISSING, reason="sklearn not installed")
+    def test_sklearn_categorical_with_equals_in_name_and_value(self):
+        """One-hot decode must not parse '=' out of names/values.
+
+        The converter used to reconstruct categorical splits by splitting the
+        encoded name on '=', which mangled feature names or category values
+        that legitimately contained '='. The explicit origin map fixes this.
+        """
+        dt = DecisionTree(feature_names=["a=b"])
+        X = [["x=1"], ["x=1"], ["y=2"], ["y=2"]]
+        y = ["first", "first", "second", "second"]
+        dt.load_data(X, y)
+        dt.train(trainer="sklearn")
+
+        # The equality split must reference the true feature name and value,
+        # so routing (and therefore prediction) is correct.
+        assert dt.predict(["x=1"]) == "first"
+        assert dt.predict(["y=2"]) == "second"
+
+        # The decision node itself must carry the intact name/value.
+        node = dt.model
+        if isinstance(node, list) and node[1] == "=":
+            assert node[0] == "a=b"
+            assert node[2] in {"x=1", "y=2"}
 
     @pytest.mark.skipif(_SKLEARN_MISSING, reason="sklearn not installed")
     def test_sklearn_numerical_features(self):
