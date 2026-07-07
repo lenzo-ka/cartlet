@@ -442,6 +442,7 @@ def _create_model(
         "min_samples_split": args.min_samples_split,
         "min_samples_leaf": args.min_samples_leaf,
         "criterion": getattr(args, "criterion", "entropy"),
+        "categorical_split": getattr(args, "categorical_split", "exact"),
         "verbose": args.verbose,
     }
 
@@ -1544,6 +1545,15 @@ Examples:
         type=int,
         metavar="N",
         help="Parallel jobs for sklearn trainer only (-1=all cores; default: 1)",
+    )
+    train_parser.add_argument(
+        "--categorical-split",
+        choices=["exact", "fast"],
+        default="exact",
+        help=(
+            "Native categorical split search: 'exact' (default, reproducible) "
+            "or 'fast' (O(n), best for high-cardinality categoricals)"
+        ),
     )
     train_parser.add_argument(
         "--no-distributions",

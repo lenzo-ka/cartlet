@@ -109,6 +109,7 @@ class DecisionTree(BaseModel):
         min_dist_entropy: float = DEFAULT_MIN_DIST_ENTROPY,
         min_confidence: float = PROB_HIGH_CONFIDENCE,
         criterion: str = CRITERION_ENTROPY,
+        categorical_split: str = "exact",
         verbose: bool = False,
         logger=None,
     ):
@@ -132,6 +133,10 @@ class DecisionTree(BaseModel):
                 class label instead of the full distribution (default 0.95).
                 Set to 1.0 to always keep distributions.
             criterion: Split criterion for classification ("entropy" or "gini")
+            categorical_split: Categorical split-search strategy for the native
+                backend: "exact" (default, fully reproducible) or "fast" (O(n)
+                single pass, big win for high-cardinality categoricals; may pick
+                different splits on ties). See ``Native``.
             verbose: Enable verbose output
             logger: Custom logger (uses default if None)
         """
@@ -151,6 +156,7 @@ class DecisionTree(BaseModel):
         self.min_dist_entropy = min_dist_entropy
         self.min_confidence = min_confidence
         self.criterion = criterion
+        self.categorical_split = categorical_split
 
         # Trained model
         self.model: Any = None
@@ -397,6 +403,7 @@ class DecisionTree(BaseModel):
                 prune=prune,
                 random_state=random_state,
                 criterion=self.criterion,
+                categorical_split=self.categorical_split,
             )
         if trainer == "sklearn":
             from .trainer import Sklearn

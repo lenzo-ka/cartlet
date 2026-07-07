@@ -240,6 +240,61 @@ class TestCriterionValidation:
         Native(criterion="gini")
 
 
+class TestCategoricalSplitStrategy:
+    """The native categorical split search can run in 'exact' or 'fast' mode."""
+
+    def _data(self, task="clf"):
+        import random as stdlib_random
+
+        rng = stdlib_random.Random(0)
+        X, y = [], []
+        for _ in range(200):
+            hi = f"c{rng.randint(0, 60)}"
+            lo = rng.choice(["a", "b", "c"])
+            X.append([hi, lo])
+            if task == "clf":
+                y.append("P" if lo == "a" else "Q")
+            else:
+                y.append(float(10 if lo == "a" else 0) + rng.random())
+        specs = [
+            {"name": "hi", "dtype": "str", "type": "cat"},
+            {"name": "lo", "dtype": "str", "type": "cat"},
+        ]
+        return specs, X, y
+
+    def test_invalid_mode_raises(self):
+        from cartlet.trainer import Native
+
+        with pytest.raises(ValueError, match="categorical_split"):
+            Native(categorical_split="bogus")
+
+    def test_default_is_exact(self):
+        dt = DecisionTree(feature_names=["x"])
+        assert dt.categorical_split == "exact"
+
+    @pytest.mark.parametrize("mode", ["exact", "fast"])
+    def test_both_modes_train_and_predict(self, mode):
+        specs, X, y = self._data("clf")
+        dt = DecisionTree(features=specs, categorical_split=mode)
+        dt.load_data(X, y)
+        dt.train(trainer="native")
+        # 'lo' == "a" is a clean rule -> P, else Q; both modes must recover it.
+        assert dt.predict(["c5", "a"]) == "P"
+        assert dt.predict(["c9", "b"]) == "Q"
+
+    def test_fast_matches_exact_predictions_on_clean_data(self):
+        # On cleanly separable data the two strategies must agree on predictions
+        # (they may only diverge on gain ties, which this data avoids).
+        specs, X, y = self._data("clf")
+        preds = {}
+        for mode in ("exact", "fast"):
+            dt = DecisionTree(features=specs, categorical_split=mode)
+            dt.load_data(X, y)
+            dt.train(trainer="native")
+            preds[mode] = [dt.predict(row) for row in X]
+        assert preds["exact"] == preds["fast"]
+
+
 class TestMaxDepthConstraint:
     """Test max_depth constraint."""
 

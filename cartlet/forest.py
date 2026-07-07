@@ -68,6 +68,7 @@ class RandomForest(BaseModel):
         min_samples_split: int = DEFAULT_MIN_SAMPLES_SPLIT,
         min_samples_leaf: int = DEFAULT_MIN_SAMPLES_LEAF,
         criterion: str = CRITERION_ENTROPY,
+        categorical_split: str = "exact",
         verbose: bool = False,
         logger=None,
     ):
@@ -111,6 +112,7 @@ class RandomForest(BaseModel):
         self.min_samples_split = min_samples_split
         self.min_samples_leaf = min_samples_leaf
         self.criterion = criterion
+        self.categorical_split = categorical_split
 
         # Store feature config for creating trees
         self._features = features
@@ -298,6 +300,7 @@ class RandomForest(BaseModel):
             max_features=max_features,
             criterion=self.criterion,
             extra_trees=self.extra_trees,
+            categorical_split=self.categorical_split,
         )
 
         tree.train(trainer=tree_trainer)
