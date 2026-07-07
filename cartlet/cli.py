@@ -1370,7 +1370,21 @@ def _build_parser() -> argparse.ArgumentParser:
     """Build the CLI argument parser with all subcommands."""
     parser = argparse.ArgumentParser(
         prog="cartlet",
-        description="Decision tree training and inference CLI",
+        description=(
+            "Train, run, and convert cartlet models: decision trees, random "
+            "forests, extra-trees, and isolation forests, plus prediction, "
+            "evaluation, schema inspection, format conversion, and standalone "
+            "runner bundling."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  cartlet train data.csv -o model.cart\n"
+            "  cartlet train data.csv -o rf.cart -F -n 100   # random forest\n"
+            "  cartlet predict model.cart data.csv\n"
+            "  cartlet evaluate model.cart test.csv\n"
+            "  cartlet convert model.cart model.json\n"
+        ),
     )
     parser.add_argument(
         "--version",
@@ -1453,7 +1467,11 @@ Examples:
         help=f"Number of trees for forest (default: {DEFAULT_N_ESTIMATORS})",
     )
     train_parser.add_argument(
-        "-D", "--max-depth", type=int, metavar="N", help="Maximum tree depth"
+        "-D",
+        "--max-depth",
+        type=int,
+        metavar="N",
+        help="Maximum tree depth (default: unlimited)",
     )
     train_parser.add_argument(
         "-s",
@@ -1504,7 +1522,7 @@ Examples:
         "--random-seed",
         type=int,
         metavar="SEED",
-        help="Random seed for reproducibility",
+        help="Random seed for reproducibility (default: none / nondeterministic)",
     )
     train_parser.add_argument(
         "-C",
@@ -1525,7 +1543,7 @@ Examples:
         "--n-jobs",
         type=int,
         metavar="N",
-        help="Parallel jobs for sklearn trainer only (-1=all cores)",
+        help="Parallel jobs for sklearn trainer only (-1=all cores; default: 1)",
     )
     train_parser.add_argument(
         "--no-distributions",
@@ -1577,7 +1595,10 @@ Examples:
         "--prediction-column",
         default="prediction",
         metavar="NAME",
-        help="Column name for predictions in append mode (default: 'prediction')",
+        help=(
+            "Name of the prediction column (append mode) or JSON/JSONL key "
+            "(default: 'prediction')"
+        ),
     )
     predict_parser.add_argument(
         "-f",
@@ -1684,17 +1705,22 @@ Examples:
     )
     convert_parser.add_argument("input", help="Input model file")
     convert_parser.add_argument("output", help="Output model file")
+    _convert_formats = ["cart", "json", "jsonl", "pkl", "pickle", "skl", "joblib"]
     convert_parser.add_argument(
         "--input-format",
         dest="input_format",
+        metavar="FMT",
+        choices=_convert_formats,
         default=None,
-        help="Override input format detection (e.g. jsonl, json, cart)",
+        help="Override input format detection (default: from extension)",
     )
     convert_parser.add_argument(
         "--output-format",
         dest="output_format",
+        metavar="FMT",
+        choices=_convert_formats,
         default=None,
-        help="Override output format selection (e.g. jsonl, json, cart)",
+        help="Override output format selection (default: from extension)",
     )
     convert_parser.set_defaults(func=cmd_convert)
 
