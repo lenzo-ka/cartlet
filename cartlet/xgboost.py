@@ -102,19 +102,23 @@ class XGBoostTree(BaseModel):
         self.class_labels: list[str] = []
         self.base_score: float = _DEFAULT_BASE_SCORE
         self._xgb_model: Any = None  # Raw XGBoost Booster
+        self._warned_missing_direction = False
 
     def load_data(
         self,
         X: list[list[Any]],
         y: list[Any],
         counts: list[int] | None = None,
-    ) -> XGBoostTree:
-        """Load training data."""
+    ) -> None:
+        """Load training data.
+
+        Returns None, matching ``DecisionTree.load_data`` and
+        ``RandomForest.load_data`` (previously returned ``self``).
+        """
         self.X = list(X)
         self.y = list(y)
         self.counts = counts or [1] * len(y)
         self._infer_features()
-        return self
 
     def _infer_features(self) -> None:
         """Infer feature types from data."""
@@ -346,6 +350,25 @@ class XGBoostTree(BaseModel):
         yes_id = node.get("yes", 0)
         no_id = node.get("no", 1)
 
+        # cartlet's .cart format routes a missing/None feature to the right
+        # ("no") branch unconditionally. XGBoost stores a per-node "missing"
+        # direction; when it points at the "yes" branch, exported predictions
+        # can diverge from Booster.predict on inputs with missing features.
+        # The format can't encode per-node missing direction, so warn once.
+        missing_id = node.get("missing")
+        if (
+            missing_id is not None
+            and missing_id != no_id
+            and not self._warned_missing_direction
+        ):
+            self.logger.warning(
+                "XGBoost model routes missing values to the 'yes' branch at "
+                "some nodes; the .cart format always routes missing values "
+                "right, so predictions on inputs with missing features may "
+                "diverge from Booster.predict."
+            )
+            self._warned_missing_direction = True
+
         yes_child = None
         no_child = None
         for child in children:
@@ -400,6 +423,21 @@ class XGBoostTree(BaseModel):
         )
         return self._xgb_model.predict(dtest)[0]
 
+    def _require_class_labels(self) -> None:
+        """Fail clearly if a classification predict is attempted without labels.
+
+        ``XGBoostTree.load()`` / ``_load_pickle`` restore only the raw Booster;
+        feature specs and class labels are not persisted there, so a
+        classification predict would otherwise raise an opaque IndexError.
+        """
+        if not self.class_labels:
+            raise ValueError(
+                "This XGBoost model has no class labels. Models loaded via "
+                "XGBoostTree.load() or from a pickle do not carry feature specs "
+                "or class labels; set feature_specs and class_labels (e.g. via "
+                "load_data + train) before a classification predict."
+            )
+
     def predict(self, vector: list[Any], **kwargs: Any) -> Any:
         """
         Predict for a single feature vector.
@@ -419,6 +457,7 @@ class XGBoostTree(BaseModel):
         if self._is_regression():
             return float(pred)
 
+        self._require_class_labels()
         n_classes = len(self.class_labels)
         if n_classes == 2:
             pred_class = 1 if pred > BINARY_CLASSIFICATION_THRESHOLD else 0
@@ -440,6 +479,7 @@ class XGBoostTree(BaseModel):
         if self._is_regression():
             raise ValueError("predict_proba only available for classification")
 
+        self._require_class_labels()
         pred = self._raw_predict(vector)
 
         n_classes = len(self.class_labels)
@@ -525,8 +565,15 @@ class XGBoostTree(BaseModel):
             "Pickle, JSON Lines, and sklearn formats are not supported here."
         )
 
-    def _build_export_dict(self, metadata: dict | None = None) -> dict:
-        """Build dictionary for JSON/pickle export (not used for XGBoost's custom export)."""
+    def _build_export_dict(
+        self, metadata: dict | None = None, store_distributions: bool = True
+    ) -> dict:
+        """Build dictionary for JSON/pickle export.
+
+        ``store_distributions`` is accepted to match the base signature;
+        XGBoost leaves are raw scores, so there are no class distributions to
+        strip.
+        """
         return {
             "trees": self.trees,
             "feature_specs": self._serialize_feature_specs(),
