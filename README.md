@@ -818,4 +818,4 @@ It's a little CART (Classification And Regression Trees).
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+BSD 2-Clause License - see [LICENSE](LICENSE) for details.

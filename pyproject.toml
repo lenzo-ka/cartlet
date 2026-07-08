@@ -10,7 +10,7 @@ dynamic = ["version"]
 description = "Fast decision trees and random forests for classification and regression"
 readme = "README.md"
 requires-python = ">=3.11"
-license = "MIT"
+license = "BSD-2-Clause"
 license-files = ["LICENSE"]
 authors = [
     {name = "Kevin Lenzo", email = "kevinlenzo@gmail.com"}
