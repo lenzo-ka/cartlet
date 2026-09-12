@@ -21,6 +21,20 @@ jobs:
           python -m pip install --upgrade pip
           pip install build twine
 
+      - name: Verify release version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          python - <<'PYTHON'
+          import os
+          from cartlet import __version__
+
+          expected = f"v{__version__}"
+          actual = os.environ["RELEASE_TAG"]
+          if actual != expected:
+              raise SystemExit(f"Release tag {actual!r} does not match {expected!r}")
+          PYTHON
+
       - name: Build package
         run: python -m build
 

@@ -115,8 +115,7 @@ class TestDecisionTreeFormats:
             with open(path, "rb") as f:
                 data = pickle.load(f)
         else:
-            with open(path) as f:
-                text = f.read()
+            text = path.read_text(encoding="utf-8")
             data = json.loads(text.splitlines()[0] if ext == "jsonl" else text)
 
         # A tree that had a distribution leaf must now have only bare labels.
@@ -125,6 +124,8 @@ class TestDecisionTreeFormats:
         # Sanity: with distributions kept, at least one dict leaf survives.
         path_with = tmp_path / f"with.{ext}"
         dt.export(str(path_with), store_distributions=True)
+        with_data = DecisionTree().load_model(str(path_with))
+        assert any(isinstance(leaf, dict) for leaf in leaves(with_data["model"]))
 
     def test_cart_with_distributions(self, trained_tree, tmp_path):
         """Export .cart with distributions for nbest."""

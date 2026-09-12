@@ -2,7 +2,7 @@
 Train, export to ``.cart``, then reload via the zero-dependency Predictor.
 
 This is the deployment pattern: training uses the full cartlet package
-(which depends on sklearn/numpy), but the resulting ``.cart`` file can be
+(which uses sklearn here to load the example dataset), but the resulting ``.cart`` file can be
 served from a process that imports only ``cartlet.runner.Predictor`` --
 which has no dependencies outside the standard library.
 
@@ -13,7 +13,7 @@ config (e.g. locale, model version) alongside the model itself.
 Run::
 
     python -m examples.iris_runner_deploy
-    python -m examples.iris_runner_deploy -o /tmp/iris.cart
+    python -m examples.iris_runner_deploy -o iris.cart
 """
 
 from __future__ import annotations
@@ -50,8 +50,7 @@ def run(
     * ``accuracy`` -- in-memory test accuracy.
     * ``agreement`` -- fraction of test rows where the in-memory model
       and the reloaded ``Predictor`` produce identical labels. Should be
-      ~1.0 (a small number of boundary rows may flip because ``.cart``
-      stores thresholds as float32).
+      1.0: format 2 preserves native numerical thresholds as float64.
     * ``metadata`` -- the trailer dict read back from the exported file.
     """
     dataset = load_dataset(
@@ -75,26 +74,24 @@ def run(
         "random_state": random_state,
     }
 
-    if output is None:
-        tmpdir = tempfile.mkdtemp(prefix="cartlet_example_")
-        cart_path = str(Path(tmpdir) / "iris.cart")
-    else:
-        cart_path = output
-
-    model.export(cart_path, metadata=metadata)
-
-    predictor = Predictor(cart_path)
-    from_disk_preds = [predictor.predict(row) for row in dataset.X_test]
+    with tempfile.TemporaryDirectory(prefix="cartlet_example_") as tmpdir:
+        cart_path = output or str(Path(tmpdir) / "iris.cart")
+        model.export(cart_path, metadata=metadata)
+        predictor = Predictor(cart_path)
+        from_disk_preds = predictor.predict_batch(dataset.X_test)
 
     n = len(in_memory_preds)
-    agreements = sum(a == b for a, b in zip(in_memory_preds, from_disk_preds))
+    agreements = sum(
+        a == b for a, b in zip(in_memory_preds, from_disk_preds, strict=True)
+    )
     agreement = agreements / n if n else 1.0
 
     if not quiet:
         print_classification_report(metrics, title="In-memory test set")
         print(f"\nPredictor reload agreement: {agreements}/{n} ({agreement:.2%})")
         print(f"Predictor.metadata:        {predictor.metadata}")
-        print(f"Exported model:            {cart_path}")
+        if output is not None:
+            print(f"Exported model:            {output}")
 
     return {
         "accuracy": metrics["accuracy"],

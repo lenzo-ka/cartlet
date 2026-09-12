@@ -150,8 +150,8 @@ class TestIrisRunnerDeployExample:
     def test_export_then_predictor_agrees(self):
         result = iris_runner_deploy.run(random_state=SEED)
         assert result["accuracy"] > 0.9
-        # .cart stores thresholds as float32; allow a few boundary flips.
-        assert result["agreement"] > 0.95
+        # Format 2 preserves native thresholds exactly.
+        assert result["agreement"] == 1.0
         assert result["metadata"]["model"] == "iris-decision-tree"
         assert result["metadata"]["random_state"] == SEED
 
