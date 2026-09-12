@@ -154,7 +154,12 @@ class IsolationForest:
             return n  # leaf: number of samples
 
         n_features = len(X[0])
-        feat_id = rng.randint(0, n_features - 1)
+        candidates = [
+            i for i in range(n_features) if any(row[i] != X[0][i] for row in X[1:])
+        ]
+        if not candidates:
+            return n
+        feat_id = rng.choice(candidates)
 
         values = [row[feat_id] for row in X]
         min_val, max_val = min(values), max(values)

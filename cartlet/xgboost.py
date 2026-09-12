@@ -100,7 +100,7 @@ class XGBoostTree(BaseModel):
         # XGBoost-specific state
         self.trees: list[Any] = []
         self.class_labels: list[str] = []
-        self.base_score: float = _DEFAULT_BASE_SCORE
+        self.base_score: float | list[float] = _DEFAULT_BASE_SCORE
         self._xgb_model: Any = None  # Raw XGBoost Booster
         self._warned_missing_direction = False
 
@@ -238,7 +238,7 @@ class XGBoostTree(BaseModel):
             "n_estimators": self.n_estimators,
         }
 
-    def _extract_base_score(self) -> float:
+    def _extract_base_score(self) -> float | list[float]:
         """
         Read the trained booster's actual ``base_score`` (the additive offset
         applied to every prediction before tree contributions).
@@ -263,10 +263,11 @@ class XGBoostTree(BaseModel):
         # NOT a hex float: reading "5E-1" as hex 0x5p-1 gives 2.5, which for a
         # binary model is added as a bogus margin offset and inverts the
         # predictions.)
-        text = str(raw).strip()
-        if text.startswith("[") and text.endswith("]"):
-            text = text[1:-1]
-        return float(text)
+        parsed = json.loads(str(raw))
+        if isinstance(parsed, list):
+            values = [float(value) for value in parsed]
+            return values[0] if len(values) == 1 else values
+        return float(parsed)
 
     def _prepare_data(self, X: list[list[Any]]) -> tuple[list[list[Any]], set[int]]:
         """
@@ -398,7 +399,7 @@ class XGBoostTree(BaseModel):
                 cases[cat_val] = yes_child
             return [feat_name, "switch", cases, no_child]
 
-        return [feat_name, "<", float(split_condition), yes_child, no_child]
+        return [feat_name, "lt", float(split_condition), yes_child, no_child]
 
     def _get_category_value(self, feat_name: str, cat_idx: int) -> str:
         """Get category string value from index."""

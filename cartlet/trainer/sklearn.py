@@ -41,7 +41,9 @@ def encode_categorical(
     X: list[list[Any]],
     feature_names: list[str],
     feature_specs: list[FeatureSpec],
-) -> tuple[list[list[float]], list[str], list[int], dict[int, list[Any]]]:
+    *,
+    sparse: bool = False,
+) -> tuple[Any, list[str], list[int], dict[int, list[Any]]]:
     """
     One-hot encode categorical features for sklearn.
 
@@ -49,6 +51,7 @@ def encode_categorical(
         X: Training data
         feature_names: Feature names
         feature_specs: Feature specifications
+        sparse: Return CSR when categorical features are present; training uses this
 
     Returns:
         Tuple of (encoded_X, encoded_feature_names, cat_columns, cat_values)
@@ -74,6 +77,34 @@ def encode_categorical(
                 encoded_names.append(f"{name}={val}")
         else:
             encoded_names.append(name)
+
+    if sparse and cat_columns:
+        from scipy.sparse import csr_matrix  # type: ignore[import-untyped]
+
+        offsets = []
+        value_indices = {}
+        width = 0
+        for col in range(len(feature_names)):
+            offsets.append(width)
+            if col in cat_values:
+                value_indices[col] = {
+                    value: i for i, value in enumerate(cat_values[col])
+                }
+                width += len(cat_values[col])
+            else:
+                width += 1
+        data, indices, indptr = [], [], [0]
+        for row in X:
+            for col, value in enumerate(row):
+                if col in cat_values:
+                    indices.append(offsets[col] + value_indices[col][value])
+                    data.append(1.0)
+                elif float(value) != 0:
+                    indices.append(offsets[col])
+                    data.append(float(value))
+            indptr.append(len(data))
+        matrix = csr_matrix((data, indices, indptr), shape=(len(X), width))
+        return matrix, encoded_names, cat_columns, cat_values
 
     # Encode data
     encoded_X: list[list[float]] = []
@@ -279,7 +310,7 @@ class Sklearn(Trainer):
         # One-hot encode categorical features
         X_subset = [tree.X[i] for i in train_rows]
         X_encoded, encoded_names, cat_cols, cat_vals = encode_categorical(
-            X_subset, tree.feature_names, tree.feature_specs
+            X_subset, tree.feature_names, tree.feature_specs, sparse=True
         )
         y_train = [tree.y[i] for i in train_rows]
         weights = [tree.counts[i] for i in train_rows]
