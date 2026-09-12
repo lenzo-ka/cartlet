@@ -125,16 +125,22 @@ cartlet convert model.json model.pkl
 
 Cartlet supports multiple model formats for different use cases:
 
-| Format | Extension | Use Case |
+| Extension | Encoding | Use Case |
 |--------|-----------|----------|
 | `.cart` | Binary | Compact, cross-language, deployment |
 | `.cart.gz` | Compressed binary | Even smaller |
 | `.json` | JSON | Human-readable, full fidelity |
-| `.jsonl` | JSON Lines | Streaming, full fidelity |
+| `.jsonl` | JSON Lines | Line-oriented model JSON, full fidelity |
 | `.pkl` | Pickle | Python-only, full fidelity |
 | `.skl` / `.joblib` | Sklearn | sklearn interoperability |
 
-The `.cart` binary format is optimized for size:
+Version 2 uses float64 numeric values and explicit `<`/`<=` operators. JSON,
+JSONL, and pickle model envelopes declare `schema_version: 2`. Earlier models
+require their matching release or explicit migration; see
+[model contracts](https://github.com/lenzo-ka/cartlet/blob/main/docs/model_contracts.md).
+Replace copied runners together with their model artifacts.
+
+The `.cart` binary format uses:
 - Varint encoding for node indices (1-5 bytes vs fixed 4)
 - Packed feature+op byte (supports up to 64 features inline)
 - 3-byte leaf nodes (no padding)
@@ -195,6 +201,26 @@ agreement. Temporary model files are removed when the example finishes; use
 - [Changes and migration notes](https://github.com/lenzo-ka/cartlet/blob/main/CHANGELOG.md)
 
 ## API Reference
+
+### Training workflows
+
+```python
+from cartlet import TrainingSettings, train_file
+
+result = train_file(
+    "data.csv",
+    target="label",
+    settings=TrainingSettings(random_state=7),
+    output="model.cart",
+)
+report = result.to_dict()  # JSON-compatible metrics, populations, and settings
+model = result.model
+```
+
+`train_model` accepts rows directly; `train_file` adds file reading and named
+column alignment. Both are quiet and share the CLI's training implementation.
+See the [operational API](https://github.com/lenzo-ka/cartlet/blob/main/docs/TRAINING_API.md)
+and [training semantics](https://github.com/lenzo-ka/cartlet/blob/main/docs/training.md).
 
 ### DecisionTree
 
@@ -575,188 +601,89 @@ All of the above are re-exported at the package root - subpath imports like
 ## CLI Reference
 
 Run `cartlet --help` for commands and `cartlet COMMAND --help` for the complete
-option list and defaults for your installed version. The examples below show
-common workflows.
+option list, presets, and defaults for your installed version.
 
 ### train
 
-```
-cartlet train DATA [-o MODEL] [-c CONFIG] [-t TARGET] [-d DELIM] [-H] [-N NAMES]
-                    [-X FEATURES] [-T TASK] [-F] [--extra-trees] [--isolation-forest]
-                    [-n N] [-D N] [-s N] [-l N] [-C {entropy,gini}] [-S FRAC]
-                    [-e FILE] [-V FRAC] [-P] [-R SEED]
-                    [-B {native,sklearn}] [-j N] [--no-distributions] [-v]
-
-  DATA              Training data (CSV/TSV/JSONL)
-  -o, --output      Output model file (.cart, .json, .jsonl, .pkl, .skl/.joblib)
-  -c, --config      Config preset or file (see below)
-  --save-config     Save current args to config file (.yaml or .json)
-  -t, --target      Target column (default: last)
-  -d, --delimiter   Input column delimiter (auto-detect)
-  -H, --no-header   Data has no header row
-  -N, --column-names  Column names when no header (comma-separated)
-  -X, --features    Feature specs as JSON file or inline
-  -T, --task        Task type: auto, classification, regression
-  -F, --forest      Train RandomForest
-  --extra-trees     Train ExtraTrees forest (random splits, implies --forest)
-  --isolation-forest  Train IsolationForest for anomaly detection (unsupervised)
-  -n, --n-estimators  Trees in forest (default: 100)
-  -D, --max-depth   Maximum tree depth
-  -s, --min-samples-split  Min samples to split (default: 2)
-  -l, --min-samples-leaf   Min samples in leaf (default: 1)
-  -C, --criterion   Split criterion: entropy or gini (default: entropy)
-  -S, --test-split  Fraction for test eval
-  -e, --test-file   Separate test file
-  -V, --validation-split  Fraction for pruning validation
-  -P, --prune       Enable pruning (auto 5% validation if -V not set)
-  -R, --random-seed Random seed
-  -B, --trainer     Backend: native or sklearn
-  -j, --n-jobs      Parallel jobs for forest training
-  --no-distributions  Omit distributions in .cart (smaller, no nbest)
-  -v, --verbose     Verbose output
+```bash
+cartlet train data.csv --target label -o model.cart
+cartlet train data.csv --forest --n-estimators 100 --random-seed 7 -o forest.cart
+cartlet train data.csv --config fast --save-config settings.json -o model.cart
+cartlet train data.csv --json -o model.cart
 ```
 
-**Config presets** (`-c/--config`):
-
-| Preset | Description |
-|--------|-------------|
-| `defaults` | All default values (template) |
-| `fast` | Quick training: max_depth=10, min_samples_split=10 |
-| `accurate` | Best accuracy: forest with 100 trees |
-| `small` | Smaller model: max_depth=8, min_samples_split=20 |
-| `forest` | Default forest: 50 trees |
-| `forest-large` | Large forest: 200 trees with sklearn backend |
-| `sklearn` | Use sklearn backend |
-| `g2p` | Tuned for grapheme-to-phoneme tasks |
-| `extra-trees` | Extra-Trees: random splits, no bootstrap |
-
-Or provide a path to a YAML/JSON config file. CLI args override preset values.
+Training accepts CSV, TSV, and object-record JSONL. Use `--no-header` for
+positional tabular data and `--features` for explicit feature specifications.
+JSON/YAML configuration files use CLI option names; explicit flags override
+configuration values. Invalid or unknown settings are errors. `--json` returns
+the same structured report as the Python training workflow.
 
 ### predict
 
+```bash
+cartlet predict model.cart input.csv
+cartlet predict model.cart input.csv --mode append --output-format jsonl
+cartlet predict model.cart input.tsv --output-format tsv -o predictions.tsv
 ```
-cartlet predict MODEL DATA [-o FILE] [-t TARGET] [-d DELIM] [--output-delimiter DELIM]
-                           [-H] [-m MODE] [-p NAME] [-f FORMAT]
 
-  MODEL             Model file (.cart only; use `cartlet convert` for other formats)
-  DATA              Input data (CSV/TSV/JSONL)
-  -o, --output      Output file (default: stdout)
-  -t, --target      Target column (default: last)
-  -d, --delimiter   Input column delimiter (auto-detect)
-  --output-delimiter  Output column delimiter
-  -H, --no-header   Data has no header row
-  -m, --mode        Output mode: values, append, inplace
-  -p, --prediction-column  Column name (default: "prediction")
-  -f, --output-format  Output format: csv, tsv, ssv, json, jsonl
-```
+Prediction uses `.cart` models. Named input columns are aligned to the model;
+headerless data is positional. Output defaults to stdout. Modes return values,
+append a prediction column, or replace the target column in the output data.
 
 ### evaluate
 
+```bash
+cartlet evaluate model.cart test.csv --target label --json
+cartlet evaluate model.cart test.csv --verbose
 ```
-cartlet eval MODEL DATA [-o FILE] [-J] [-t TARGET] [-d DELIM] [-H] [-N NAMES] [-v]
 
-  MODEL             Model file (.cart only; use `cartlet convert` for other formats)
-  DATA              Test data with labels
-  -o, --output      Output to file (default: stdout)
-  -J, --json        Output as JSON (machine-readable)
-  -t, --target      Target column
-  -d, --delimiter   Column delimiter
-  -H, --no-header   Data has no header row
-  -N, --column-names  Column names when no header
-  -v, --verbose     Show per-class metrics
-```
+Evaluation uses labeled data and a `.cart` model. `eval` is an alias.
 
 ### stats
 
+```bash
+cartlet stats model.cart --json
+cartlet stats model.cart --verbose
 ```
-cartlet stats MODEL [-J] [-v]
 
-  MODEL             Model file (.cart only)
-  -J, --json        JSON output (machine-readable)
-  -v, --verbose     Detailed statistics
-```
+Inspect a binary model's structure, features, and metadata. `info` is an alias.
 
 ### convert
 
-```
-cartlet convert INPUT OUTPUT [--input-format FMT] [--output-format FMT]
-
-  INPUT             Input model file
-  OUTPUT            Output model file (format inferred from extension)
-  --input-format    Override input format detection (cart|json|jsonl|pkl|skl)
-  --output-format   Override output format selection
+```bash
+cartlet convert model.json model.cart
+cartlet convert model.cart model.json
+cartlet convert model.g2p.gz model.cart --input-format jsonl
 ```
 
-Supported conversions:
-- `.cart` to/from `.json`, `.jsonl`, `.pkl`/`.pickle`
-- `.json` to/from `.jsonl`, `.pkl`, `.cart`
-- `.skl`/`.joblib` (requires `joblib`; export requires sklearn-trained model)
-- Append `.gz` for compression (Python only)
-- Custom suffixes: `cartlet convert model.g2p.gz model.cart --input-format jsonl`
-- IsolationForest models use their own `.export()` / `.load_model()` paths,
-  not `convert`
+DecisionTree/RandomForest conversion supports `.cart`, `.json`, `.jsonl`,
+`.pkl`/`.pickle`, and `.skl`/`.joblib`; append `.gz` for compression.
+Sklearn export requires a matching trained or loaded sklearn estimator.
+Distributions omitted from an artifact cannot be recovered by conversion.
+IsolationForest and XGBoost native artifacts use their dedicated model APIs.
 
 ### bundle
 
-```
-cartlet bundle [MODEL] OUTPUT [--library-only] [--no-model] [--model-format FMT]
-
-  MODEL             Model file (any format; auto-converted to .cart)
-  OUTPUT            Output file path
-  --library-only    Omit CLI code, produce library-only output for import use
-  --no-model        Output runner code only without embedded model
-  --model-format    Override input model format when the extension is custom
-```
-
-Examples:
 ```bash
-cartlet bundle model.cart predict.py              # Python executable
-cartlet bundle model.json predict.py              # JSON in -> auto-convert -> bundle
-cartlet bundle model.g2p.gz predict.py --model-format jsonl
-cartlet bundle model.cart lib.py --library-only   # Library with model
-cartlet bundle --no-model --library-only cart.py  # Library, no model
+cartlet bundle model.cart predict.py
+cartlet bundle model.json predict.py
+cartlet bundle model.cart lib.py --library-only
+cartlet bundle --no-model --library-only cart.py
 ```
+
+Bundle a model and the stdlib-only runner, optionally omitting the CLI or the
+embedded model. Supported nonbinary models are converted automatically.
 
 ### inspect
 
-Infer feature types from data and output a spec file:
-
-```
-cartlet inspect DATA [-o FILE] [-t TARGET] [-H] [-N NAMES] [-f FORMAT]
-
-  DATA              Data file to inspect
-  -o, --output      Save spec to file (default: stdout)
-  -t, --target      Target column (default: last)
-  -H, --no-header   Data has no header row
-  -N, --column-names  Column names when no header
-  -f, --format      Output format: simple, full, array
-```
-
-**Workflow:**
 ```bash
-# 1. Inspect data and save specs
-cartlet inspect data.csv -o specs.json
-
-# 2. Edit specs.json if needed (e.g., change "num" to "cat")
-
-# 3. Train with edited specs
-cartlet train data.csv -X specs.json -o model.cart
+cartlet inspect data.csv --target label -o specs.json
+cartlet train data.csv --target label --features specs.json -o model.cart
 ```
 
-**Output formats:**
-```bash
-# Simple (default) - edit-friendly
-cartlet inspect data.csv
-# {"age": "num", "color": "cat", "_target": "cat (label)"}
-
-# Full - with dtypes
-cartlet inspect data.csv -f full
-# {"age": {"dtype": "int", "type": "num"}, ...}
-
-# Array - complete spec
-cartlet inspect data.csv -f array
-# {"features": [...], "target": {...}}
-```
+Infer feature specifications, edit them if needed, then train. `--format`
+selects simple mappings, full mappings, or an array of feature specifications;
+`schema` is an alias.
 
 ## Feature Schema
 
@@ -854,4 +781,4 @@ It's a little CART (Classification And Regression Trees).
 
 ## License
 
-BSD 2-Clause License - see [LICENSE](LICENSE) for details.
+BSD 2-Clause License - see [LICENSE](https://github.com/lenzo-ka/cartlet/blob/main/LICENSE) for details.
