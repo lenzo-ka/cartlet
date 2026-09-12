@@ -60,9 +60,9 @@ python predict.py model.cart red large
 from predict import Predictor
 
 # Load model
-model = Predictor("model.cart")       # from file
-model = Predictor(raw_bytes)          # from bytes
-model = Predictor("model.cart.gz")    # gzip supported
+model = Predictor("model.cart")  # from file
+model = Predictor(raw_bytes)  # from bytes
+model = Predictor("model.cart.gz")  # gzip supported
 
 # Predict
 result = model.predict(["red", "large"])
@@ -73,14 +73,14 @@ dist = model.predict(["red", "large"], return_dist=True)
 # {"apple": 0.8, "ball": 0.2}
 
 # Model metadata
-model.n_features      # number of features
-model.n_classes       # number of classes (classification)
-model.feature_names   # list of feature names
-model.class_labels    # list of class labels
-model.is_forest       # True if random forest
-model.is_regression   # True if regression task
-model.is_xgboost      # True if XGBoost model
-model.metadata        # dict of embedded JSON metadata
+model.n_features  # number of features
+model.n_classes  # number of classes (classification)
+model.feature_names  # list of feature names
+model.class_labels  # list of class labels
+model.is_forest  # True if random forest
+model.is_regression  # True if regression task
+model.is_xgboost  # True if XGBoost model
+model.metadata  # dict of embedded JSON metadata
 ```
 
 ---

@@ -21,7 +21,7 @@ repos:
 
   # Python code quality - Ruff (fast linter and formatter)
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.14.11
+    rev: v0.16.7
     hooks:
       - id: ruff
         args: [--fix]

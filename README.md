@@ -89,7 +89,7 @@ print(xgb.predict_proba(["red", "small"]))  # class probabilities
 
 # Export to various formats
 xgb.export("model.cart")  # Compact binary for the runner
-xgb.export("model.xgb")   # Native XGBoost format
+xgb.export("model.xgb")  # Native XGBoost format
 ```
 
 ### CLI
@@ -147,20 +147,20 @@ The `.cart` binary format uses:
 
 ```python
 # Export to different formats
-dt.export("model.cart")      # Compact binary (default)
-dt.export("model.cart.gz")   # Compressed binary
-dt.export("model.json")      # JSON (full tree structure)
-dt.export("model.jsonl")     # JSON Lines
-dt.export("model.pkl")       # Pickle
-dt.export("model.skl")       # sklearn-compatible (if trained with sklearn)
+dt.export("model.cart")  # Compact binary (default)
+dt.export("model.cart.gz")  # Compressed binary
+dt.export("model.json")  # JSON (full tree structure)
+dt.export("model.jsonl")  # JSON Lines
+dt.export("model.pkl")  # Pickle
+dt.export("model.skl")  # sklearn-compatible (if trained with sklearn)
 
 # Load from any format
 dt.load_model("model.cart")
 dt.load_model("model.json")
 
 # Custom file suffixes (skip extension detection)
-dt.export("model.g2p.gz", format="jsonl")           # write JSONL under .g2p.gz
-dt.load_model("model.g2p.gz", format="jsonl")       # read it back
+dt.export("model.g2p.gz", format="jsonl")  # write JSONL under .g2p.gz
+dt.load_model("model.g2p.gz", format="jsonl")  # read it back
 convert("model.g2p.gz", "model.cart", input_format="jsonl")
 bundle("model.g2p.gz", "predictor.py", model_format="jsonl")
 ```
@@ -180,7 +180,8 @@ dt.export("model.cart", store_distributions=False)
 ## Tutorials and reference
 
 From a source checkout, install the example dependencies with
-`pip install -e ".[all]"`, then run `make examples`. Each example also supports
+`pip install -e ".[all]"`. Run `make check` for lint, formatting, type checks,
+and tests, or `make examples` for the tutorials. Each example also supports
 `--help` and can be run independently:
 
 ```bash
@@ -230,26 +231,26 @@ dt = DecisionTree(
         {"name": "age", "dtype": "int", "type": "num"},
         {"name": "color", "dtype": "str", "type": "cat"},
     ],
-    task="auto",                # "classification", "regression", or "auto"
-    max_depth=None,             # Max tree depth (None = unlimited)
-    min_samples_split=2,        # Min samples to split
-    min_samples_leaf=1,         # Min samples in leaf
-    criterion="entropy",        # "entropy" or "gini"
-    store_distributions=True,   # Keep full probability distributions at leaves
+    task="auto",  # "classification", "regression", or "auto"
+    max_depth=None,  # Max tree depth (None = unlimited)
+    min_samples_split=2,  # Min samples to split
+    min_samples_leaf=1,  # Min samples in leaf
+    criterion="entropy",  # "entropy" or "gini"
+    store_distributions=True,  # Keep full probability distributions at leaves
     min_dist_entropy=DEFAULT_MIN_DIST_ENTROPY,  # Below this, collapse to best class
-    min_confidence=PROB_HIGH_CONFIDENCE,        # Above this best-prob, collapse too
+    min_confidence=PROB_HIGH_CONFIDENCE,  # Above this best-prob, collapse too
 )
 
 dt.load_data(X, y, counts=None)  # Load training data (optional weights)
 dt.train(trainer="native", prune=False, validation_split=0.0)
 
-dt.predict(vector)                    # Single prediction
-dt.predict_batch(vectors)             # Batch prediction
-dt.predict_with_confidence(vector)    # (prediction, confidence)
-dt.predict_nbest(vector, n=5)         # Top n predictions
+dt.predict(vector)  # Single prediction
+dt.predict_batch(vectors)  # Batch prediction
+dt.predict_with_confidence(vector)  # (prediction, confidence)
+dt.predict_nbest(vector, n=5)  # Top n predictions
 
-dt.export("model.cart")               # Save (default: .cart)
-dt.load_model("model.cart")           # Load
+dt.export("model.cart")  # Save (default: .cart)
+dt.load_model("model.cart")  # Load
 ```
 
 Use `feature_names=["age", "color"]` instead of `features` when both inputs
@@ -272,9 +273,9 @@ by asking an exporter to retain distributions later:
 
 ```python
 rf = RandomForest(
-    n_estimators=100,      # Number of trees
-    max_features="sqrt",   # Features per split: "sqrt", "log2", int, or None
-    bootstrap=True,        # Sample with replacement
+    n_estimators=100,  # Number of trees
+    max_features="sqrt",  # Features per split: "sqrt", "log2", int, or None
+    bootstrap=True,  # Sample with replacement
     max_depth=None,
     min_samples_split=2,
     min_samples_leaf=1,
@@ -285,8 +286,8 @@ rf.train(random_state=42)
 
 rf.predict(vector)
 rf.predict_batch(vectors)
-rf.predict_proba(vector)        # Class probabilities
-rf.feature_importances_         # Feature importance dict
+rf.predict_proba(vector)  # Class probabilities
+rf.feature_importances_  # Feature importance dict
 
 rf.export("forest.cart")
 rf.load_model("forest.cart")
@@ -314,9 +315,9 @@ from cartlet import Predictor
 p = Predictor("model.cart")
 p.predict([1, 2, 3])
 p.predict_batch([[1, 2, 3], [4, 5, 6]])
-p.feature_names      # list of feature names
-p.class_labels       # list of class labels (classification)
-p.task               # "classification" or "regression"
+p.feature_names  # list of feature names
+p.class_labels  # list of class labels (classification)
+p.task  # "classification" or "regression"
 ```
 
 ### Vocabulary inspection and OOV handling
@@ -332,7 +333,7 @@ from cartlet import get_vocabulary, is_oov, load_model
 model = load_model("model.cart")
 
 vocab = get_vocabulary(model, "color")  # set, or None if not categorical
-get_vocabulary(model, 0)                # by feature index also works
+get_vocabulary(model, 0)  # by feature index also works
 
 if is_oov(model, "color", "chartreuse"):
     # decide how to handle: skip, substitute, fall back, etc.
@@ -346,8 +347,8 @@ callers using the OO API don't have to drop back to the functional form:
 from cartlet import Predictor
 
 p = Predictor("model.cart")
-p.get_vocabulary("color")              # same as get_vocabulary(p.model, ...)
-p.is_oov("color", "chartreuse")        # same as is_oov(p.model, ...)
+p.get_vocabulary("color")  # same as get_vocabulary(p.model, ...)
+p.is_oov("color", "chartreuse")  # same as is_oov(p.model, ...)
 ```
 
 Numerical features return `None` from `get_vocabulary` and `False` from
@@ -365,7 +366,7 @@ p = Predictor("model.cart")
 p.metadata  # {"locale": "en", ...}; {} when nothing was embedded
 
 # Without loading the full model:
-read_cart_metadata("model.cart")        # works on a path
+read_cart_metadata("model.cart")  # works on a path
 read_cart_metadata(open("model.cart", "rb").read())  # or bytes
 ```
 
@@ -504,8 +505,8 @@ from cartlet import XGBoostTree
 
 xgb = XGBoostTree(feature_names=[...], task="classification")
 xgb.load_data(X, y).train(n_estimators=10, max_depth=4)
-xgb.export("model.cart")            # cross-language inference
-xgb.export("model.xgb")             # native XGBoost format
+xgb.export("model.cart")  # cross-language inference
+xgb.export("model.xgb")  # native XGBoost format
 ```
 
 Requires `xgboost`. See [training semantics](https://github.com/lenzo-ka/cartlet/blob/main/docs/training.md)
@@ -516,8 +517,8 @@ for native-format roundtrips and export behavior.
 ```python
 from cartlet import convert
 
-convert("model.json", "model.cart")     # JSON -> binary
-convert("model.cart", "model.pkl")      # binary -> pickle
+convert("model.json", "model.cart")  # JSON -> binary
+convert("model.cart", "model.pkl")  # binary -> pickle
 convert("model.json", "model.cart.gz")  # JSON -> gzipped binary
 ```
 
@@ -529,10 +530,10 @@ and limitations.
 ```python
 from cartlet import count_leaves, count_nodes, max_depth, tree_stats
 
-count_nodes(tree.model)   # total internal + leaf nodes
+count_nodes(tree.model)  # total internal + leaf nodes
 count_leaves(tree.model)  # leaf count
-max_depth(tree.model)     # depth of the longest root-to-leaf path
-tree_stats(tree.model)    # {"nodes", "leaves", "depth"} in one call
+max_depth(tree.model)  # depth of the longest root-to-leaf path
+tree_stats(tree.model)  # {"nodes", "leaves", "depth"} in one call
 ```
 
 ### Constants
@@ -688,8 +689,8 @@ selects simple mappings, full mappings, or an array of feature specifications;
 ## Feature Schema
 
 ```python
-{"name": "age", "dtype": "int", "type": "num"}   # Numerical integer
-{"name": "color", "dtype": "str", "type": "cat"} # Categorical string
+{"name": "age", "dtype": "int", "type": "num"}  # Numerical integer
+{"name": "color", "dtype": "str", "type": "cat"}  # Categorical string
 {"name": "rating", "dtype": "int", "type": "cat"}  # Categorical integer
 ```
 

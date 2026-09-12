@@ -71,11 +71,7 @@ jobs:
           python -m pip install --upgrade pip
           # types-PyYAML matches the pre-commit mypy hook so local and CI type
           # checking agree on the yaml stubs.
-          pip install ruff mypy types-PyYAML
-
-      - name: Install package for type checking
-        run: |
-          pip install -e .
+          pip install -e ".[dev]" types-PyYAML
 
       - name: Check style and types
         run: make lint

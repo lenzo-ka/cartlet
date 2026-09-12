@@ -53,6 +53,10 @@ requires it.
 - Identify the package as alpha in distribution metadata.
 - Use the BSD 2-Clause license, matching the updated project license.
 - Require the Python 3.14 and optional-backend test jobs before the CI build.
+- Pin Ruff across development and hooks; CI installs the same development tools
+  and checks Python snippets in Markdown as well as source files.
+- Keep the Python 3.11 source type check consistent when optional backends with
+  newer stub grammars are installed; backend behavior remains covered by tests.
 - Check the release tag against the package version before building a publication.
 
 ## 0.5.0

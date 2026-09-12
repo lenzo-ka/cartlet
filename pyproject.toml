@@ -43,7 +43,7 @@ classifiers = [
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
-    "ruff>=0.1.0",
+    "ruff==0.16.7",
     "mypy>=1.0",
     # Included so the YAML config tests actually run under the base test
     # matrix (which installs .[dev]) instead of silently skipping.
@@ -79,6 +79,7 @@ testpaths = ["tests"]
 addopts = "-v"
 
 [tool.ruff]
+required-version = "==0.16.7"
 line-length = 88
 target-version = "py311"
 
@@ -101,6 +102,13 @@ exclude = ["venv/", "build/", ".eggs/"]
 [[tool.mypy.overrides]]
 module = ["sklearn.*", "joblib", "xgboost.*", "yaml"]
 ignore_missing_imports = true
+
+# Keep Cartlet's Python 3.11 type check identical with or without optional
+# backends installed. Newer backend stubs may require a newer Python grammar.
+[[tool.mypy.overrides]]
+module = ["numpy.*", "scipy.*", "sklearn.*", "xgboost.*"]
+follow_imports = "skip"
+follow_imports_for_stubs = true
 
 [tool.coverage.run]
 source = ["cartlet"]
