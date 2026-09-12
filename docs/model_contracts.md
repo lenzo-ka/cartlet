@@ -50,7 +50,18 @@ remain nonempty. Unsupported pruning does not silently withhold training rows.
 JSONL datasets use nonempty object records with unique named fields. The writer
 requires column names; positional array records are not a supported alternative.
 Batch and streaming readers reject malformed records with line diagnostics.
-Training targets must be present. CSV/TSV support headerless positional records.
+Training targets must be present. CSV/TSV/SSV support headerless positional records.
+Tabular readers ignore empty CSV records, including those before the header or
+first headerless row; quoted empty fields are still records. Ragged records are
+skipped with a warning. Batch readers reject empty or header-only input, while
+`iter_vectors` yields nothing; a file containing only ragged data records yields
+an empty batch. Headers and values are NFC-normalized. `load_training_data`
+converts numeric strings; `read_vectors` and `iter_vectors` preserve them.
+
+Tabular batch loading consumes and processes records incrementally, without
+retaining a second complete collection of raw rows. Returned feature and target
+lists still occupy memory proportional to the dataset; use `iter_vectors` when
+the consumer can process one record at a time.
 
 Configuration files use the same accepted option names and values as the CLI.
 Unknown keys, invalid scalar values, and malformed YAML/JSON are errors; explicit
