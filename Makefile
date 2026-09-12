@@ -43,3 +43,7 @@ examples:
 clean:
 	rm -rf build/ dist/ *.egg-info .pytest_cache .ruff_cache .mypy_cache
 	find . -type d -name __pycache__ -prune -exec rm -rf {} +
+
+.PHONY: bench-scale
+bench-scale:
+	$(PY) -m benchmarks.scalability
