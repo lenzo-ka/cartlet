@@ -21,7 +21,7 @@ def test_xgboost_export_matches_booster_at_float32_boundaries(tmp_path, task):
     if task == "binary-vector" and int(xgb.__version__.split(".")[0]) < 3:
         pytest.skip("vector intercept parameter requires current XGBoost")
     regression = task == "regression"
-    labels = (
+    labels: list[Any] = (
         [0.0, 0.0, 10.0, 10.0]
         if regression
         else ["A", "B", "C", "A"]

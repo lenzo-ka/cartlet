@@ -11,6 +11,7 @@ then converts back to our native format with proper equality splits.
 from __future__ import annotations
 
 import importlib.util
+from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
 from ..types import PROB_HIGH_CONFIDENCE, TYPE_CAT
@@ -79,7 +80,7 @@ def encode_categorical(
             encoded_names.append(name)
 
     if sparse and cat_columns:
-        from scipy.sparse import csr_matrix  # type: ignore[import-untyped]
+        csr_matrix = import_module("scipy.sparse").csr_matrix
 
         offsets = []
         value_indices = {}

@@ -1,7 +1,7 @@
 """Regressions for numerical stability and consistent training constraints."""
 
 import math
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -22,7 +22,7 @@ def test_regression_target_translation_preserves_split(categorical):
         tree = DecisionTree(
             features=features, task="regression", max_depth=1, categorical_split="fast"
         )
-        X = [[str(i)] if categorical else [i] for i in range(4)]
+        X: list[list[Any]] = [[str(i)] if categorical else [i] for i in range(4)]
         tree.load_data(X, [offset, offset, offset, offset + 1], [1, 2, 3, 4])
         tree.train()
         assert isinstance(tree.model, list) and len(tree.model) == 5
