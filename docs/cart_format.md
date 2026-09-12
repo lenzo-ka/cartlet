@@ -1,3 +1,11 @@
+> Current writer/reader format version: **2**. Version 2 adds a distinct strict
+> numeric comparison opcode for XGBoost and float64 numeric/probability pools.
+> Native thresholds, regression means and class probabilities retain Python
+> float precision; XGBoost inputs and thresholds are normalized to float32.
+> Native CART's nested `"<"` operation
+> retains its inclusive meaning; strict nodes use `"lt"`. Readers reject other
+> versions rather than guessing their semantics.
+
 # .cart Binary Format Specification
 
 Version 1 — Little-endian throughout
@@ -51,7 +59,7 @@ The `.cart` format is a compact binary representation of decision trees, random 
 | Offset | Size | Field | Description |
 |--------|------|-------|-------------|
 | 0 | 4 | magic | `CART` (0x43 0x41 0x52 0x54) |
-| 4 | 2 | version | Format version (currently 1) |
+| 4 | 2 | version | Format version (currently 2) |
 | 6 | 2 | flags | Bitfield (see below) |
 | 8 | 2 | n_features | Number of features |
 | 10 | 2 | n_classes | Number of class labels |
@@ -120,7 +128,7 @@ class_indices: u16[n_classes]   # String indices for class labels
 ## Float Pool
 
 ```
-floats: f32[n_floats]           # All threshold values and regression outputs
+floats: f64[n_floats]           # All threshold values and regression outputs
 ```
 
 Referenced by index from decision nodes (thresholds) and leaf nodes (regression values).
@@ -154,8 +162,8 @@ Variable-size encoding for each node:
 ```
 feat_op: u8                     # Packed feature index + operation
 val: u16                        # Index into floats, cat_vals, or case_tables
-left: varint                    # Left child index (OP_LT/OP_EQ only)
-right: varint                   # Right child index (OP_LT/OP_EQ only)
+left: varint                    # Left child index (OP_LT/OP_STRICT_LT/OP_EQ only)
+right: varint                   # Right child index (OP_LT/OP_STRICT_LT/OP_EQ only)
 ```
 
 ### feat_op Encoding
@@ -170,6 +178,7 @@ right: varint                   # Right child index (OP_LT/OP_EQ only)
 | Value | Constant | Meaning | Children |
 |-------|----------|---------|----------|
 | 0 | `OP_LT` | Numeric: `feature <= floats[val]` | left, right |
+| 3 | `OP_STRICT_LT` | Numeric: `feature < floats[val]` | left, right |
 | 1 | `OP_EQ` | Categorical: `feature == strings[cat_vals[val]]` | left, right |
 | 2 | `OP_SWITCH` | Case table lookup | In case_tables[val] |
 
@@ -205,7 +214,7 @@ For each distribution (n_dists entries):
 
 ```
 n_entries: u16
-entries: (class_idx: u16, prob: f32)[n_entries]
+entries: (class_idx: u16, prob: f64)[n_entries]
 ```
 
 Sorted by probability descending. Used for `predict_nbest()` support.
@@ -253,7 +262,7 @@ For implementers, here are the key constants:
 ```python
 # Magic
 MAGIC = b"CART"
-VERSION = 1
+VERSION = 2
 
 # Flags
 FLAG_IS_FOREST = 0x01
@@ -263,6 +272,7 @@ FLAG_IS_XGBOOST = 0x08
 
 # Operations
 OP_LT = 0
+OP_STRICT_LT = 3
 OP_EQ = 1
 OP_SWITCH = 2
 

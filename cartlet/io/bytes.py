@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import os
 import stat
 import struct
@@ -29,12 +30,14 @@ from .cart_format import (
     OP_EQ,
     OP_LT,
     OP_SHIFT,
+    OP_STRICT_LT,
     OP_SWITCH,
     TYPE_CAT,
     TYPE_NUM,
     VERSION,
     encode_varint,
 )
+from .utils import atomic_output_path
 
 
 class ByteWriter:
@@ -87,6 +90,8 @@ class ByteWriter:
 
     def _add_string(self, s: str) -> int:
         """Add string to pool, return index."""
+        if "\0" in s:
+            raise ValueError(".cart strings cannot contain NUL characters")
         if s in self.string_to_idx:
             return self.string_to_idx[s]
         idx = len(self.strings)
@@ -195,13 +200,23 @@ class ByteWriter:
             feature, op, value, left_node, right_node = node
             feat_idx = self._resolve_feat_idx(feature, name_to_col)
 
-            if op == "<":
-                val_idx = self._add_float(float(value))
-                op_type = OP_LT
-            else:  # op == "="
+            if op in ("<", "lt"):
+                numeric = float(value)
+                if self.is_xgboost:
+                    try:
+                        numeric = struct.unpack("<f", struct.pack("<f", numeric))[0]
+                    except OverflowError as e:
+                        raise ValueError(
+                            "XGBoost threshold exceeds float32 range"
+                        ) from e
+                val_idx = self._add_float(numeric)
+                op_type = OP_STRICT_LT if op == "lt" else OP_LT
+            elif op == "=":
                 str_idx = self._add_string(str(value))
                 val_idx = self._add_cat_value(str_idx)
                 op_type = OP_EQ
+            else:
+                raise ValueError(f"Unknown decision operation: {op!r}")
 
             # Reserve decision slot
             dec_idx = len(self.decisions)
@@ -354,8 +369,21 @@ class ByteWriter:
         if self.is_xgboost:
             flags |= FLAG_IS_XGBOOST
 
-        # Write file
-        with open(path, "wb") as f:
+        for value in [
+            *self.floats,
+            *(prob for dist in self.distributions for _, prob in dist),
+        ]:
+            try:
+                if not math.isfinite(value):
+                    raise ValueError("nonfinite value")
+                struct.pack("<d", value)
+            except (OverflowError, struct.error, ValueError) as e:
+                raise ValueError(
+                    f"Value {value!r} cannot be represented as finite float64"
+                ) from e
+
+        # Serialize completely before replacing an existing destination.
+        with atomic_output_path(path) as output, open(output, "wb") as f:
             # Header (34 bytes)
             f.write(MAGIC)
             f.write(struct.pack("<H", VERSION))
@@ -391,7 +419,7 @@ class ByteWriter:
 
             # Float pool
             for fv in self.floats:
-                f.write(struct.pack("<f", fv))
+                f.write(struct.pack("<d", fv))
 
             # Cat value pool (string indices)
             for si in self.cat_values:
@@ -417,11 +445,11 @@ class ByteWriter:
                 f.write(struct.pack("<BH", leaf_type, val))
 
             # Distributions (if FLAG_HAS_DISTRIBUTIONS)
-            # Format: for each dist: n_entries(u16) + [class_idx(u16) + prob(f32)]...
+            # Format: for each dist: n_entries(u16) + [class_idx(u16) + prob(f64)]...
             for dist in self.distributions:
                 f.write(struct.pack("<H", len(dist)))
                 for class_idx, prob in dist:
-                    f.write(struct.pack("<Hf", class_idx, prob))
+                    f.write(struct.pack("<Hd", class_idx, prob))
 
             # Case tables (for OP_SWITCH nodes)
             # Format: for each table: n_cases(u16) + default(varint) +
@@ -587,6 +615,11 @@ def bundle(
         bundle(None, "cart.py", library_only=True, embed_model=False)
         # Then: from cart import Predictor; p = Predictor("model.cart"); p.predict([...])
     """
+    from ..validation import require_distinct_paths
+
+    require_distinct_paths(
+        [model_path] if model_path is not None else [], [output_path]
+    )
     runner_path = os.path.join(os.path.dirname(__file__), "..", "bundled", "predict.py")
     if not os.path.exists(runner_path):
         raise FileNotFoundError(f"Runner not found: {runner_path}")
@@ -627,8 +660,8 @@ def bundle(
     else:
         bundled_code = runner_text
 
-    with open(output_path, "wb") as f:
-        f.write(bundled_code.encode("utf-8"))
-
-    st = os.stat(output_path)
-    os.chmod(output_path, st.st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    with atomic_output_path(output_path) as output:
+        with open(output, "wb") as f:
+            f.write(bundled_code.encode("utf-8"))
+        st = os.stat(output)
+        os.chmod(output, st.st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)

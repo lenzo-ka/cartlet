@@ -40,10 +40,11 @@ from .io.cart_format import (
     OP_LT,
     OP_MASK,
     OP_SHIFT,
+    OP_STRICT_LT,
     OP_SWITCH,
     SIZE_DECISION_HEADER,
     SIZE_DIST_ENTRY,
-    SIZE_F32,
+    SIZE_F64,
     SIZE_FEAT_HEADER,
     SIZE_HEADER_COUNTS1,
     SIZE_HEADER_COUNTS2,
@@ -215,8 +216,8 @@ def _load_cart_from_bytes(data: bytes) -> dict[str, Any]:
         class_labels, pos = _parse_class_table(data, pos, n_classes, strings)
 
         # Float pool
-        floats = list(struct.unpack_from(f"<{n_floats}f", data, pos))
-        pos += SIZE_F32 * n_floats
+        floats = list(struct.unpack_from(f"<{n_floats}d", data, pos))
+        pos += SIZE_F64 * n_floats
 
         # Cat value pool
         cat_vals = list(struct.unpack_from(f"<{n_cat_vals}H", data, pos))
@@ -274,7 +275,7 @@ def _load_cart_from_bytes(data: bytes) -> dict[str, Any]:
             "is_forest": is_forest,
             "is_xgboost": is_xgboost,
             "has_distributions": has_distributions,
-            "n_trees": n_trees if is_forest else 1,
+            "n_trees": n_trees,
             "version": version,
         }
 
@@ -379,7 +380,7 @@ def _parse_distributions(
             pos += SIZE_U16
             dist: list[tuple[int, float]] = []
             for _ in range(n_entries):
-                class_idx, prob = struct.unpack_from("<Hf", data, pos)
+                class_idx, prob = struct.unpack_from("<Hd", data, pos)
                 pos += SIZE_DIST_ENTRY
                 dist.append((class_idx, prob))
             distributions.append(dist)
@@ -527,7 +528,7 @@ def _predict_tree_recursive(
         # is 0 (which would otherwise jump traversal to decision node 0).
         feat_val = None if feat >= n_input_features else vector[feat]
 
-        if op == OP_LT:
+        if op in (OP_LT, OP_STRICT_LT):
             # Numeric comparison. Coerce the value to float regardless of the
             # declared feature type; a non-numeric value at a numeric node
             # fails the comparison and goes right (matches the bundled runner).
@@ -537,7 +538,11 @@ def _predict_tree_recursive(
             go_left = False
             if feat_val is not None:
                 try:
-                    go_left = float(feat_val) <= threshold
+                    go_left = (
+                        (float(feat_val) < threshold)
+                        if op == OP_STRICT_LT
+                        else (float(feat_val) <= threshold)
+                    )
                 except (TypeError, ValueError):
                     go_left = False
             idx = left if go_left else right
@@ -630,6 +635,43 @@ def _softmax(scores: list[float]) -> list[float]:
     return [e / total for e in exp_scores]
 
 
+def _xgboost_row(values):
+    """Match DMatrix float32 input precision before numeric traversal."""
+    row: list = []
+    for value in values:
+        if value is None:
+            row.append(None)
+            continue
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            row.append(value)
+            continue
+        try:
+            row.append(struct.unpack("<f", struct.pack("<f", numeric))[0])
+        except OverflowError as e:
+            raise ValueError(f"XGBoost input {value!r} exceeds float32 range") from e
+    return row
+
+
+def _xgboost_base_scores(value, n_classes, is_regression):
+    """Resolve scalar/vector intercepts; binary values are probability-space."""
+    count = 1 if is_regression or n_classes == 2 else n_classes
+    if isinstance(value, list):
+        if len(value) != count:
+            raise ValueError(
+                f"XGBoost base_score needs {count} values, got {len(value)}"
+            )
+        scores = [float(v) for v in value]
+    else:
+        scores = [float(value)] * count
+    if not scores or not all(math.isfinite(v) for v in scores):
+        raise ValueError("XGBoost base_score must contain finite values")
+    if not is_regression and n_classes == 2 and 0.0 < scores[0] < 1.0:
+        scores[0] = math.log(scores[0] / (1.0 - scores[0]))
+    return scores
+
+
 def _predict_xgboost(
     model: ModelData, vector: list[Any], return_dist: bool = False
 ) -> Any:
@@ -644,6 +686,7 @@ def _predict_xgboost(
       raw_scores[k] = base_score + sum(trees for class k)
       probabilities = softmax(raw_scores)
     """
+    vector = _xgboost_row(vector)
     n_trees = model["n_trees"]
     n_classes = len(model["class_labels"])
     class_labels = model["class_labels"]
@@ -653,11 +696,11 @@ def _predict_xgboost(
     # matches XGBoostTree.predict.
     meta_dict = cast(dict, model.get("meta", {}))
     metadata_blob = cast(dict, meta_dict.get("metadata", {}))
-    raw_base_score = float(metadata_blob.get("base_score", 0.0))
-    if not model["is_regression"] and n_classes == 2 and 0.0 < raw_base_score < 1.0:
-        base_score = math.log(raw_base_score / (1.0 - raw_base_score))
-    else:
-        base_score = raw_base_score
+    raw_base_score = metadata_blob.get("base_score", 0.0)
+    base_scores = _xgboost_base_scores(
+        raw_base_score, n_classes, model["is_regression"]
+    )
+    base_score = base_scores[0]
 
     decisions = model["decisions"]
     leaves = model["leaves"]
@@ -706,7 +749,7 @@ def _predict_xgboost(
 
     # Multiclass: K trees per round
     n_rounds = n_trees // n_classes
-    scores = [base_score] * n_classes
+    scores = list(base_scores)
 
     for round_idx in range(n_rounds):
         for class_idx in range(n_classes):

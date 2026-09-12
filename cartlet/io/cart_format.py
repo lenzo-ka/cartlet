@@ -15,7 +15,7 @@ from typing import Any
 
 # Magic bytes
 MAGIC = b"CART"
-VERSION = 1
+VERSION = 2
 
 # Decision node encoding:
 # - feat_op: 1 byte (bits 0-5 = feature index, bits 6-7 = op)
@@ -31,6 +31,7 @@ FEAT_MASK = 0x3F  # Lower 6 bits for feature index (max 63 features inline)
 OP_LT = 0  # Numerical less-than-or-equal (<=) comparison; left branch = "yes"
 OP_EQ = 1  # Categorical equality comparison
 OP_SWITCH = 2  # Case table lookup (disjunction / n-ary split)
+OP_STRICT_LT = 3  # Strict numeric comparison (<), used by XGBoost
 
 # Leaf node types (stored in 1 byte)
 LEAF_CLASS = 0  # Leaf: classification (string index)
@@ -89,9 +90,9 @@ OFF_META_LEN = 32
 
 # Element sizes (bytes)
 SIZE_U16 = 2
-SIZE_F32 = 4  # 32-bit float (float pool entries)
+SIZE_F64 = 8  # Float64 preserves native thresholds and regression outputs
 SIZE_LEAF = 3  # type(1) + val(2) - no padding
-SIZE_DIST_ENTRY = 6  # class_idx(u16) + prob(f32)
+SIZE_DIST_ENTRY = 10  # class_idx(u16) + prob(f64)
 SIZE_FEAT_HEADER = 4  # name_idx(u16) + type_flags(u8) + n_cat(u8)
 SIZE_DECISION_HEADER = 3  # packed feat_op(1) + val(2); left/right follow as varints
 
@@ -181,12 +182,18 @@ def rebuild_tree_from_cart(
         op = node[1]
         feature_name = feature_names[feat] if feat < len(feature_names) else str(feat)
 
-        if op == OP_LT:
+        if op in (OP_LT, OP_STRICT_LT):
             _, _, val, left, right = node
             value = floats[val]
             left_tree = rebuild(left)
             right_tree = rebuild(right)
-            return [feature_name, "<", value, left_tree, right_tree]
+            return [
+                feature_name,
+                "lt" if op == OP_STRICT_LT else "<",
+                value,
+                left_tree,
+                right_tree,
+            ]
         elif op == OP_EQ:
             _, _, val, left, right = node
             value = strings[cat_vals[val]]

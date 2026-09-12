@@ -6,7 +6,7 @@ import csv
 import json
 from typing import Any, TextIO
 
-from .utils import format_to_delimiter
+from .utils import atomic_output_path, format_to_delimiter
 
 
 def _output_format_from_ext(path: str) -> str:
@@ -46,7 +46,10 @@ def write_vectors(
     """
     if isinstance(dest, str):
         fmt = format or _output_format_from_ext(dest)
-        with open(dest, "w", encoding="utf-8") as f:
+        with (
+            atomic_output_path(dest) as output,
+            open(output, "w", encoding="utf-8") as f,
+        ):
             _write_vectors(f, data, header, fmt, delimiter)
     else:
         _write_vectors(dest, data, header, format or "csv", delimiter)
@@ -63,6 +66,19 @@ def _write_vectors(
     # Handle single values (predictions)
     if data and not isinstance(data[0], list):
         data = [[v] for v in data]
+
+    if data:
+        width = len(data[0])
+        if header is not None and len(header) != width:
+            raise ValueError("Header columns do not match row columns")
+        if any(len(row) != width for row in data):
+            raise ValueError("All rows must have the same number of columns")
+    if format == "jsonl" and header is None and data:
+        header = [str(i) for i in range(1, len(data[0]) + 1)]
+    if format == "jsonl" and data and not header:
+        raise ValueError("JSONL rows must have at least one column")
+    if format == "jsonl" and header is not None and len(set(header)) != len(header):
+        raise ValueError("JSONL header columns must be unique")
 
     if format == "json":
         if header:
