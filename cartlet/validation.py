@@ -12,6 +12,86 @@ from typing import Any
 MODEL_SCHEMA_VERSION = 2
 
 
+def validate_training_parameters(
+    *,
+    max_depth: int | None,
+    min_samples_split: int,
+    min_samples_leaf: int,
+    n_estimators: int = 1,
+    n_jobs: int | None = None,
+    random_state: int | None = None,
+    trainer: str | None = None,
+    criterion: str = "entropy",
+    categorical_split: str = "exact",
+    store_distributions: bool = True,
+    prune: bool = False,
+    extra_trees: bool = False,
+    bootstrap: bool = True,
+) -> None:
+    """Shared tree/workflow parameter bounds, including backend restrictions.
+
+    Native depth zero means one leaf. Sklearn requires positive depth and at
+    least two samples for a split. None selects the native trainer; valid
+    integer n_jobs is ignored by native training.
+    """
+    for name, value in (
+        ("min_samples_split", min_samples_split),
+        ("min_samples_leaf", min_samples_leaf),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(f"{name} must be a positive integer")
+    if (
+        isinstance(n_estimators, bool)
+        or not isinstance(n_estimators, int)
+        or n_estimators <= 0
+    ):
+        raise ValueError("n_estimators must be a positive integer")
+    if max_depth is not None and (
+        isinstance(max_depth, bool) or not isinstance(max_depth, int) or max_depth < 0
+    ):
+        raise ValueError("max_depth must be a nonnegative integer or None")
+    for name, value in (("random_state", random_state), ("n_jobs", n_jobs)):
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int)
+        ):
+            raise ValueError(f"{name} must be an integer or None")
+    if n_jobs == 0:
+        raise ValueError("n_jobs must be nonzero")
+    for name, value in (
+        ("store_distributions", store_distributions),
+        ("prune", prune),
+        ("extra_trees", extra_trees),
+        ("bootstrap", bootstrap),
+    ):
+        if not isinstance(value, bool):
+            raise ValueError(f"{name} must be a boolean")
+    if trainer not in (None, "native", "sklearn"):
+        raise ValueError("trainer must be native or sklearn")
+    if criterion not in ("entropy", "gini") or categorical_split not in (
+        "exact",
+        "fast",
+    ):
+        raise ValueError("invalid criterion or categorical_split")
+    if trainer == "sklearn":
+        if max_depth == 0 or min_samples_split < 2:
+            raise ValueError(
+                "sklearn requires positive max_depth and min_samples_split >= 2"
+            )
+        if random_state is not None and not 0 <= random_state < 2**32:
+            raise ValueError("sklearn random_state must be in [0, 2**32)")
+
+
+def effective_validation_split(
+    prune: bool, validation_split: float, supported: bool
+) -> float:
+    """Reserve validation only for supported pruning, with no hidden fallback."""
+    if not prune or not supported:
+        return 0.0
+    if validation_split == 0:
+        raise ValueError("supported pruning requires positive validation_split")
+    return validation_split
+
+
 def validate_dataset(
     X: Sequence[Sequence[Any]],
     y: Sequence[Any] | None = None,

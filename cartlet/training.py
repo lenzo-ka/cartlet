@@ -31,9 +31,11 @@ from .types import (
 from .utils import tree_stats
 from .validation import (
     align_features,
+    effective_validation_split,
     require_distinct_paths,
     validate_dataset,
     validate_splits,
+    validate_training_parameters,
 )
 
 
@@ -43,7 +45,7 @@ class TrainingSettings:
 
     model_type: str = "tree"
     task: str = TASK_AUTO
-    trainer: str = "native"
+    trainer: str | None = "native"
     n_estimators: int = DEFAULT_N_ESTIMATORS
     extra_trees: bool = False
     max_depth: int | None = None
@@ -60,43 +62,31 @@ class TrainingSettings:
 
     def validate(self) -> None:
         """Reject unsupported settings before model construction or writing."""
-        validate_splits(self.validation_split, self.test_split)
+        validate_splits(self.validation_split, 0)
+        validate_splits(0, self.test_split)
         if self.model_type not in ("tree", "forest", "isolation") or self.task not in (
             TASK_AUTO,
             TASK_CLASSIFICATION,
             TASK_REGRESSION,
         ):
             raise ValueError("invalid model_type or task")
-        if (
-            self.trainer not in ("native", "sklearn")
-            or self.criterion not in ("entropy", "gini")
-            or self.categorical_split not in ("exact", "fast")
-        ):
-            raise ValueError("invalid trainer, criterion or categorical_split")
-        for name in ("n_estimators", "min_samples_split", "min_samples_leaf"):
-            value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-                raise ValueError(f"{name} must be a positive integer")
-        if self.max_depth is not None and (
-            isinstance(self.max_depth, bool)
-            or not isinstance(self.max_depth, int)
-            or self.max_depth < 0
-        ):
-            raise ValueError("max_depth must be a nonnegative integer or None")
-        for name in ("extra_trees", "prune", "store_distributions"):
-            if not isinstance(getattr(self, name), bool):
-                raise ValueError(f"{name} must be a boolean")
-        for name in ("random_state", "n_jobs"):
-            value = getattr(self, name)
-            if value is not None and (
-                isinstance(value, bool) or not isinstance(value, int)
-            ):
-                raise ValueError(f"{name} must be an integer or None")
-        if self.n_jobs == 0:
-            raise ValueError("n_jobs must be nonzero")
+        validate_training_parameters(
+            max_depth=self.max_depth,
+            min_samples_split=self.min_samples_split,
+            min_samples_leaf=self.min_samples_leaf,
+            n_estimators=self.n_estimators,
+            n_jobs=self.n_jobs,
+            random_state=self.random_state,
+            trainer=self.trainer,
+            criterion=self.criterion,
+            categorical_split=self.categorical_split,
+            store_distributions=self.store_distributions,
+            prune=self.prune,
+            extra_trees=self.extra_trees,
+        )
         if self.extra_trees and self.model_type != "forest":
             raise ValueError("extra_trees requires forest model_type")
-        if self.model_type == "isolation" and self.trainer != "native":
+        if self.model_type == "isolation" and self.trainer not in (None, "native"):
             raise ValueError("isolation workflow uses the native trainer")
 
     def to_dict(self) -> dict[str, Any]:
@@ -208,6 +198,8 @@ def train_model(
     test_X: list[list[Any]] = []
     test_y: list[Any] = []
     if config.model_type == "isolation":
+        if y is not None:
+            raise ValueError("isolation training requires unlabeled data")
         if counts is not None:
             raise ValueError("isolation training does not support instance weights")
         if feature_specs is not None:
@@ -284,6 +276,10 @@ def train_model(
             and config.trainer == "native"
             and task == TASK_CLASSIFICATION
         )
+        active_val = effective_validation_split(
+            config.prune, config.validation_split, effective_prune
+        )
+        validate_splits(active_val, config.test_split if test_data is None else 0)
         if config.prune and not effective_prune:
             warnings.append(
                 "pruning is unsupported for the selected model/task/trainer; no validation rows held out"
@@ -306,14 +302,13 @@ def train_model(
                 store_distributions=config.store_distributions, **kwargs
             )
             model.load_data(rows, targets, weights)
-            val = config.validation_split or DEFAULT_VALIDATION_SPLIT
-            if effective_prune and test_data is None and config.test_split:
-                val /= 1 - config.test_split
-            model.train(
+            val = active_val
+            model._train(
                 trainer=config.trainer,
                 random_state=config.random_state,
                 prune=effective_prune,
                 validation_split=val if effective_prune else 0,
+                validation_count=int(source_samples * val) if effective_prune else None,
             )
             stats = tree_stats(model.model)
             validation_samples = model.training_summary["validation_samples"]
@@ -394,6 +389,8 @@ def train_file(
             target_col=target,
             column_names=column_names,
         )
+    if config.model_type == "isolation":
+        y = None  # An explicitly selected label column is excluded, not trained.
     test_data = None
     if test_file is not None:
         test_X, test_y, test_names, _ = load_training_data(
