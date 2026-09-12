@@ -2,6 +2,7 @@
 
 import csv
 from io import StringIO
+from types import GeneratorType
 
 import pytest
 
@@ -148,5 +149,6 @@ def test_stream_does_not_consume_next_data_record():
     rows = loader.iter_vectors(source)
     assert next(rows) == (["1"], "a")
     assert source.readline() == "2,b\n"
+    assert isinstance(rows, GeneratorType)
     rows.close()
     assert not source.closed
