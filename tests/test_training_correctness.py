@@ -1,6 +1,7 @@
 """Regressions for numerical stability and consistent training constraints."""
 
 import math
+from typing import cast
 
 import pytest
 
@@ -25,7 +26,7 @@ def test_regression_target_translation_preserves_split(categorical):
         tree.load_data(X, [offset, offset, offset, offset + 1], [1, 2, 3, 4])
         tree.train()
         assert isinstance(tree.model, list) and len(tree.model) == 5
-        predictions.append([tree.predict(row) - offset for row in X])
+        predictions.append([cast(float, tree.predict(row)) - offset for row in X])
     for actual in predictions[1:]:
         assert actual == pytest.approx(predictions[0], abs=1e-6)
 
