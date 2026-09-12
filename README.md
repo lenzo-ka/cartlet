@@ -508,8 +508,8 @@ xgb.export("model.cart")            # cross-language inference
 xgb.export("model.xgb")             # native XGBoost format
 ```
 
-Requires `xgboost`. See the [XGBoost section](#xgboosttree-1) for the full
-constructor signature.
+Requires `xgboost`. See [training semantics](https://github.com/lenzo-ka/cartlet/blob/main/docs/training.md)
+for native-format roundtrips and export behavior.
 
 ### Format conversion
 
