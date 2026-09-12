@@ -27,6 +27,7 @@ from .types import (
     infer_feature_specs,
     is_likely_regression,
 )
+from .validation import validate_dataset
 
 _DEFAULT_BASE_SCORE = 0.5
 _UNKNOWN_CATEGORY = -1
@@ -115,9 +116,10 @@ class XGBoostTree(BaseModel):
         Returns None, matching ``DecisionTree.load_data`` and
         ``RandomForest.load_data`` (previously returned ``self``).
         """
-        self.X = list(X)
-        self.y = list(y)
-        self.counts = counts or [1] * len(y)
+        rows, targets, weights = validate_dataset(X, y, counts)
+        self.X = rows
+        self.y = targets if targets is not None else []
+        self.counts = weights
         self._infer_features()
 
     def _infer_features(self) -> None:

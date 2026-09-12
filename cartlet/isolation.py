@@ -16,6 +16,7 @@ from typing import Any
 from .io.utils import open_file, open_file_binary, resolve_format
 from .types import _MAX_RANDOM_SEED, DEFAULT_N_ESTIMATORS
 from .utils import default_logger
+from .validation import validate_dataset
 
 _EULER_MASCHERONI = 0.5772156649
 
@@ -79,7 +80,8 @@ class IsolationForest:
 
     def load_data(self, X: list[list[Any]]) -> None:
         """Load training data (no labels — unsupervised)."""
-        self.X = [[float(v) for v in row] for row in X]
+        rows, _, _ = validate_dataset(X)
+        self.X = [[float(v) for v in row] for row in rows]
         if not self.feature_names and X:
             self.feature_names = [f"f{i}" for i in range(len(X[0]))]
 
@@ -119,11 +121,27 @@ class IsolationForest:
         if not self.X:
             raise ValueError("No training data loaded. Call load_data() first.")
 
+        if (
+            isinstance(self.n_estimators, bool)
+            or not isinstance(self.n_estimators, int)
+            or self.n_estimators <= 0
+        ):
+            raise ValueError("n_estimators must be a positive integer")
+        if self.max_depth is not None and (
+            isinstance(self.max_depth, bool)
+            or not isinstance(self.max_depth, int)
+            or self.max_depth < 0
+        ):
+            raise ValueError("max_depth must be a nonnegative integer or None")
         n = len(self.X)
         sub_size = self._resolve_max_samples(n)
         self._n_samples_used = sub_size
 
-        depth_limit = self.max_depth or math.ceil(math.log2(max(sub_size, 2)))
+        depth_limit = (
+            self.max_depth
+            if self.max_depth is not None
+            else math.ceil(math.log2(max(sub_size, 2)))
+        )
 
         rng = random.Random(self.random_state)
         self.trees = []

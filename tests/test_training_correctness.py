@@ -100,3 +100,35 @@ def test_xgboost_multiclass_training_supports_current_vector_intercepts():
     if isinstance(tree.base_score, list):
         assert len(tree.base_score) == 3
         assert all(math.isfinite(value) for value in tree.base_score)
+
+
+def test_xgboost_dataset_is_detached_and_validated():
+    from cartlet.xgboost import XGBoostTree
+
+    tree = XGBoostTree(task="regression")
+    X, counts = [[1.0], [2.0]], [1, 2]
+    tree.load_data(X, [1.0, 2.0], counts)
+    X[0][0] = 9.0
+    counts[0] = 9
+    assert tree.X == [[1.0], [2.0]] and tree.counts == [1, 2]
+    with pytest.raises(ValueError, match="same length"):
+        tree.load_data([[1], [2]], [1])
+    assert tree.X == [[1.0], [2.0]]
+    with pytest.raises(ValueError, match="positive total"):
+        tree.load_data([[1], [2]], [1, 2], [0, 0])
+    tree.load_data([[1], [2]], [1, 2], [0, 2])
+    assert tree.X == [[2]] and tree.y == [2] and tree.counts == [2]
+
+
+def test_isolation_training_options_validate_before_replacing_trees():
+    tree = IsolationForest(n_estimators=1, max_depth=0)
+    tree.load_data([[1], [2]])
+    tree.train()
+    assert tree.trees == [2]
+    tree.n_estimators = 0
+    with pytest.raises(ValueError, match="positive integer"):
+        tree.train()
+    assert tree.trees == [2]
+    with pytest.raises(ValueError, match="rectangular"):
+        tree.load_data([[1], [1, 2]])
+    assert tree.X == [[1.0], [2.0]]
