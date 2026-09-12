@@ -150,6 +150,8 @@ def validate_model_data(data: Any, *, forest: bool = False) -> None:
         not isinstance(s, dict) or not isinstance(s.get("name"), str) for s in specs
     ):
         raise ValueError("model feature_specs must contain named objects")
+    if specs and [spec["name"] for spec in specs] != names:
+        raise ValueError("model feature_specs must match feature_names in order")
     for spec in specs:
         dtype, kind = spec.get("dtype", "str"), spec.get("type")
         if (
@@ -167,6 +169,10 @@ def validate_model_data(data: Any, *, forest: bool = False) -> None:
             or any(not isinstance(v, (str, int, float, bool)) for v in values)
         ):
             raise ValueError("model categorical values must be scalar sequences")
+        if values is not None and any(
+            isinstance(v, (int, float)) and not math.isfinite(v) for v in values
+        ):
+            raise ValueError("model categorical values must be finite")
     if (
         not isinstance(data.get("metadata", {}), dict)
         or not isinstance(data.get("task", "auto"), str)
@@ -225,6 +231,7 @@ def validate_model_data(data: Any, *, forest: bool = False) -> None:
                     isinstance(feature, int)
                     and not isinstance(feature, bool)
                     and feature >= 0
+                    and (not names or feature < len(names))
                 )
             ) or op not in ("=", "<=", "<"):
                 raise ValueError("invalid model decision reference or operator")
