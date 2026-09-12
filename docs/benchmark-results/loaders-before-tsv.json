@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "generator_version": 1,
+  "measurement": {
+    "timing": "perf_counter, warmed, untraced, GC collected before each call",
+    "memory": "one separate tracemalloc run, additional Python allocation peak, bytes; excludes existing inputs and native buffers",
+    "model_format": "cart",
+    "warmups": 1
+  },
+  "provenance": {
+    "source_sha256": "cdc6274d0481d963cfde12aefc7630abfae674a96ac88966285558e16c35a612",
+    "revision": "f89459896607cbcebbd1c8ed07a944329571338f",
+    "dirty": false,
+    "versions": {
+      "cartlet": "0.5.0",
+      "python": "3.12.11",
+      "numpy": "2.5.0",
+      "scipy": "1.18.0",
+      "scikit-learn": "1.9.0",
+      "joblib": "1.5.3"
+    },
+    "system": "Darwin",
+    "machine": "arm64"
+  },
+  "settings": {
+    "rows": 100000,
+    "features": 12,
+    "categories": 128,
+    "trees": 16,
+    "depth": 6,
+    "predictions": 2000,
+    "repeats": 3,
+    "seed": 42,
+    "backend": "native",
+    "data_format": "tsv"
+  },
+  "results": [
+    {
+      "case": "numeric",
+      "stage": "read_vectors",
+      "dataset_sha256": "95a7314bd4919c36f065f86700cdd5e27ff5804f7c8164306305cfcf7fd227ff",
+      "dataset_bytes": 18200107,
+      "parity_rows": 0,
+      "model_bytes": null,
+      "seconds": [
+        0.2542113750241697,
+        0.2503625419922173,
+        0.25876724999397993
+      ],
+      "median_seconds": 0.2542113750241697,
+      "peak_python_bytes": 106026310,
+      "predictions_per_second": null
+    },
+    {
+      "case": "numeric",
+      "stage": "load_training_data",
+      "dataset_sha256": "95a7314bd4919c36f065f86700cdd5e27ff5804f7c8164306305cfcf7fd227ff",
+      "dataset_bytes": 18200107,
+      "parity_rows": 0,
+      "model_bytes": null,
+      "seconds": [
+        0.34838004200719297,
+        0.3414765000343323,
+        0.34182591713033617
+      ],
+      "median_seconds": 0.34182591713033617,
+      "peak_python_bytes": 134822506,
+      "predictions_per_second": null
+    },
+    {
+      "case": "categorical",
+      "stage": "read_vectors",
+      "dataset_sha256": "b73fae392f7d1e044a4b8deedaf372b62e62698215b400e6957a6c0cbfbe68c8",
+      "dataset_bytes": 19400044,
+      "parity_rows": 0,
+      "model_bytes": null,
+      "seconds": [
+        0.26957516581751406,
+        0.262520041083917,
+        0.28039354202337563
+      ],
+      "median_seconds": 0.26957516581751406,
+      "peak_python_bytes": 107226159,
+      "predictions_per_second": null
+    },
+    {
+      "case": "categorical",
+      "stage": "load_training_data",
+      "dataset_sha256": "b73fae392f7d1e044a4b8deedaf372b62e62698215b400e6957a6c0cbfbe68c8",
+      "dataset_bytes": 19400044,
+      "parity_rows": 0,
+      "model_bytes": null,
+      "seconds": [
+        0.29080154187977314,
+        0.29910220787860453,
+        0.2950529591180384
+      ],
+      "median_seconds": 0.2950529591180384,
+      "peak_python_bytes": 107222363,
+      "predictions_per_second": null
+    }
+  ]
+}

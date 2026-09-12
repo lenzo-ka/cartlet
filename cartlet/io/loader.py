@@ -67,6 +67,67 @@ def _resolve_target_key(target_col: str | int | None, keys: list[str]) -> str:
     raise ValueError(f"Target column '{target_col}' not found. Available: {keys}")
 
 
+def _tabular_data(
+    source: TextIO,
+    delimiter: str,
+    has_header: bool,
+    column_names: list[str] | None = None,
+    *,
+    require_data: bool = True,
+) -> tuple[list[str], Iterator[list[str]]]:
+    """Read the schema and iterate valid records without retaining raw data.
+
+    Empty CSV records are ignored, including before the header. Record numbers
+    count CSV records (a quoted multiline field still belongs to one record).
+    """
+    records = (
+        (number, row)
+        for number, row in enumerate(csv.reader(source, delimiter=delimiter), 1)
+        if row
+    )
+    first = next(records, None)
+    if first is None:
+        if require_data:
+            raise ValueError("Empty input")
+        return [], iter(())
+    _, first_row = first
+    header = (
+        [normalize_text(cell) for cell in first_row]
+        if has_header
+        else [str(i) for i in range(1, len(first_row) + 1)]
+    )
+    if column_names:
+        if len(column_names) != len(header):
+            raise ValueError(
+                f"Column names count ({len(column_names)}) doesn't match "
+                f"data columns ({len(header)})"
+            )
+        header = column_names
+    if has_header:
+        first = next(records, None)
+        if first is None:
+            if require_data:
+                raise ValueError("No data rows")
+            return header, iter(())
+    return header, _valid_tabular_rows(chain([first], records), len(header))
+
+
+def _valid_tabular_rows(
+    records: Iterator[tuple[int, list[str]]], width: int
+) -> Iterator[list[str]]:
+    """Apply the shared ragged-record and Unicode policy one row at a time."""
+    for number, row in records:
+        if len(row) != width:
+            _logger.warning(
+                "Skipping malformed row %d: expected %d columns, got %d",
+                number,
+                width,
+                len(row),
+            )
+            continue
+        yield [normalize_text(cell) for cell in row]
+
+
 # =============================================================================
 # High-level data loading
 # =============================================================================
@@ -109,62 +170,18 @@ def load_training_data(
     if delimiter is None:
         delimiter = detect_delimiter(path)
 
-    with open(path, encoding="utf-8") as f:
-        reader = csv.reader(f, delimiter=delimiter)
-        rows = [[normalize_text(cell) for cell in row] for row in reader]
-
-    if not rows:
-        raise ValueError(f"Empty file: {path}")
-
-    # Extract header
-    if has_header:
-        header = rows[0]
-        data_rows = rows[1:]
-    else:
-        # 1-indexed like Unix cut/paste
-        header = [str(i) for i in range(1, len(rows[0]) + 1)]
-        data_rows = rows
-
-    # Override header with explicit column names if provided
-    if column_names:
-        if len(column_names) != len(rows[0]):
-            raise ValueError(
-                f"Column names count ({len(column_names)}) doesn't match "
-                f"data columns ({len(rows[0])})"
+    with open(path, encoding="utf-8") as source:
+        header, rows = _tabular_data(source, delimiter, has_header, column_names)
+        target_idx = _resolve_target_idx(target_col, header)
+        target_name = header[target_idx]
+        feature_names = [h for i, h in enumerate(header) if i != target_idx]
+        X: list[list[Any]] = []
+        y: list[Any] = []
+        for row in rows:
+            X.append(
+                [try_numeric(value) for i, value in enumerate(row) if i != target_idx]
             )
-        header = column_names
-
-    if not data_rows:
-        raise ValueError(f"No data rows in file: {path}")
-
-    # Determine target column index
-    target_idx = _resolve_target_idx(target_col, header)
-
-    # Split into features and target
-    target_name = header[target_idx]
-    feature_names = [h for i, h in enumerate(header) if i != target_idx]
-    X: list[list[Any]] = []
-    y: list[Any] = []
-
-    for row_num, row in enumerate(data_rows, start=2 if has_header else 1):
-        if len(row) != len(header):
-            _logger.warning(
-                "Skipping malformed row %d: expected %d columns, got %d",
-                row_num,
-                len(header),
-                len(row),
-            )
-            continue
-        features = [row[i] for i in range(len(row)) if i != target_idx]
-        target = row[target_idx]
-
-        # Convert numeric values
-        converted_features = [try_numeric(v) for v in features]
-        target_val = try_numeric(target)
-
-        X.append(converted_features)
-        y.append(target_val)
-
+            y.append(try_numeric(row[target_idx]))
     return X, y, feature_names, target_name
 
 
@@ -246,40 +263,18 @@ def _read_vectors(
         return _read_jsonl(f, target_col, labeled)
 
     delimiter = delimiter or format_to_delimiter(format)
-    reader = csv.reader(f, delimiter=delimiter)
-    # Normalize all text values to NFC
-    rows = [
-        [normalize_text(cell) if isinstance(cell, str) else cell for cell in row]
-        for row in reader
-    ]
-
-    if not rows:
-        raise ValueError("Empty input")
-
-    # Header
-    if has_header:
-        header, data = rows[0], rows[1:]
-    else:
-        header = [str(i) for i in range(1, len(rows[0]) + 1)]  # 1-indexed
-        data = rows
-
-    if not data:
-        raise ValueError("No data rows")
-
+    header, rows = _tabular_data(f, delimiter, has_header)
     if not labeled:
-        X = [row for row in data if len(row) == len(header)]
-        return X, None, header, None
+        return list(rows), None, header, None
 
     target_idx = _resolve_target_idx(target_col, header)
-
     target_name = header[target_idx]
     feature_names = [h for i, h in enumerate(header) if i != target_idx]
-    X = [
-        [row[i] for i in range(len(row)) if i != target_idx]
-        for row in data
-        if len(row) == len(header)
-    ]
-    y = [row[target_idx] for row in data if len(row) == len(header)]
+    X: list[list[Any]] = []
+    y: list[Any] = []
+    for row in rows:
+        X.append([value for i, value in enumerate(row) if i != target_idx])
+        y.append(row[target_idx])
     return X, y, feature_names, target_name
 
 
@@ -360,36 +355,9 @@ def _iter_vectors(
             yield features, label
     else:
         delimiter = delimiter or format_to_delimiter(format)
-        reader = csv.reader(f, delimiter=delimiter)
-
-        # Track the expected row width so malformed rows are skipped exactly as
-        # the batch reader (_read_vectors) does, rather than yielding ragged
-        # vectors that silently disagree with the non-streaming path.
-        expected_width: int | None = None
-        if has_header:
-            try:
-                header = next(reader)
-            except StopIteration:
-                return
-            expected_width = len(header)
-
-        for row in reader:
-            if not row:
-                continue
-            row = [normalize_text(c) if isinstance(c, str) else c for c in row]
-            if expected_width is None:
-                expected_width = len(row)
-            if len(row) != expected_width:
-                _logger.warning(
-                    "Skipping malformed row: expected %d columns, got %d",
-                    expected_width,
-                    len(row),
-                )
-                continue
+        _, rows = _tabular_data(f, delimiter, has_header, require_data=False)
+        for row in rows:
             if labeled:
-                features = row[:-1]
-                label = row[-1]
+                yield row[:-1], row[-1]
             else:
-                features = row
-                label = None
-            yield features, label
+                yield row, None

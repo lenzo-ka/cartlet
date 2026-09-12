@@ -26,6 +26,10 @@ requires it.
 
 ### Correctness and efficiency
 
+- Process CSV/TSV/SSV records incrementally during batch loading to reduce peak
+  memory. Share record validation with streaming readers; ignore blank records
+  before headers consistently and warn when skipping ragged records.
+
 - Stabilize regression split statistics under target offsets and extreme finite
   feature bounds; choose varying columns for isolation-tree splits.
 - Preserve XGBoost strict float32 comparisons and multiclass intercepts through

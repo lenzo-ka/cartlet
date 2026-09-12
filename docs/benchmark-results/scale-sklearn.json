@@ -1,0 +1,327 @@
+{
+  "schema_version": 1,
+  "generator_version": 1,
+  "measurement": {
+    "timing": "perf_counter, warmed, untraced, GC collected before each call",
+    "memory": "one separate tracemalloc run, additional Python allocation peak, bytes; excludes existing inputs and native buffers",
+    "model_format": "cart",
+    "warmups": 1
+  },
+  "provenance": {
+    "source_sha256": "cdc6274d0481d963cfde12aefc7630abfae674a96ac88966285558e16c35a612",
+    "revision": "f89459896607cbcebbd1c8ed07a944329571338f",
+    "dirty": false,
+    "versions": {
+      "cartlet": "0.5.0",
+      "python": "3.12.11",
+      "numpy": "2.5.0",
+      "scipy": "1.18.0",
+      "scikit-learn": "1.9.0",
+      "joblib": "1.5.3"
+    },
+    "system": "Darwin",
+    "machine": "arm64"
+  },
+  "settings": {
+    "rows": 500,
+    "features": 6,
+    "categories": 128,
+    "trees": 16,
+    "depth": 6,
+    "predictions": 2000,
+    "repeats": 3,
+    "seed": 42,
+    "backend": "sklearn",
+    "data_format": "tsv"
+  },
+  "results": [
+    {
+      "case": "numeric",
+      "stage": "read_vectors",
+      "dataset_sha256": "858b72ce20437e2dd9f18ad9ec79710efa70b78bb6089a3da5ae97ccdcfc0365",
+      "dataset_bytes": 46026,
+      "parity_rows": 100,
+      "model_bytes": null,
+      "seconds": [
+        0.0006117089651525021,
+        0.0006039999425411224,
+        0.000617374898865819
+      ],
+      "median_seconds": 0.0006117089651525021,
+      "peak_python_bytes": 324925,
+      "predictions_per_second": null
+    },
+    {
+      "case": "numeric",
+      "stage": "load_training_data",
+      "dataset_sha256": "858b72ce20437e2dd9f18ad9ec79710efa70b78bb6089a3da5ae97ccdcfc0365",
+      "dataset_bytes": 46026,
+      "parity_rows": 100,
+      "model_bytes": null,
+      "seconds": [
+        0.000845625065267086,
+        0.000872874865308404,
+        0.0008487501181662083
+      ],
+      "median_seconds": 0.0008487501181662083,
+      "peak_python_bytes": 393049,
+      "predictions_per_second": null
+    },
+    {
+      "case": "numeric",
+      "stage": "train",
+      "dataset_sha256": "858b72ce20437e2dd9f18ad9ec79710efa70b78bb6089a3da5ae97ccdcfc0365",
+      "dataset_bytes": 46026,
+      "parity_rows": 100,
+      "model_bytes": null,
+      "seconds": [
+        0.002142125042155385,
+        0.0021189998369663954,
+        0.002093666000291705
+      ],
+      "median_seconds": 0.0021189998369663954,
+      "peak_python_bytes": 297937,
+      "predictions_per_second": null
+    },
+    {
+      "case": "numeric",
+      "stage": "export",
+      "dataset_sha256": "858b72ce20437e2dd9f18ad9ec79710efa70b78bb6089a3da5ae97ccdcfc0365",
+      "dataset_bytes": 46026,
+      "parity_rows": 100,
+      "model_bytes": 490,
+      "seconds": [
+        0.0006192917935550213,
+        0.0005959169939160347,
+        0.0005562079604715109
+      ],
+      "median_seconds": 0.0005959169939160347,
+      "peak_python_bytes": 14959,
+      "predictions_per_second": null
+    },
+    {
+      "case": "numeric",
+      "stage": "load",
+      "dataset_sha256": "858b72ce20437e2dd9f18ad9ec79710efa70b78bb6089a3da5ae97ccdcfc0365",
+      "dataset_bytes": 46026,
+      "parity_rows": 100,
+      "model_bytes": 490,
+      "seconds": [
+        0.0001252500806003809,
+        0.00010241707786917686,
+        0.0001050001010298729
+      ],
+      "median_seconds": 0.0001050001010298729,
+      "peak_python_bytes": 9866,
+      "predictions_per_second": null
+    },
+    {
+      "case": "numeric",
+      "stage": "predict",
+      "dataset_sha256": "858b72ce20437e2dd9f18ad9ec79710efa70b78bb6089a3da5ae97ccdcfc0365",
+      "dataset_bytes": 46026,
+      "parity_rows": 100,
+      "model_bytes": 490,
+      "seconds": [
+        0.0011390841100364923,
+        0.001123833004385233,
+        0.001123000169172883
+      ],
+      "median_seconds": 0.001123833004385233,
+      "peak_python_bytes": 16464,
+      "predictions_per_second": 1779623.833964597
+    },
+    {
+      "case": "categorical",
+      "stage": "read_vectors",
+      "dataset_sha256": "7d61e37f177410d9dd2462ea609f7224f625817fee39bbb34612ad804ceea6a5",
+      "dataset_bytes": 49024,
+      "parity_rows": 100,
+      "model_bytes": null,
+      "seconds": [
+        0.0006099999882280827,
+        0.0006272080354392529,
+        0.0006200422067195177
+      ],
+      "median_seconds": 0.0006200422067195177,
+      "peak_python_bytes": 327843,
+      "predictions_per_second": null
+    },
+    {
+      "case": "categorical",
+      "stage": "load_training_data",
+      "dataset_sha256": "7d61e37f177410d9dd2462ea609f7224f625817fee39bbb34612ad804ceea6a5",
+      "dataset_bytes": 49024,
+      "parity_rows": 100,
+      "model_bytes": null,
+      "seconds": [
+        0.0007269158959388733,
+        0.0007277498953044415,
+        0.0007067089900374413
+      ],
+      "median_seconds": 0.0007269158959388733,
+      "peak_python_bytes": 324007,
+      "predictions_per_second": null
+    },
+    {
+      "case": "categorical",
+      "stage": "train",
+      "dataset_sha256": "7d61e37f177410d9dd2462ea609f7224f625817fee39bbb34612ad804ceea6a5",
+      "dataset_bytes": 49024,
+      "parity_rows": 100,
+      "model_bytes": null,
+      "seconds": [
+        0.0026057499926537275,
+        0.0025775409303605556,
+        0.0025212501641362906
+      ],
+      "median_seconds": 0.0025775409303605556,
+      "peak_python_bytes": 522150,
+      "predictions_per_second": null
+    },
+    {
+      "case": "categorical",
+      "stage": "export",
+      "dataset_sha256": "7d61e37f177410d9dd2462ea609f7224f625817fee39bbb34612ad804ceea6a5",
+      "dataset_bytes": 49024,
+      "parity_rows": 100,
+      "model_bytes": 4036,
+      "seconds": [
+        0.0008159999269992113,
+        0.0007041250355541706,
+        0.0007171668112277985
+      ],
+      "median_seconds": 0.0007171668112277985,
+      "peak_python_bytes": 29474,
+      "predictions_per_second": null
+    },
+    {
+      "case": "categorical",
+      "stage": "load",
+      "dataset_sha256": "7d61e37f177410d9dd2462ea609f7224f625817fee39bbb34612ad804ceea6a5",
+      "dataset_bytes": 49024,
+      "parity_rows": 100,
+      "model_bytes": 4036,
+      "seconds": [
+        0.0001411670818924904,
+        0.0001663339789956808,
+        0.00013141706585884094
+      ],
+      "median_seconds": 0.0001411670818924904,
+      "peak_python_bytes": 24932,
+      "predictions_per_second": null
+    },
+    {
+      "case": "categorical",
+      "stage": "predict",
+      "dataset_sha256": "7d61e37f177410d9dd2462ea609f7224f625817fee39bbb34612ad804ceea6a5",
+      "dataset_bytes": 49024,
+      "parity_rows": 100,
+      "model_bytes": 4036,
+      "seconds": [
+        0.0017034579068422318,
+        0.0016973328310996294,
+        0.0016812090761959553
+      ],
+      "median_seconds": 0.0016973328310996294,
+      "peak_python_bytes": 16464,
+      "predictions_per_second": 1178319.2803171582
+    },
+    {
+      "case": "forest",
+      "stage": "read_vectors",
+      "dataset_sha256": "858b72ce20437e2dd9f18ad9ec79710efa70b78bb6089a3da5ae97ccdcfc0365",
+      "dataset_bytes": 46026,
+      "parity_rows": 100,
+      "model_bytes": null,
+      "seconds": [
+        0.0006002078298479319,
+        0.0005896668881177902,
+        0.0005798749625682831
+      ],
+      "median_seconds": 0.0005896668881177902,
+      "peak_python_bytes": 324845,
+      "predictions_per_second": null
+    },
+    {
+      "case": "forest",
+      "stage": "load_training_data",
+      "dataset_sha256": "858b72ce20437e2dd9f18ad9ec79710efa70b78bb6089a3da5ae97ccdcfc0365",
+      "dataset_bytes": 46026,
+      "parity_rows": 100,
+      "model_bytes": null,
+      "seconds": [
+        0.0008474579080939293,
+        0.0008812500163912773,
+        0.0009047500789165497
+      ],
+      "median_seconds": 0.0008812500163912773,
+      "peak_python_bytes": 393009,
+      "predictions_per_second": null
+    },
+    {
+      "case": "forest",
+      "stage": "train",
+      "dataset_sha256": "858b72ce20437e2dd9f18ad9ec79710efa70b78bb6089a3da5ae97ccdcfc0365",
+      "dataset_bytes": 46026,
+      "parity_rows": 100,
+      "model_bytes": null,
+      "seconds": [
+        0.011031208094209433,
+        0.011015249881893396,
+        0.010641083121299744
+      ],
+      "median_seconds": 0.011015249881893396,
+      "peak_python_bytes": 332445,
+      "predictions_per_second": null
+    },
+    {
+      "case": "forest",
+      "stage": "export",
+      "dataset_sha256": "858b72ce20437e2dd9f18ad9ec79710efa70b78bb6089a3da5ae97ccdcfc0365",
+      "dataset_bytes": 46026,
+      "parity_rows": 100,
+      "model_bytes": 6878,
+      "seconds": [
+        0.00094429193995893,
+        0.0009490419179201126,
+        0.0009066250640898943
+      ],
+      "median_seconds": 0.00094429193995893,
+      "peak_python_bytes": 88603,
+      "predictions_per_second": null
+    },
+    {
+      "case": "forest",
+      "stage": "load",
+      "dataset_sha256": "858b72ce20437e2dd9f18ad9ec79710efa70b78bb6089a3da5ae97ccdcfc0365",
+      "dataset_bytes": 46026,
+      "parity_rows": 100,
+      "model_bytes": 6878,
+      "seconds": [
+        0.00032012490555644035,
+        0.000327790854498744,
+        0.00031841592863202095
+      ],
+      "median_seconds": 0.00032012490555644035,
+      "peak_python_bytes": 88138,
+      "predictions_per_second": null
+    },
+    {
+      "case": "forest",
+      "stage": "predict",
+      "dataset_sha256": "858b72ce20437e2dd9f18ad9ec79710efa70b78bb6089a3da5ae97ccdcfc0365",
+      "dataset_bytes": 46026,
+      "parity_rows": 100,
+      "model_bytes": 6878,
+      "seconds": [
+        0.02350908308289945,
+        0.02343408390879631,
+        0.02364349993877113
+      ],
+      "median_seconds": 0.02350908308289945,
+      "peak_python_bytes": 17432,
+      "predictions_per_second": 85073.50086549329
+    }
+  ]
+}
