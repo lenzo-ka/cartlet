@@ -29,3 +29,14 @@ for multiclass export. Prediction parity should be checked at split boundaries
 as well as ordinary examples. Models whose missing-value direction cannot be
 represented still warn explicitly; this limitation is separate from ordinary
 numeric boundary semantics.
+
+## Native XGBoost artifacts
+
+XGBoostTree.export writes native Booster JSON for .json, or its native binary
+format for .ubj/.xgb. This differs from the generic Cartlet JSON envelope used
+by DecisionTree and RandomForest: load it with XGBoostTree.load/load_model, not
+the generic convert workflow. A versioned Booster attribute stores Cartlet's
+feature specifications, resolved task and class labels; no sidecar is required.
+Reloaded models retain predictions and can re-export .cart for either runtime.
+External native boosters lacking this metadata are rejected clearly; use the
+upstream XGBoost API for those artifacts instead of inventing labels.
