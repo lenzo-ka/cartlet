@@ -133,3 +133,10 @@ report = run_benchmarks(
 )
 print(render_tsv(report), end="")
 ```
+
+## Recorded measurements
+
+See [scalability measurement snapshots](scalability_results.md) for the pinned
+loader before/after comparison and baseline native/sklearn workflow observations,
+with their raw JSON reports. Re-run the recipes at clean source revisions to
+refresh conclusions; historical reports retain the revisions they measured.
