@@ -415,7 +415,7 @@ class XGBoostTree(BaseModel):
                 cases[cat_val] = yes_child
             return [feat_name, "switch", cases, no_child]
 
-        return [feat_name, "lt", float(split_condition), yes_child, no_child]
+        return [feat_name, "<", float(split_condition), yes_child, no_child]
 
     def _get_category_value(self, feat_name: str, cat_idx: int) -> str:
         """Get category string value from index."""

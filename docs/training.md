@@ -23,7 +23,8 @@ partition becomes an unsplittable leaf when all columns are constant, rather tha
 when one randomly selected column happens to be constant.
 
 XGBoost export retains strict numerical split comparisons, unlike the native
-CART trainer's inclusive threshold convention. Current XGBoost releases can
+CART trainer's inclusive `<=` convention. Strict comparisons use `<`.
+Current XGBoost releases can
 provide a separate base margin for each class; these intercepts must be retained
 for multiclass export. Prediction parity should be checked at split boundaries
 as well as ordinary examples. Models whose missing-value direction cannot be
