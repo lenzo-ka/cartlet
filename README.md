@@ -232,13 +232,14 @@ set `type="num"` for ordered threshold splits.
 
 Distribution storage knobs (`store_distributions`, `min_dist_entropy`,
 `min_confidence`) only apply to classification trees. They trade `.cart` file
-size and `predict_nbest` fidelity for predictability:
+size against `predict_nbest` fidelity. Training-time collapse cannot be undone
+by asking an exporter to retain distributions later:
 
 | Setting | Effect |
 |---------|--------|
 | `store_distributions=False` | Leaves store only the best class; `predict_nbest` will return 1 result. |
-| `store_distributions=True`, low `min_confidence` | Almost every leaf keeps its full distribution (largest models). |
-| `store_distributions=True`, `min_confidence=1.0` | Always keep distributions, never collapse. |
+| `store_distributions=True`, lower `min_confidence` | More leaves collapse to their best class. |
+| `store_distributions=True`, `min_confidence=1.0` | Disable confidence-based collapse; entropy and negligible-probability filtering still apply. |
 | `min_dist_entropy=0.0` | Never use entropy as a collapse trigger. |
 
 ### RandomForest

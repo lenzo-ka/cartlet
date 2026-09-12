@@ -13,7 +13,7 @@ config (e.g. locale, model version) alongside the model itself.
 Run::
 
     python -m examples.iris_runner_deploy
-    python -m examples.iris_runner_deploy -o /tmp/iris.cart
+    python -m examples.iris_runner_deploy -o iris.cart
 """
 
 from __future__ import annotations
@@ -50,8 +50,7 @@ def run(
     * ``accuracy`` -- in-memory test accuracy.
     * ``agreement`` -- fraction of test rows where the in-memory model
       and the reloaded ``Predictor`` produce identical labels. Should be
-      ~1.0 (a small number of boundary rows may flip because ``.cart``
-      stores thresholds as float32).
+      1.0: format 2 preserves native numerical thresholds as float64.
     * ``metadata`` -- the trailer dict read back from the exported file.
     """
     dataset = load_dataset(
