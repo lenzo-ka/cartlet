@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import math
 import pickle
+from copy import deepcopy
 from typing import Any
 
 from .base import BaseModel
@@ -118,10 +119,22 @@ class XGBoostTree(BaseModel):
         ``RandomForest.load_data`` (previously returned ``self``).
         """
         rows, targets, weights = validate_dataset(X, y, counts)
-        self.X = rows
-        self.y = targets if targets is not None else []
-        self.counts = weights
-        self._infer_features()
+        previous = self.__dict__.copy()
+        try:
+            self.feature_specs = deepcopy(self.feature_specs)
+            self.X = rows
+            self.y = targets if targets is not None else []
+            self.counts = weights
+            self.class_labels = []
+            self._infer_features()
+        except Exception:
+            self.__dict__.clear()
+            self.__dict__.update(previous)
+            raise
+        self._xgb_model = None
+        self.trees = []
+        self.base_score = _DEFAULT_BASE_SCORE
+        self._warned_missing_direction = False
 
     def _infer_features(self) -> None:
         """Infer feature types from data."""
@@ -429,18 +442,11 @@ class XGBoostTree(BaseModel):
         return self._xgb_model.predict(dtest)[0]
 
     def _require_class_labels(self) -> None:
-        """Fail clearly if a classification predict is attempted without labels.
-
-        ``XGBoostTree.load()`` / ``_load_pickle`` restore only the raw Booster;
-        feature specs and class labels are not persisted there, so a
-        classification predict would otherwise raise an opaque IndexError.
-        """
+        """Require class labels restored from training or native metadata."""
         if not self.class_labels:
             raise ValueError(
-                "This XGBoost model has no class labels. Models loaded via "
-                "XGBoostTree.load() or from a pickle do not carry feature specs "
-                "or class labels; set feature_specs and class_labels (e.g. via "
-                "load_data + train) before a classification predict."
+                "Classification metadata is missing; train first or load a "
+                "Cartlet-exported native XGBoost model"
             )
 
     def predict(self, vector: list[Any], **kwargs: Any) -> Any:
@@ -464,6 +470,8 @@ class XGBoostTree(BaseModel):
 
         self._require_class_labels()
         n_classes = len(self.class_labels)
+        if n_classes == 1:
+            return self.class_labels[0]
         if n_classes == 2:
             pred_class = 1 if pred > BINARY_CLASSIFICATION_THRESHOLD else 0
         else:
@@ -488,6 +496,8 @@ class XGBoostTree(BaseModel):
         pred = self._raw_predict(vector)
 
         n_classes = len(self.class_labels)
+        if n_classes == 1:
+            return {self.class_labels[0]: 1.0}
         if n_classes == 2:
             prob_1 = float(pred)
             return {
@@ -557,7 +567,7 @@ class XGBoostTree(BaseModel):
 
         if path.endswith((".xgb", ".ubj")):
             return "xgb-native"
-        if path.endswith(".json") and self._xgb_model is not None:
+        if path.endswith(".json"):
             return "xgb-native"
 
         bare = path[:-3] if path.endswith(".gz") else path
@@ -737,7 +747,7 @@ class XGBoostTree(BaseModel):
                 or len(set(labels)) != len(labels)
             ):
                 raise ValueError("native metadata requires unique string class labels")
-            if (task == TASK_CLASSIFICATION and len(labels) < 2) or (
+            if (task == TASK_CLASSIFICATION and not labels) or (
                 task == TASK_REGRESSION and labels
             ):
                 raise ValueError("native class labels do not match task")

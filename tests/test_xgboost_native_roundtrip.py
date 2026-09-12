@@ -90,3 +90,46 @@ def test_malformed_native_metadata_is_rejected_atomically(tmp_path):
     with pytest.raises(ValueError, match="string list"):
         original.load_model(str(invalid))
     assert original.predict(["a"]) == before
+
+
+@pytest.mark.parametrize("suffix", [".json", ".ubj"])
+def test_single_class_xgboost_native_roundtrip(tmp_path, suffix):
+    pytest.importorskip("xgboost")
+    from cartlet import load_model, predict
+    from cartlet.xgboost import XGBoostTree
+
+    original = XGBoostTree(task="classification", n_estimators=1)
+    original.load_data([[0.0], [1.0]], ["A", "A"])
+    original.train(random_state=0)
+    native = tmp_path / ("single" + suffix)
+    original.export(str(native))
+    restored = XGBoostTree.load(str(native))
+    assert restored.predict([0.0]) == "A"
+    assert restored.predict_proba([0.0]) == {"A": 1.0}
+    cart = tmp_path / "single.cart"
+    restored.export(str(cart))
+    assert predict(load_model(str(cart)), [0.0], return_dist=True) == {"A": 1.0}
+
+
+def test_xgboost_new_data_invalidates_old_model_and_bad_data_is_atomic(tmp_path):
+    pytest.importorskip("xgboost")
+    from cartlet.xgboost import XGBoostTree
+
+    model = XGBoostTree(
+        task="classification", features=[{"name": "x", "type": "cat"}], n_estimators=1
+    )
+    model.load_data([["a"], ["b"]], ["A", "B"])
+    model.train(random_state=0)
+    old = model.predict(["a"])
+    with pytest.raises(ValueError, match="same length"):
+        model.load_data([["c"], ["d"]], ["C"])
+    assert model.predict(["a"]) == old
+    model.load_data([["c"], ["d"]], ["C", "D"])
+    with pytest.raises(ValueError, match="not trained"):
+        model.predict(["c"])
+    with pytest.raises(ValueError, match="No model"):
+        model.export(str(tmp_path / "stale.json"))
+    with pytest.raises(ValueError, match="No trees"):
+        model.export(str(tmp_path / "stale.cart"))
+    model.train(random_state=0)
+    assert model.predict(["c"]) in {"C", "D"}
