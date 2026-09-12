@@ -548,14 +548,12 @@ def _read_or_convert_cart(model_path: str, model_format: str | None) -> bytes:
         with open(model_path, "rb") as f:
             return f.read()
 
-    from .. import DecisionTree, RandomForest, _detect_is_forest
+    from .. import _load_conversion_model
 
     tmp_fd, tmp_cart = tempfile.mkstemp(suffix=".cart")
     os.close(tmp_fd)
     try:
-        is_forest = _detect_is_forest(model_path, format=model_format)
-        model = RandomForest() if is_forest else DecisionTree()
-        model.load_model(model_path, format=model_format)
+        model = _load_conversion_model(model_path, model_format)
         model.export(tmp_cart)
         with open(tmp_cart, "rb") as f:
             return f.read()

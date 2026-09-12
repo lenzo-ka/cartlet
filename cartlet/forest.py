@@ -9,13 +9,13 @@ from __future__ import annotations
 import math
 import random
 from collections import Counter
+from collections.abc import Sequence
 from typing import Any
 
-from .base import BaseModel
+from .base import BaseModel, _read_model_artifact
 from .io.bytes import write_forest_bytes
 from .io.cart_format import rebuild_tree_from_cart
-from .io.utils import open_file_binary, write_with_optional_gzip
-from .runner import _load_cart_from_bytes
+from .io.utils import write_with_optional_gzip
 from .trainer import Native
 from .trainer.base import normalize_importances
 from .tree import DecisionTree
@@ -31,7 +31,11 @@ from .types import (
     TYPE_NUM,
 )
 from .utils import collapse_distributions
-from .validation import MODEL_SCHEMA_VERSION, validate_model_data
+from .validation import (
+    MODEL_SCHEMA_VERSION,
+    validate_model_data,
+    validate_training_parameters,
+)
 
 # Verbose log cadence: print progress every Nth tree.
 _VERBOSE_TREE_INTERVAL = 10
@@ -89,13 +93,23 @@ class RandomForest(BaseModel):
             feature_names: Simple feature names (same as DecisionTree)
             target: Target spec (same as DecisionTree)
             task: "classification", "regression", or "auto"
-            max_depth: Maximum depth per tree (None = unlimited)
-            min_samples_split: Minimum samples to split a node
-            min_samples_leaf: Minimum samples in a leaf
+            max_depth: Nonnegative integer depth (None = unlimited; native 0 = leaf).
+            min_samples_split: Positive integer samples to split a node (sklearn >= 2).
+            min_samples_leaf: Positive integer samples in a leaf.
             criterion: Split criterion for classification ("entropy" or "gini")
             verbose: Enable verbose output
             logger: Custom logger
         """
+        validate_training_parameters(
+            max_depth=max_depth,
+            min_samples_split=min_samples_split,
+            min_samples_leaf=min_samples_leaf,
+            n_estimators=n_estimators,
+            criterion=criterion,
+            categorical_split=categorical_split,
+            extra_trees=extra_trees,
+            bootstrap=bootstrap,
+        )
         super().__init__(
             features=features,
             feature_names=feature_names,
@@ -127,9 +141,9 @@ class RandomForest(BaseModel):
 
     def load_data(
         self,
-        X: list[list[Any]],
-        y: list[Any],
-        counts: list[int] | None = None,
+        X: Sequence[Sequence[Any]],
+        y: Sequence[Any],
+        counts: Sequence[float] | None = None,
     ) -> None:
         """
         Load training data.
@@ -139,12 +153,14 @@ class RandomForest(BaseModel):
         `DecisionTree.load_data` semantics).
 
         Args:
-            X: Feature vectors (list of lists of feature values).
+            X: Rectangular Python row sequences of finite scalar values; convert
+                arrays with .tolist(). Missing values are unsupported.
             y: Target values.
-            counts: Optional instance weights (default: all 1).
+            counts: Finite nonnegative weights with positive finite total.
+                Zero-weight observations are omitted (default: all 1).
 
         Raises:
-            ValueError: If `len(X) != len(y)`.
+            ValueError: For empty, ragged, mismatched, missing or nonfinite data.
         """
         if len(X) != len(y):
             raise ValueError(f"X and y must have same length: {len(X)} != {len(y)}")
@@ -236,6 +252,19 @@ class RandomForest(BaseModel):
         Returns:
             ``{"n_estimators": <int>}`` — the number of trees trained.
         """
+        validate_training_parameters(
+            max_depth=self.max_depth,
+            min_samples_split=self.min_samples_split,
+            min_samples_leaf=self.min_samples_leaf,
+            n_estimators=self.n_estimators,
+            n_jobs=n_jobs,
+            random_state=random_state,
+            trainer=trainer,
+            criterion=self.criterion,
+            categorical_split=self.categorical_split,
+            extra_trees=self.extra_trees,
+            bootstrap=self.bootstrap,
+        )
         if not self.X:
             raise ValueError("No training data loaded. Call load_data() first.")
 
@@ -530,9 +559,11 @@ class RandomForest(BaseModel):
 
     def _load_cart(self, path: str, use_gzip: bool = False) -> dict:
         """Load from compact binary format."""
-        with open_file_binary(path, "rb") as f:
-            raw_data = f.read()
-        model_data = _load_cart_from_bytes(raw_data)
+        _, model_data = _read_model_artifact(path, "cart")
+        return self._apply_cart_data(model_data)
+
+    def _apply_cart_data(self, model_data: dict) -> dict:
+        """Apply an already decoded binary forest."""
 
         # Restore config
         self._apply_config_from_cart(model_data)
@@ -557,9 +588,16 @@ class RandomForest(BaseModel):
 
     def _load_sklearn(self, path: str, use_gzip: bool = False) -> dict:
         """Load sklearn model - converts to cartlet format for inference."""
+        _, estimator = _read_model_artifact(path, "skl")
+        return self._apply_sklearn_model(estimator)
+
+    def _apply_sklearn_model(self, estimator: Any) -> dict:
+        """Convert an already loaded sklearn forest estimator."""
         from .trainer.sklearn import convert_sklearn_tree
 
-        sklearn_rf, feature_names, feature_specs = self._read_sklearn_for_load(path)
+        sklearn_rf, feature_names, feature_specs = self._prepare_sklearn_for_load(
+            estimator
+        )
         self.feature_names = feature_names
         self.feature_specs = feature_specs
         self.n_estimators = len(sklearn_rf.estimators_)

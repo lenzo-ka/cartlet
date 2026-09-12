@@ -210,11 +210,9 @@ class TestCriterionValidation:
         with pytest.raises(ValueError, match="Unknown criterion"):
             Native(criterion="informationgain")
 
-    def test_decision_tree_bad_criterion_raises_on_train(self):
-        dt = DecisionTree(feature_names=["x"], criterion="nope")
-        dt.load_data([["a"], ["b"]], ["1", "2"])
-        with pytest.raises(ValueError, match="Unknown criterion"):
-            dt.train(trainer="native")
+    def test_decision_tree_bad_criterion_raises_at_construction(self):
+        with pytest.raises(ValueError, match="criterion"):
+            DecisionTree(feature_names=["x"], criterion="nope")
 
     def test_valid_criteria_accepted(self):
         from cartlet.trainer import Native

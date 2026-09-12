@@ -827,9 +827,9 @@ class TestIsolationForestFlagWarnings:
                 str(tmp_path / "if.json"),
             ]
         )
-        assert rc == 0
-        err = capsys.readouterr().err
-        assert "ignores" in err and "--prune" in err
+        assert rc == 1
+        assert "does not support pruning" in capsys.readouterr().err
+        assert not (tmp_path / "if.json").exists()
 
 
 class TestValidationFileRemoved:
@@ -930,7 +930,7 @@ class TestCliEndToEndCoverage:
         model = tmp_path / "iso.json"
         assert main(["train", str(data), "--isolation-forest", "-o", str(model)]) == 0
         assert model.exists()
-        assert "Anomaly scores" in capsys.readouterr().err
+        assert "Trained IsolationForest: 6 training samples" in capsys.readouterr().out
 
     def test_cart_gz_predict_via_cli(self, tmp_path, capsys):
         """A gzipped .cart model trains and predicts through the CLI."""
