@@ -24,7 +24,7 @@ statistics, warnings, and output path. `source_samples` counts active rows after
 zero-weight rows are removed; training, validation, and test populations are
 reported separately. Explicit test data is additional to the source population.
 
-The default settings use a native decision tree and reserve 10% of source rows
+The default settings use a native decision tree and reserve 5% of source rows
 for testing, rounding down. Pruning is off. When enabled for native
 classification trees, the requested validation fraction is relative to the
 source population; the tree owns the actual validation split. Unsupported

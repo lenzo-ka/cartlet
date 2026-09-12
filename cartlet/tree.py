@@ -136,7 +136,7 @@ class DecisionTree(BaseModel):
             min_dist_entropy: Minimum entropy to store distribution
             min_confidence: If best-class probability exceeds this, store only the
                 class label instead of the full distribution (default 0.95).
-                Set to 1.0 to always keep distributions.
+                Set to 1.0 to disable this confidence gate; entropy and tiny-probability gates still apply.
             criterion: Split criterion for classification ("entropy" or "gini")
             categorical_split: Categorical split-search strategy for the native
                 backend: "exact" (default, fully reproducible) or "fast" (O(n)

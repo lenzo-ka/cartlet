@@ -14,9 +14,6 @@ Training backends:
 
 from __future__ import annotations
 
-import json
-import pickle
-import struct
 from dataclasses import dataclass
 
 from .base import _read_model_artifact
@@ -29,15 +26,8 @@ from .evaluation import (
     regression_metrics,
 )
 from .forest import RandomForest
-from .io import open_file, open_file_binary
 from .io.bytes import bundle
-
-# Aliased to underscores: these are binary-format internals, not public API.
-from .io.cart_format import FLAG_IS_FOREST as _FLAG_IS_FOREST
-from .io.cart_format import HEADER_SIZE as _HEADER_SIZE
-from .io.cart_format import MAGIC as _MAGIC
-from .io.cart_format import OFF_FLAGS as _OFF_FLAGS
-from .io.utils import require_joblib, resolve_format
+from .io.utils import resolve_format
 from .isolation import IsolationForest
 from .runner import (
     Predictor,
@@ -178,81 +168,6 @@ def _load_conversion_model(
     model = RandomForest() if "trees" in data else DecisionTree()
     model._apply_loaded_data(data)
     return model
-
-
-def _detect_is_forest(path: str, format: str | None = None) -> bool:
-    """
-    Detect if a model file contains a (supervised) forest or a single tree.
-
-    Args:
-        path: Path to model file.
-        format: Optional explicit format override (e.g. ``"jsonl"``) used when
-            the file lives under a non-standard suffix.
-
-    Returns:
-        True if the model is a `RandomForest`, False if it is a `DecisionTree`.
-
-    Raises:
-        ValueError: If the file is an `IsolationForest` export (use
-            `IsolationForest.load_model()` directly), if the `.cart` magic
-            bytes are missing, or if the extension/format is unrecognized.
-        ImportError: If `.skl`/`.joblib` is requested without `joblib`.
-    """
-    ext, _ = resolve_format(path, format)
-
-    if ext == ".cart":
-        # IsolationForest deliberately exposes no `_export_cart` and its
-        # public `export()` rejects every extension except .json/.pkl, so
-        # any `.cart` file with FLAG_IS_FOREST is by construction a
-        # supervised RandomForest. No isolation-vs-supervised disambiguation
-        # is needed here.
-        with open_file_binary(path, "rb") as f:
-            header = f.read(_HEADER_SIZE)
-        if header[:4] != _MAGIC:
-            raise ValueError(f"Invalid model file (missing CART magic): {path}")
-        flags = struct.unpack_from("<H", header, _OFF_FLAGS)[0]
-        return bool(flags & _FLAG_IS_FOREST)
-
-    if ext in (".json", ".jsonl", ".pkl", ".pickle"):
-        # Read just enough to classify
-        if ext in (".pkl", ".pickle"):
-            with open_file_binary(path, "rb") as f:
-                data: dict = pickle.load(f)
-        elif ext == ".jsonl":
-            with open_file(path, "r") as f:
-                data = json.loads(f.readline())
-        else:
-            with open_file(path, "r") as f:
-                data = json.load(f)
-
-        if not isinstance(data, dict):
-            raise ValueError("model must be an object")
-        # IsolationForest exports also use a top-level "trees" key, so check
-        # the explicit marker before falling through to the supervised path.
-        if data.get("isolation_forest"):
-            raise ValueError(
-                f"{path} is an IsolationForest export; use "
-                "IsolationForest.load_model() / .export() directly."
-            )
-        return "trees" in data  # supervised forest, otherwise DecisionTree
-
-    if ext in (".skl", ".joblib"):
-        sklearn_model = require_joblib().load(path)
-        # sklearn IsolationForest also exposes estimators_; rule it out first
-        try:
-            from sklearn.ensemble import IsolationForest as _SkIsolationForest
-        except ImportError:  # joblib without sklearn is unusual but possible
-            _SkIsolationForest = None
-        if _SkIsolationForest is not None and isinstance(
-            sklearn_model, _SkIsolationForest
-        ):
-            raise ValueError(
-                f"{path} is a sklearn IsolationForest; use "
-                "IsolationForest.load_model() / .export() directly."
-            )
-        return hasattr(sklearn_model, "estimators_")
-
-    raise ValueError(f"Unknown format: {ext}")
 
 
 __all__ = [
