@@ -46,8 +46,8 @@ The runner file can be copied into any project and used immediately. No
 installation, no `pip install`, no build system required.
 
 ```bash
-# Just copy and use
-cp bundled/predict.py ~/my_project/
+# From the Cartlet repository root, copy the runner beside your model
+cp cartlet/bundled/predict.py ~/my_project/
 cd ~/my_project
 python predict.py model.cart red large
 ```
@@ -168,7 +168,7 @@ When a feature value is `None`, missing, or out of bounds:
 - **Switch/case tables**: use default branch.
 
 This policy is consistent across the runner and the in-process predictor and
-ensures deterministic behaviour even with incomplete input vectors.
+ensures deterministic behavior even with incomplete input vectors.
 
 ---
 

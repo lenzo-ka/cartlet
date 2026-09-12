@@ -12,7 +12,11 @@ test:
 .PHONY: lint
 lint:
 	$(RUFF) check .
+	$(RUFF) format --check .
 	$(MYPY) cartlet/
+
+.PHONY: check
+check: lint test
 
 .PHONY: format
 format:

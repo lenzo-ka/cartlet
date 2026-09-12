@@ -10,6 +10,10 @@ grapheme-to-phoneme implementation, without a lot of requirements.
 Train decision trees, random forests, or XGBoost trees, and deploy them
 on a tiny dependency-free Python runtime.
 
+Cartlet is in alpha. Before 1.0, `0.X.0` releases may introduce breaking API
+and model-format changes. See the [changelog](https://github.com/lenzo-ka/cartlet/blob/main/CHANGELOG.md)
+for changes and migration notes.
+
 ## Features
 
 - **Classification & Regression**: Full CART support
@@ -38,12 +42,12 @@ pip install cartlet
 
 Optional sklearn backend for faster training:
 ```bash
-pip install cartlet[sklearn]
+pip install "cartlet[sklearn]"
 ```
 
 Optional XGBoost support:
 ```bash
-pip install cartlet[xgboost]
+pip install "cartlet[xgboost]"
 ```
 
 ## Quick Start
@@ -60,15 +64,18 @@ dt.train()
 print(dt.predict(["red", "small"]))  # "apple"
 
 # Regression
-dt = DecisionTree(task="regression", feature_names=["sqft"])
+dt = DecisionTree(
+    task="regression",
+    features=[{"name": "sqft", "dtype": "float", "type": "num"}],
+)
 dt.load_data([[1000], [2000], [3000]], [100000, 200000, 300000])
 dt.train()
-print(dt.predict([1500]))  # ~150000
+print(dt.predict([1500]))  # 100000.0: a tree predicts a leaf mean
 
 # Random Forest
 rf = RandomForest(n_estimators=100, feature_names=["x", "y"])
-rf.load_data(X, y)
-rf.train()
+rf.load_data([[1, 2], [3, 4], [1, 3], [4, 4]], ["A", "B", "A", "B"])
+rf.train(random_state=42)
 print(rf.predict([1, 2]))
 
 # XGBoost (requires xgboost>=1.5.0)
@@ -78,7 +85,7 @@ xgb = XGBoostTree(n_estimators=100, feature_names=["color", "size"])
 xgb.load_data([["red", "small"], ["blue", "large"]], ["apple", "ball"])
 xgb.train()
 print(xgb.predict(["red", "small"]))  # "apple"
-print(xgb.predict_proba(["red", "small"]))  # {"apple": 0.8, "ball": 0.2}
+print(xgb.predict_proba(["red", "small"]))  # class probabilities
 
 # Export to various formats
 xgb.export("model.cart")  # Compact binary for the runner
@@ -91,13 +98,8 @@ xgb.export("model.xgb")   # Native XGBoost format
 # Train
 cartlet train data.csv -o model.cart
 
-# Train with options
-cartlet train data.csv -o model.cart \
-    -F              # RandomForest \
-    -n 100          # 100 trees \
-    -D 5            # max depth 5 \
-    -P              # pruning \
-    -S 0.2          # 20% test split
+# Random forest: 100 trees, depth 5, 20% held out for testing
+cartlet train data.csv -o model.cart -F -n 100 -D 5 -S 0.2
 
 # Train with config preset
 cartlet train data.csv -o model.cart -c fast      # Quick training
@@ -169,14 +171,39 @@ dt.export("model.cart")
 dt.export("model.cart", store_distributions=False)
 ```
 
+## Tutorials and reference
+
+From a source checkout, install the example dependencies with
+`pip install -e ".[all]"`, then run `make examples`. Each example also supports
+`--help` and can be run independently:
+
+```bash
+python -m examples.iris_decision_tree
+python -m examples.wine_random_forest
+python -m examples.breast_cancer_binary
+python -m examples.diabetes_regression
+python -m examples.iris_runner_deploy
+```
+
+These use the small datasets bundled with scikit-learn. The deployment example
+trains a model, exports it, reloads it through `Predictor`, and reports prediction
+agreement. Temporary model files are removed when the example finishes; use
+`--output model.cart` to retain one.
+
+- [Standalone deployment](https://github.com/lenzo-ka/cartlet/blob/main/docs/runners.md)
+- [Binary format](https://github.com/lenzo-ka/cartlet/blob/main/docs/cart_format.md)
+- [Changes and migration notes](https://github.com/lenzo-ka/cartlet/blob/main/CHANGELOG.md)
+
 ## API Reference
 
 ### DecisionTree
 
 ```python
 dt = DecisionTree(
-    features=[{"name": "age", "dtype": "int", "type": "num"}],  # Feature specs
-    feature_names=["age", "color"],  # Or just names (all categorical)
+    features=[
+        {"name": "age", "dtype": "int", "type": "num"},
+        {"name": "color", "dtype": "str", "type": "cat"},
+    ],
     task="auto",                # "classification", "regression", or "auto"
     max_depth=None,             # Max tree depth (None = unlimited)
     min_samples_split=2,        # Min samples to split
@@ -198,6 +225,10 @@ dt.predict_nbest(vector, n=5)         # Top n predictions
 dt.export("model.cart")               # Save (default: .cart)
 dt.load_model("model.cart")           # Load
 ```
+
+Use `feature_names=["age", "color"]` instead of `features` when both inputs
+should be categorical. Numeric dtype and numeric split behavior are separate:
+set `type="num"` for ordered threshold splits.
 
 Distribution storage knobs (`store_distributions`, `min_dist_entropy`,
 `min_confidence`) only apply to classification trees. They trade `.cart` file
@@ -541,6 +572,10 @@ All of the above are re-exported at the package root - subpath imports like
 `from cartlet.runner import ...` continue to work but are not required.
 
 ## CLI Reference
+
+Run `cartlet --help` for commands and `cartlet COMMAND --help` for the complete
+option list and defaults for your installed version. The examples below show
+common workflows.
 
 ### train
 
