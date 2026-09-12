@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import pickle
 import struct
+from dataclasses import dataclass
 
 from .evaluation import (
     confusion_matrix,
@@ -70,7 +71,17 @@ from .types import (
     TreeNode,
 )
 from .utils import count_leaves, count_nodes, max_depth, tree_stats
+from .validation import require_distinct_paths
 from .xgboost import XGBoostTree
+
+
+@dataclass(frozen=True)
+class ConversionResult:
+    """Artifact conversion provenance for library callers and CLI presentation."""
+
+    model_type: str
+    input_path: str
+    output_path: str
 
 
 def convert(
@@ -79,7 +90,7 @@ def convert(
     *,
     input_format: str | None = None,
     output_format: str | None = None,
-) -> None:
+) -> ConversionResult:
     """
     Convert a model between formats.
 
@@ -115,6 +126,7 @@ def convert(
         convert("model.cart", "model.json")  # binary -> JSON
         convert("model.g2p.gz", "model.cart", input_format="jsonl")
     """
+    require_distinct_paths([input_path], [output_path])
     ext_out, _ = resolve_format(output_path, output_format)
 
     is_forest = _detect_is_forest(input_path, format=input_format)
@@ -128,6 +140,7 @@ def convert(
         )
 
     model.export(output_path, format=output_format)
+    return ConversionResult(type(model).__name__, input_path, output_path)
 
 
 def _detect_is_forest(path: str, format: str | None = None) -> bool:
@@ -175,6 +188,8 @@ def _detect_is_forest(path: str, format: str | None = None) -> bool:
             with open_file(path, "r") as f:
                 data = json.load(f)
 
+        if not isinstance(data, dict):
+            raise ValueError("model must be an object")
         # IsolationForest exports also use a top-level "trees" key, so check
         # the explicit marker before falling through to the supervised path.
         if data.get("isolation_forest"):
@@ -256,6 +271,7 @@ __all__ = [
     # Bundling and conversion
     "bundle",
     "convert",
+    "ConversionResult",
 ]
 
 __version__ = "0.5.0"

@@ -61,7 +61,7 @@ class TestMaxDepth:
         assert max_depth(tree) == 2
 
     def test_unbalanced_tree(self):
-        tree = ["f1", "=", "v1", ["f2", "=", "v2", ["f3", "<", 5, "a", "b"], "c"], "d"]
+        tree = ["f1", "=", "v1", ["f2", "=", "v2", ["f3", "<=", 5, "a", "b"], "c"], "d"]
         assert max_depth(tree) == 3
 
 

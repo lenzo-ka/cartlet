@@ -7,6 +7,7 @@ This module contains:
 """
 
 import logging
+from contextlib import suppress
 from typing import Any
 
 # =============================================================================
@@ -244,8 +245,15 @@ def eval_tree(
 
         feat_val = vector[col] if col < len(vector) else None
 
-        if op == "<":
-            go_left = feat_val is not None and float(feat_val) <= float(value)
+        if op in ("<=", "<"):
+            go_left = False
+            if feat_val is not None:
+                with suppress(TypeError, ValueError):
+                    go_left = (
+                        (float(feat_val) < float(value))
+                        if op == "<"
+                        else (float(feat_val) <= float(value))
+                    )
         else:  # op == "="
             go_left = feat_val is not None and str(feat_val) == str(value)
 

@@ -58,7 +58,15 @@ class TestMalformedModelFiles:
         # CART (4) + version(2) + flags(2) + n_feat(2) + n_class(2) + n_trees(2)
         # n_feat = 65535 (too high)
         p = tmp_path / "insane.cart"
-        p.write_bytes(b"CART" + b"\x01\x00" + b"\x00\x00" + b"\xff\xff" + b"\x00" * 30)
+        from cartlet.io.cart_format import VERSION
+
+        p.write_bytes(
+            b"CART"
+            + VERSION.to_bytes(2, "little")
+            + b"\x00\x00"
+            + b"\xff\xff"
+            + b"\x00" * 30
+        )
         with pytest.raises(ValueError, match="Unreasonable n_features"):
             DecisionTree().load_model(str(p))
 
@@ -233,7 +241,8 @@ class TestCategoricalSplitStrategy:
         import random as stdlib_random
 
         rng = stdlib_random.Random(0)
-        X, y = [], []
+        X = []
+        y: list[str | float] = []
         for _ in range(200):
             hi = f"c{rng.randint(0, 60)}"
             lo = rng.choice(["a", "b", "c"])

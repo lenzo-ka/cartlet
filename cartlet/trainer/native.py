@@ -73,7 +73,7 @@ def _partition_val_rows(
     """
     left_rows: list[int] = []
     right_rows: list[int] = []
-    if op == "<":
+    if op == "<=":
         threshold = float(value)
         for i in val_rows:
             row = X[i]
@@ -253,8 +253,8 @@ class Native(Trainer):
             return self._make_leaf(tree, row_ids)
 
         # Split data based on operator
-        # Note: CART convention - "<" operator means "<=", left branch for value <= threshold
-        if best_op == "<":
+        # Numerical splits include equality at the threshold.
+        if best_op == "<=":
             yes = {i for i in row_ids if tree.X[i][best_id] <= best_value}
         else:  # "=" (categorical equality)
             yes = {i for i in row_ids if tree.X[i][best_id] == best_value}
@@ -910,7 +910,7 @@ class Native(Trainer):
                     val, gain = self._best_gain_numerical(
                         tree, row_ids, feat_id, impurity0
                     )
-                op = "<"
+                op = "<="
             else:
                 if self.extra_trees:
                     val, gain = self._random_split_categorical(

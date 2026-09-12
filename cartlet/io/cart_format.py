@@ -11,26 +11,28 @@ Format optimizations:
 """
 
 import struct
+from collections.abc import Mapping
 from typing import Any
 
 # Magic bytes
 MAGIC = b"CART"
-VERSION = 1
+VERSION = 2
 
 # Decision node encoding:
 # - feat_op: 1 byte (bits 0-5 = feature index, bits 6-7 = op)
 # - val: 2 bytes (index into floats, cat_vals, or case_tables)
-# - left: varint (1-5 bytes) - only for OP_LT/OP_EQ
-# - right: varint (1-5 bytes) - only for OP_LT/OP_EQ
+# - left: varint (1-5 bytes) - only for OP_LE/OP_EQ
+# - right: varint (1-5 bytes) - only for OP_LE/OP_EQ
 # Note: OP_SWITCH nodes have children in the case table instead
 OP_SHIFT = 6  # Op is in bits 6-7
 OP_MASK = 0xC0  # Upper 2 bits for op
 FEAT_MASK = 0x3F  # Lower 6 bits for feature index (max 63 features inline)
 
 # Operation types
-OP_LT = 0  # Numerical less-than-or-equal (<=) comparison; left branch = "yes"
+OP_LE = 0  # Numerical less-than-or-equal (<=) comparison; left branch = "yes"
 OP_EQ = 1  # Categorical equality comparison
 OP_SWITCH = 2  # Case table lookup (disjunction / n-ary split)
+OP_LT = 3  # Strict numeric comparison (<), used by XGBoost
 
 # Leaf node types (stored in 1 byte)
 LEAF_CLASS = 0  # Leaf: classification (string index)
@@ -54,6 +56,31 @@ TYPE_MASK = 0x03
 
 # Dtype encoding (bits 2-4 of type_flags byte)
 DTYPE_MAP = {"str": 0, "int": 1, "float": 2, "bool": 3}
+
+
+def decode_feature_dtype(type_flags: int) -> str:
+    """Decode the dtype bits written in each feature-table entry."""
+    dtypes = {code: name for name, code in DTYPE_MAP.items()}
+    code = type_flags >> 2
+    if code not in dtypes:
+        raise ValueError(f"Invalid feature dtype code: {code}")
+    return dtypes[code]
+
+
+def decode_feature_value(value: str, dtype: str) -> Any:
+    """Restore known vocabulary values in the feature's declared dtype."""
+    if dtype == "int":
+        return int(value)
+    if dtype == "float":
+        return float(value)
+    if dtype == "bool":
+        if value in {"True", "true", "TRUE", "1", "yes", "Yes", "YES"}:
+            return True
+        if value in {"False", "false", "FALSE", "0", "no", "No", "NO"}:
+            return False
+        raise ValueError(f"Invalid boolean vocabulary value: {value!r}")
+    return value
+
 
 # Header size (bytes)
 HEADER_SIZE = 34
@@ -89,9 +116,9 @@ OFF_META_LEN = 32
 
 # Element sizes (bytes)
 SIZE_U16 = 2
-SIZE_F32 = 4  # 32-bit float (float pool entries)
+SIZE_F64 = 8  # Float64 preserves native thresholds and regression outputs
 SIZE_LEAF = 3  # type(1) + val(2) - no padding
-SIZE_DIST_ENTRY = 6  # class_idx(u16) + prob(f32)
+SIZE_DIST_ENTRY = 10  # class_idx(u16) + prob(f64)
 SIZE_FEAT_HEADER = 4  # name_idx(u16) + type_flags(u8) + n_cat(u8)
 SIZE_DECISION_HEADER = 3  # packed feat_op(1) + val(2); left/right follow as varints
 
@@ -138,7 +165,7 @@ def decode_varint(data: bytes, pos: int) -> tuple[int, int]:
 
 
 def rebuild_tree_from_cart(
-    model_data: dict,
+    model_data: Mapping[str, Any],
     feature_names: list[str],
     tree_idx: int = 0,
 ) -> Any:
@@ -181,12 +208,18 @@ def rebuild_tree_from_cart(
         op = node[1]
         feature_name = feature_names[feat] if feat < len(feature_names) else str(feat)
 
-        if op == OP_LT:
+        if op in (OP_LE, OP_LT):
             _, _, val, left, right = node
             value = floats[val]
             left_tree = rebuild(left)
             right_tree = rebuild(right)
-            return [feature_name, "<", value, left_tree, right_tree]
+            return [
+                feature_name,
+                "<" if op == OP_LT else "<=",
+                value,
+                left_tree,
+                right_tree,
+            ]
         elif op == OP_EQ:
             _, _, val, left, right = node
             value = strings[cat_vals[val]]

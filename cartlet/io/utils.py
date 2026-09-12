@@ -3,11 +3,14 @@
 import csv
 import gzip
 import os
+import shutil
 import tempfile
 import unicodedata
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import IO, Any
+
+from ..validation import require_distinct_paths
 
 _SNIFF_BUFFER_SIZE = 4096
 
@@ -156,27 +159,52 @@ def normalize_value(v: Any) -> Any:
 
 def gzip_file(src_path: str, dest_path: str, cleanup: bool = True) -> None:
     """Gzip a file from src_path to dest_path, optionally removing the source."""
-    with open(src_path, "rb") as f_in, gzip.open(dest_path, "wb") as f_out:
-        f_out.write(f_in.read())
+    require_distinct_paths([src_path], [dest_path])
+    with (
+        atomic_output_path(dest_path) as output,
+        open(src_path, "rb") as f_in,
+        gzip.open(output, "wb") as f_out,
+    ):
+        shutil.copyfileobj(f_in, f_out)
     if cleanup:
         os.unlink(src_path)
+
+
+@contextmanager
+def atomic_output_path(path: str) -> Iterator[str]:
+    """Yield a sibling temporary path; replace destination only on success.
+
+    Codec selection belongs to the caller. The final suffix is preserved for
+    writers that require one; the destination parent must already exist.
+    """
+    parent = os.path.dirname(os.path.abspath(path))
+    suffix = os.path.splitext(path)[1]
+    fd, temporary = tempfile.mkstemp(dir=parent, suffix=suffix)
+    os.close(fd)
+    try:
+        yield temporary
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def write_with_optional_gzip(
     path: str, use_gzip: bool, write_fn: Callable[[str], None]
 ) -> None:
-    """Write via write_fn, compressing with gzip through a temp file if requested."""
-    if not use_gzip:
-        write_fn(path)
-        return
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".cart") as tmp:
-        tmp_path = tmp.name
-    try:
-        write_fn(tmp_path)
-        gzip_file(tmp_path, path, cleanup=False)
-    finally:
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+    """Serialize and optionally compress before atomically replacing output."""
+    with atomic_output_path(path) as output:
+        if not use_gzip:
+            write_fn(output)
+            return
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".cart") as tmp:
+            tmp_path = tmp.name
+        try:
+            write_fn(tmp_path)
+            gzip_file(tmp_path, output, cleanup=False)
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
 
 
 @contextmanager

@@ -9,6 +9,7 @@ import os
 import pickle
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from copy import copy
 from typing import Any
 
 from .io.cart_format import MAGIC as CART_MAGIC
@@ -309,6 +310,17 @@ class BaseModel(ABC):
     # =========================================================================
 
     def load_model(self, path: str, format: str | None = None) -> dict:
+        """Load an artifact transactionally, leaving this model unchanged on error.
+
+        Formats and optional compression follow export(); an explicit format
+        supports custom suffixes. Returns the validated decoded model mapping.
+        """
+        candidate = copy(self)
+        config = candidate._load_model_in_place(path, format)
+        self.__dict__.update(candidate.__dict__)
+        return config
+
+    def _load_model_in_place(self, path: str, format: str | None = None) -> dict:
         """
         Load a trained model from file.
 
@@ -336,6 +348,14 @@ class BaseModel(ABC):
         """
         if not os.path.exists(path):
             raise FileNotFoundError(f"Model file not found: {path}")
+
+        # Loaded artifacts replace training provenance and backend state.
+        self._sklearn_model = None
+        self._feature_importances = {}
+        self.X, self.y, self.counts = [], [], []
+        self._detected_task = None
+        self.task = TASK_AUTO
+        self.target_spec = None
 
         ext, use_gzip = resolve_format(path, format)
 
@@ -398,7 +418,7 @@ class BaseModel(ABC):
         for f in features:
             spec = FeatureSpec(
                 name=f["name"],
-                dtype=DTYPE_STR,  # .cart doesn't store dtype
+                dtype=f.get("dtype", DTYPE_STR),
                 type=f.get("type"),
             )
             if spec.type == TYPE_CAT and "values" in f:

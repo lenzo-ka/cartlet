@@ -406,9 +406,8 @@ class TestEdgeCases:
 
     def test_empty_data_raises(self):
         dt = DecisionTree(feature_names=["x"])
-        dt.load_data([], [])
-        with pytest.raises(ValueError, match="No training data"):
-            dt.train()
+        with pytest.raises(ValueError, match="training data"):
+            dt.load_data([], [])
 
     def test_mismatched_lengths_raises(self):
         dt = DecisionTree(feature_names=["x"])

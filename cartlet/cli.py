@@ -34,7 +34,7 @@ except ImportError:
     yaml = None
     _YAML_AVAILABLE = False
 
-from . import __version__, _detect_is_forest, convert
+from . import __version__, convert
 from .evaluation import evaluate_predictions, per_class_metrics, regression_metrics
 from .forest import RandomForest
 from .io import detect_delimiter, detect_format, load_training_data, resolve_format
@@ -61,6 +61,7 @@ from .types import (
     normalize_feature_spec,
 )
 from .utils import max_depth, tree_stats
+from .validation import align_features, require_distinct_paths, validate_splits
 
 _MAX_CAT_VALUES_DISPLAY = 10
 _MAX_TARGET_VALUES_DISPLAY = 20
@@ -233,8 +234,15 @@ def load_config(path_or_name: str) -> dict[str, Any]:
 
     if path_or_name.endswith((".yaml", ".yml")):
         _require_yaml()
-        return yaml.safe_load(content) or {}
-    return json.loads(content)
+        try:
+            config = yaml.safe_load(content)
+        except yaml.YAMLError as exc:
+            raise ValueError(f"Invalid YAML config: {exc}") from exc
+    else:
+        config = json.loads(content)
+    if not isinstance(config, dict):
+        raise ValueError("config must be an object of training options")
+    return config
 
 
 def save_config(args: argparse.Namespace, path: str) -> None:
@@ -438,13 +446,15 @@ def _split_train_test(
 ) -> tuple[list[list[Any]], list[Any], list[list[Any]], list[Any]]:
     """Split data into train and test sets based on CLI args."""
     if args.test_file:
-        X_test, y_test, _, _ = load_training_data(
+        X_test, y_test, test_names, _ = load_training_data(
             args.test_file,
             delimiter=args.delimiter,
             has_header=not args.no_header,
             target_col=args.target,
             column_names=column_names,
         )
+        if not args.no_header or args.test_file.endswith(".jsonl"):
+            X_test = align_features(X_test, test_names, args.training_feature_names)
         if task == TASK_REGRESSION:
             y_test = [float(v) for v in y_test]
         print(f"  Test file: {args.test_file} ({len(X_test)} samples)")
@@ -531,6 +541,7 @@ def _evaluate_test(
 
 def cmd_train(args: argparse.Namespace) -> int:
     """Train a model."""
+    validate_splits(args.validation_split, args.test_split)
     if args.save_config:
         save_config(args, args.save_config)
 
@@ -574,6 +585,7 @@ def cmd_train(args: argparse.Namespace) -> int:
     model = _create_model(args, feature_specs, target_spec, task)
 
     # Split data
+    args.training_feature_names = feature_names
     X_train, y_train, X_test, y_test = _split_train_test(args, X, y, task, column_names)
 
     # Validation split logic. When test rows come from --test-split, the
@@ -957,6 +969,12 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
     )
     log(f"  Loaded {len(X)} samples")
 
+    # Named tabular data follows the same model column order as prediction.
+    if not args.no_header or args.data.endswith(".jsonl"):
+        model_names = [
+            feature["name"] for feature in model_data["meta"].get("features", [])
+        ]
+        X = align_features(X, feature_names, model_names)
     # Make predictions
     predictions = predict_batch(model_data, X)
 
@@ -1251,8 +1269,7 @@ def cmd_convert(args: argparse.Namespace) -> int:
     print(f"Converting {input_path} -> {output_path}", file=sys.stderr)
 
     try:
-        is_forest = _detect_is_forest(input_path, format=input_format)
-        convert(
+        result = convert(
             input_path,
             output_path,
             input_format=input_format,
@@ -1264,19 +1281,13 @@ def cmd_convert(args: argparse.Namespace) -> int:
 
     in_size = os.path.getsize(input_path)
     out_size = os.path.getsize(output_path)
-    model_type = "RandomForest" if is_forest else "DecisionTree"
+    model_type = result.model_type
 
     label_in = f"{ext_in}{'.gz' if gz_in else ''}"
     label_out = f"{ext_out}{'.gz' if gz_out else ''}"
     print(f"  Model type: {model_type}", file=sys.stderr)
     print(f"  Input:  {in_size:,} bytes ({label_in})", file=sys.stderr)
     print(f"  Output: {out_size:,} bytes ({label_out})", file=sys.stderr)
-
-    if ext_in in (".json", ".jsonl", ".pkl", ".pickle") and ext_out == ".cart":
-        print(
-            "  Note: Distributions lost in .cart format (nbest will return 1 result)",
-            file=sys.stderr,
-        )
 
     return 0
 
@@ -1804,13 +1815,47 @@ def main(argv: list[str] | None = None) -> int:
                 # by argparse's own dest resolution.
                 train_parser = _get_subparser(parser, "train")
                 if train_parser is not None:
-                    train_parser.set_defaults(
-                        **{
-                            k: v
-                            for k, v in config.items()
-                            if k not in _CONFIG_EXCLUDE and k != "data"
-                        }
-                    )
+                    actions = {action.dest: action for action in train_parser._actions}
+                    unknown = set(config) - set(actions) - {"data"}
+                    if unknown:
+                        raise ValueError(
+                            f"unknown training config options: {', '.join(sorted(unknown))}"
+                        )
+                    defaults: dict[str, Any] = {}
+                    for key, value in config.items():
+                        if key in _CONFIG_EXCLUDE or key == "data":
+                            continue
+                        action = actions[key]
+                        if value is None and action.default is None:
+                            defaults[key] = None
+                            continue
+                        if isinstance(
+                            action,
+                            (argparse._StoreTrueAction, argparse._StoreFalseAction),
+                        ):
+                            if not isinstance(value, bool):
+                                raise ValueError(f"config {key} must be a boolean")
+                        elif action.type is not None:
+                            if action.type in (int, float) and isinstance(value, bool):
+                                raise ValueError(f"config {key} must be numeric")
+                            if action.type is int and not isinstance(value, int):
+                                raise ValueError(f"config {key} must be an integer")
+                            try:
+                                if not callable(action.type):
+                                    raise ValueError(f"invalid config type for {key}")
+                                value = action.type(value)
+                            except (TypeError, ValueError) as exc:
+                                raise ValueError(
+                                    f"invalid config value for {key}"
+                                ) from exc
+                        elif value is not None and not isinstance(value, str):
+                            raise ValueError(f"config {key} must be a string")
+                        if action.choices is not None and value not in action.choices:
+                            raise ValueError(
+                                f"invalid config choice for {key}: {value!r}"
+                            )
+                        defaults[key] = value
+                    train_parser.set_defaults(**defaults)
 
         args = parser.parse_args(argv)
 
@@ -1824,6 +1869,17 @@ def main(argv: list[str] | None = None) -> int:
             parser.print_help()
             return 1
 
+        inputs = [
+            value
+            for key in ("data", "model", "input", "test_file", "features", "config")
+            if (value := getattr(args, key, None)) and os.path.exists(value)
+        ]
+        outputs = [
+            value
+            for key in ("output", "save_config")
+            if (value := getattr(args, key, None))
+        ]
+        require_distinct_paths(inputs, outputs)
         return args.func(args)
     except (OSError, ValueError, ImportError, json.JSONDecodeError) as e:
         # Turn expected user/runtime errors into a clean one-line message and a
