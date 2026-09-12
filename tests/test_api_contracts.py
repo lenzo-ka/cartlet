@@ -202,3 +202,47 @@ def test_missing_schema_rejected_actionably(tmp_path):
     model.write_text('{"model":"A"}')
     with pytest.raises(ValueError, match="retrain or re-export"):
         DecisionTree().load_model(str(model))
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"model": [99, "=", "a", "A", "B"]},
+        {"feature_specs": [{"name": "other", "dtype": "str", "type": "cat"}]},
+        {
+            "feature_specs": [
+                {"name": "x", "dtype": "float", "type": "cat", "values": [float("nan")]}
+            ]
+        },
+        {
+            "feature_specs": [
+                {"name": "x", "dtype": "float", "type": "cat", "values": [float("inf")]}
+            ]
+        },
+    ],
+)
+def test_schema_feature_contract_failure_preserves_live_model(tmp_path, changes):
+    data = {
+        "schema_version": 2,
+        "feature_names": ["x"],
+        "feature_specs": [],
+        "model": "NEW",
+    }
+    data.update(changes)
+    path = tmp_path / "bad.json"
+    path.write_text(json.dumps(data))
+    tree = DecisionTree()
+    tree.model = "OLD"
+    with pytest.raises(ValueError):
+        tree.load_model(str(path))
+    assert tree.predict(["a"]) == "OLD"
+
+
+def test_named_feature_positional_index_roundtrip(tmp_path):
+    tree = DecisionTree(feature_names=["x"])
+    tree.model = [0, "=", "a", "A", "B"]
+    path = tmp_path / "valid.json"
+    tree.export(str(path))
+    loaded = DecisionTree()
+    loaded.load_model(str(path))
+    assert loaded.predict(["a"]) == "A"
