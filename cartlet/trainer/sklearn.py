@@ -180,7 +180,7 @@ def convert_sklearn_tree(
             # value objects are carried through directly, preserving their type.
             return [orig_name, "=", cat_value, right, left]
         # Numerical: standard threshold split
-        return [orig_name, "<", threshold, left, right]
+        return [orig_name, "<=", threshold, left, right]
 
     return convert_node(0)
 
