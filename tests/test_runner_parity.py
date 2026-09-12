@@ -115,7 +115,7 @@ def test_switch_missing_feature_takes_default(tmp_path):
 
 
 def test_numeric_node_non_numeric_value(tmp_path):
-    tree = ["x", "<", 5.0, "small", "big"]
+    tree = ["x", "<=", 5.0, "small", "big"]
     specs = [FeatureSpec(name="x", dtype="float", type="num")]
     path = str(tmp_path / "num.cart")
     write_tree_bytes(path, tree, specs, {"x": 0}, ["small", "big"], False)

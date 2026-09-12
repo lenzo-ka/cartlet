@@ -41,9 +41,10 @@ from collections import Counter
 OP_SHIFT = 6
 OP_MASK = 0xC0  # Upper 2 bits for op
 FEAT_MASK = 0x3F  # Lower 6 bits = feature index
-OP_LT = 0  # Numerical less-than
+OP_LE = 0  # Numerical less-than
 OP_EQ = 1  # Categorical equality
 OP_SWITCH = 2  # Case table lookup
+OP_LT = 3  # Strict numeric comparison
 
 # Leaf node types
 LEAF_CLASS = 0
@@ -62,7 +63,7 @@ FLAG_IS_XGBOOST = 1 << 3
 
 # Safety limit for tree traversal
 MAX_TREE_DEPTH = 10000
-EXPECTED_VERSION = 1
+EXPECTED_VERSION = 2
 
 # Sigmoid output above which we emit the positive class label.
 BINARY_THRESHOLD = 0.5
@@ -286,6 +287,30 @@ def load_cart_from_bytes(data):
         raise ValueError(f"Malformed or truncated .cart file: {e}") from e
 
 
+def decode_feature_dtype(type_flags):
+    """Decode the same feature dtype bits as the package format owner."""
+    dtypes = {0: "str", 1: "int", 2: "float", 3: "bool"}
+    code = type_flags >> 2
+    if code not in dtypes:
+        raise ValueError(f"Invalid feature dtype code: {code}")
+    return dtypes[code]
+
+
+def decode_feature_value(value, dtype):
+    """Restore declared vocabulary types without package dependencies."""
+    if dtype == "int":
+        return int(value)
+    if dtype == "float":
+        return float(value)
+    if dtype == "bool":
+        if value in {"True", "true", "TRUE", "1", "yes", "Yes", "YES"}:
+            return True
+        if value in {"False", "false", "FALSE", "0", "no", "No", "NO"}:
+            return False
+        raise ValueError(f"Invalid boolean vocabulary value: {value!r}")
+    return value
+
+
 def _load_cart_from_bytes_impl(data):
     """Load model from bytes, return model dict."""
     pos = 0
@@ -377,11 +402,15 @@ def _load_cart_from_bytes_impl(data):
         cat_indices = list(struct.unpack_from(f"<{n_cat}H", data, pos))
         pos += 2 * n_cat
         feat_type = "cat" if (type_flags & TYPE_MASK) == 0 else "num"
+        dtype = decode_feature_dtype(type_flags)
         features.append(
             {
                 "name": strings[name_idx],
                 "type": feat_type,
-                "values": [strings[ci] for ci in cat_indices],
+                "dtype": dtype,
+                "values": [
+                    decode_feature_value(strings[ci], dtype) for ci in cat_indices
+                ],
             }
         )
 
@@ -393,8 +422,8 @@ def _load_cart_from_bytes_impl(data):
         class_labels.append(strings[ci])
 
     # Float pool
-    floats = list(struct.unpack_from(f"<{n_floats}f", data, pos))
-    pos += 4 * n_floats
+    floats = list(struct.unpack_from(f"<{n_floats}d", data, pos))
+    pos += 8 * n_floats
 
     # Cat value pool
     cat_vals = list(struct.unpack_from(f"<{n_cat_vals}H", data, pos))
@@ -407,7 +436,7 @@ def _load_cart_from_bytes_impl(data):
         tree_offsets.append(off)
 
     # Decision nodes (variable size)
-    # OP_LT/OP_EQ: feat_op(1) + val(2) + left(varint) + right(varint)
+    # OP_LE/OP_EQ: feat_op(1) + val(2) + left(varint) + right(varint)
     # OP_SWITCH: feat_op(1) + table_idx(2) (no left/right)
     decisions = []
     for _ in range(n_decisions):
@@ -438,8 +467,8 @@ def _load_cart_from_bytes_impl(data):
             pos += 2
             dist = []
             for _ in range(n_entries):
-                class_idx, prob = struct.unpack_from("<Hf", data, pos)
-                pos += 6
+                class_idx, prob = struct.unpack_from("<Hd", data, pos)
+                pos += 10
                 dist.append((class_idx, prob))
             distributions.append(dist)
 
@@ -499,14 +528,12 @@ def _load_cart_from_bytes_impl(data):
 
 def load_cart(path):
     """Load a .cart file, return model dict. Supports .cart.gz."""
-    if path.endswith(".gz"):
+    with open(path, "rb") as f:
+        data = f.read()
+    if data[:2] == b"\x1f\x8b":
         import gzip
 
-        with gzip.open(path, "rb") as f:
-            data = f.read()
-    else:
-        with open(path, "rb") as f:
-            data = f.read()
+        data = gzip.decompress(data)
     return load_cart_from_bytes(data)
 
 
@@ -591,14 +618,18 @@ def _predict_tree_recursive(
         # is 0 (which would otherwise jump traversal to decision node 0).
         feat_val = None if feat >= n_input_features else row[feat]
 
-        if op == OP_LT:
+        if op in (OP_LE, OP_LT):
             if val >= len(floats):
                 raise RuntimeError(f"Invalid float index in decision: {val}")
             threshold = floats[val]
             go_left = False
             if feat_val is not None:
                 try:
-                    go_left = float(feat_val) <= threshold
+                    go_left = (
+                        (float(feat_val) < threshold)
+                        if op == OP_LT
+                        else (float(feat_val) <= threshold)
+                    )
                 except (TypeError, ValueError):
                     go_left = False
             idx = left if go_left else right
@@ -710,6 +741,43 @@ def predict(model, row, return_dist=False):
     return Counter(predictions).most_common(1)[0][0]
 
 
+def _xgboost_row(values):
+    """Match DMatrix float32 input precision before numeric traversal."""
+    row: list = []
+    for value in values:
+        if value is None:
+            row.append(None)
+            continue
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            row.append(value)
+            continue
+        try:
+            row.append(struct.unpack("<f", struct.pack("<f", numeric))[0])
+        except OverflowError as e:
+            raise ValueError(f"XGBoost input {value!r} exceeds float32 range") from e
+    return row
+
+
+def _xgboost_base_scores(value, n_classes, is_regression):
+    """Resolve scalar/vector intercepts; binary values are probability-space."""
+    count = 1 if is_regression or n_classes == 2 else n_classes
+    if isinstance(value, list):
+        if len(value) != count:
+            raise ValueError(
+                f"XGBoost base_score needs {count} values, got {len(value)}"
+            )
+        scores = [float(v) for v in value]
+    else:
+        scores = [float(value)] * count
+    if not scores or not all(math.isfinite(v) for v in scores):
+        raise ValueError("XGBoost base_score must contain finite values")
+    if not is_regression and n_classes == 2 and 0.0 < scores[0] < 1.0:
+        scores[0] = math.log(scores[0] / (1.0 - scores[0]))
+    return scores
+
+
 def predict_xgboost(model, row, return_dist=False):
     """
     XGBoost prediction: additive model with sigmoid/softmax.
@@ -722,16 +790,17 @@ def predict_xgboost(model, row, return_dist=False):
       raw_scores[k] = base_score + sum(trees for class k)
       probabilities = softmax(raw_scores)
     """
+    row = _xgboost_row(row)
     n_trees = model.get("n_trees", len(model["tree_offsets"]))
     n_classes = len(model["class_labels"])
     class_labels = model["class_labels"]
     # base_score round-trips from the metadata trailer. For binary classification
     # XGBoost stores it in probability space, so re-project to raw-score space.
-    raw_base_score = float(model.get("metadata", {}).get("base_score", 0.0))
-    if not model["is_regression"] and n_classes == 2 and 0.0 < raw_base_score < 1.0:
-        base_score = math.log(raw_base_score / (1.0 - raw_base_score))
-    else:
-        base_score = raw_base_score
+    raw_base_score = model.get("metadata", {}).get("base_score", 0.0)
+    base_scores = _xgboost_base_scores(
+        raw_base_score, n_classes, model["is_regression"]
+    )
+    base_score = base_scores[0]
 
     decisions = model["decisions"]
     leaves = model["leaves"]
@@ -777,7 +846,7 @@ def predict_xgboost(model, row, return_dist=False):
 
     # Multiclass: K trees per round, sum per class
     n_rounds = n_trees // n_classes
-    scores = [base_score] * n_classes
+    scores = list(base_scores)
 
     for round_idx in range(n_rounds):
         for class_idx in range(n_classes):

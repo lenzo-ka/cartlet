@@ -189,3 +189,23 @@ For most users:
 installed and want inference without importing the training model classes. It
 exposes both the functional `load_model()` + `predict()` API and a `Predictor`
 class equivalent to the bundled runner's.
+
+## Input and export contracts
+
+The package and standalone CART loaders recognize gzip by content, including a
+compressed file without a `.gz` suffix. Invalid numeric values at numeric nodes
+take the right branch in both nested-model and exported inference. XGBoost inputs and thresholds use float32 precision to match DMatrix. Strict
+XGBoost nodes use `<`; native CART nodes use `<=`. Multiclass XGBoost
+metadata may carry one finite raw intercept per class; binary intercepts remain
+in probability space and are converted to a logit for additive prediction.
+
+Model and vector writers replace path outputs atomically after successful
+serialization. NUL-containing pooled strings and nonfinite or out-of-range
+float64 values are rejected instead of emitting invalid binary models.
+
+Vector JSONL uses nonempty object records. `write_vectors` assigns one-indexed
+column names when no header is supplied. All rows must match the header width;
+JSONL keys must be unique. Batch and streaming readers reject invalid JSON or
+record shapes with physical line diagnostics. Labeled records must contain a
+non-null target; absent feature values remain `None`. Blank lines are ignored.
+This vector schema is separate from model JSONL serialization.

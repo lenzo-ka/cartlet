@@ -31,6 +31,7 @@ from .types import (
     TYPE_NUM,
 )
 from .utils import collapse_distributions
+from .validation import MODEL_SCHEMA_VERSION, validate_model_data
 
 # Verbose log cadence: print progress every Nth tree.
 _VERBOSE_TREE_INTERVAL = 10
@@ -160,6 +161,9 @@ class RandomForest(BaseModel):
         # the 0/1 the predictor produces.
         ref_tree = self._make_tree()
         ref_tree.load_data(X, y, counts)
+        self._sklearn_model = None
+        self._feature_importances = {}
+        self.trees = []
         self.X = ref_tree.X
         self.y = ref_tree.y
         self.counts = ref_tree.counts
@@ -333,7 +337,7 @@ class RandomForest(BaseModel):
 
         # One-hot encode categorical features
         X_encoded, encoded_names, cat_cols, cat_vals = encode_categorical(
-            self.X, self.feature_names, self.feature_specs
+            self.X, self.feature_names, self.feature_specs, sparse=True
         )
 
         is_regression = self._is_regression()
@@ -513,6 +517,7 @@ class RandomForest(BaseModel):
         if not store_distributions:
             trees = [collapse_distributions(t) for t in trees]
         return {
+            "schema_version": MODEL_SCHEMA_VERSION,
             "trees": trees,
             "feature_specs": self._serialize_feature_specs(),
             "feature_names": self.feature_names,
@@ -597,6 +602,7 @@ class RandomForest(BaseModel):
 
     def _apply_loaded_data(self, data: dict) -> dict:
         """Apply loaded data from JSON/pickle to instance."""
+        validate_model_data(data, forest=True)
         self.n_estimators = data.get("n_estimators", len(data.get("trees", [])))
         self.bootstrap = data.get("bootstrap", True)
 

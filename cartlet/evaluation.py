@@ -9,6 +9,7 @@ import statistics
 from typing import Any
 
 from .types import TASK_CLASSIFICATION, TASK_REGRESSION
+from .validation import validate_dataset
 
 
 def evaluate_predictions(
@@ -161,6 +162,8 @@ def confusion_matrix(
     Returns:
         Dict mapping (true_label, predicted_label) -> count
     """
+    if len(y_true) != len(y_pred):
+        raise ValueError("y_true and y_pred must have same length")
     matrix: dict[tuple[Any, Any], int] = {}
 
     for true, pred in zip(y_true, y_pred, strict=False):
@@ -253,7 +256,10 @@ def cross_validate(
           - "mean", "std": summary statistics across folds
           - "n_folds": number of folds
     """
-    if n_folds < 2:
+    X, targets, _ = validate_dataset(X, y)
+    assert targets is not None
+    y = targets
+    if isinstance(n_folds, bool) or not isinstance(n_folds, int) or n_folds < 2:
         raise ValueError("n_folds must be at least 2")
 
     if len(X) < n_folds:
@@ -264,13 +270,13 @@ def cross_validate(
         rng = random.Random(random_state)
         rng.shuffle(indices)
 
-    fold_size = len(X) // n_folds
+    fold_size, extra = divmod(len(X), n_folds)
+    test_start = 0
     scores: list[float] = []
     metric: str | None = None
 
     for fold_idx in range(n_folds):
-        test_start = fold_idx * fold_size
-        test_end = test_start + fold_size if fold_idx < n_folds - 1 else len(X)
+        test_end = test_start + fold_size + (fold_idx < extra)
 
         test_indices = indices[test_start:test_end]
         train_indices = indices[:test_start] + indices[test_end:]
@@ -281,6 +287,7 @@ def cross_validate(
         X_train = [X[i] for i in train_indices]
         y_train = [y[i] for i in train_indices]
 
+        test_start = test_end
         tree = tree_class(**tree_kwargs)
         tree.load_data(X_train, y_train)
         tree.train()

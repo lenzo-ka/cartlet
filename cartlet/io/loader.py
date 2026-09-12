@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import csv
-import json
 import logging
 from collections.abc import Iterator
+from itertools import chain
 from typing import Any, TextIO
 
+from .jsonl import iter_jsonl_records, require_target
 from .utils import (
     detect_delimiter,
     detect_format,
@@ -172,36 +173,25 @@ def _load_jsonl_training_data(
     target_col: str | int | None = None,
 ) -> tuple[list[list[Any]], list[Any], list[str], str]:
     """Load training data from JSONL file."""
-    records = []
-    with open(path, encoding="utf-8") as f:
-        for line_num, line in enumerate(f, 1):
-            line = normalize_text(line.strip())
-            if not line:
-                continue
-            try:
-                records.append(json.loads(line))
-            except json.JSONDecodeError as e:
-                raise ValueError(f"Invalid JSON at line {line_num}: {e}") from e
-
-    if not records:
-        raise ValueError(f"Empty file: {path}")
-
-    # Get all keys from first record
-    all_keys = list(records[0].keys())
-
-    # Determine target column
-    target_key = _resolve_target_key(target_col, all_keys)
-
-    feature_names = [k for k in all_keys if k != target_key]
-
-    X = []
-    y = []
-    for record in records:
-        features = [try_numeric(record.get(k)) for k in feature_names]
-        target = try_numeric(record.get(target_key))
-        X.append(features)
-        y.append(target)
-
+    with open(path, encoding="utf-8") as source:
+        records = iter_jsonl_records(source)
+        try:
+            first_line, first = next(records)
+        except StopIteration:
+            raise ValueError(f"Empty file: {path}") from None
+        all_keys = list(first)
+        target_key = _resolve_target_key(target_col, all_keys)
+        feature_names = [k for k in all_keys if k != target_key]
+        X, y = [], []
+        for line_number, record in chain([(first_line, first)], records):
+            X.append(
+                [try_numeric(normalize_value(record.get(k))) for k in feature_names]
+            )
+            y.append(
+                try_numeric(
+                    normalize_value(require_target(record, target_key, line_number))
+                )
+            )
     return X, y, feature_names, target_key
 
 
@@ -299,21 +289,20 @@ def _read_jsonl(
     labeled: bool,
 ) -> tuple[list[list[Any]], list[Any] | None, list[str], str | None]:
     """Read JSONL format."""
-    records = [json.loads(line) for line in f if line.strip()]
-    if not records:
-        raise ValueError("Empty input")
-
-    keys = list(records[0].keys())
-
-    if not labeled:
-        X = [[normalize_value(r.get(k)) for k in keys] for r in records]
-        return X, None, keys, None
-
-    target_key = _resolve_target_key(target_col, keys)
+    records = iter_jsonl_records(f)
+    try:
+        first_line, first = next(records)
+    except StopIteration:
+        raise ValueError("Empty input") from None
+    keys = list(first)
+    target_key = _resolve_target_key(target_col, keys) if labeled else None
     feature_names = [k for k in keys if k != target_key]
-    X = [[normalize_value(r.get(k)) for k in feature_names] for r in records]
-    y = [normalize_value(r.get(target_key)) for r in records]
-    return X, y, feature_names, target_key
+    X, y = [], []
+    for line_number, record in chain([(first_line, first)], records):
+        X.append([normalize_value(record.get(k)) for k in feature_names])
+        if labeled:
+            y.append(normalize_value(require_target(record, target_key, line_number)))
+    return X, y if labeled else None, feature_names, target_key
 
 
 # =============================================================================
@@ -355,16 +344,7 @@ def _iter_vectors(
         first = True
         target_key = None
         feature_keys: list[str] = []
-        for line_num, line in enumerate(f, 1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError as e:
-                _logger.warning("Skipping malformed JSONL line %d: %s", line_num, e)
-                continue
-
+        for line_number, record in iter_jsonl_records(f):
             if first:
                 keys = list(record.keys())
                 target_key = keys[-1] if labeled else None
@@ -372,7 +352,11 @@ def _iter_vectors(
                 first = False
             # Normalize values to match the batch reader (_read_jsonl).
             features = [normalize_value(record.get(k)) for k in feature_keys]
-            label = normalize_value(record.get(target_key)) if labeled else None
+            label = (
+                normalize_value(require_target(record, target_key, line_number))
+                if labeled
+                else None
+            )
             yield features, label
     else:
         delimiter = delimiter or format_to_delimiter(format)

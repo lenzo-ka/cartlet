@@ -145,7 +145,7 @@ class TestTrainCommand:
 
     def test_train_with_test_file(self, csv_data, tmp_path):
         test_f = tmp_path / "test.csv"
-        test_f.write_text("a,b,label\n5,6,unknown\n")
+        test_f.write_text("color,size,label\nred,large,unknown\n")
         out = tmp_path / "m.cart"
         result = main(["train", csv_data, "-o", str(out), "-e", str(test_f)])
         assert result == 0
@@ -864,14 +864,14 @@ class TestStatsHonesty:
         stats = json.loads(out)
         assert stats["format_version"] == f"cart-{VERSION}"
 
-    def test_human_stats_no_fake_str_dtype(self, tmp_path, capsys):
+    def test_human_stats_reports_stored_str_dtype(self, tmp_path, capsys):
         model = self._model(tmp_path)
         capsys.readouterr()
         assert main(["stats", model]) == 0
         out = capsys.readouterr().out
-        # .cart does not store dtype; the feature rows must not claim "str".
+        # Format 2 retains the dtype bits written for this string feature.
         assert "Features" in out
-        assert " str " not in out
+        assert " str " in out
 
     def test_stats_output_file_has_no_status_line(self, tmp_path, capsys):
         """The 'Loading model from' status must go to stderr, not into the

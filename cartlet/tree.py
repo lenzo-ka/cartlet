@@ -53,6 +53,12 @@ from .utils import (
 from .utils import (
     max_depth as compute_max_depth,
 )
+from .validation import (
+    MODEL_SCHEMA_VERSION,
+    validate_dataset,
+    validate_model_data,
+    validate_splits,
+)
 
 # Default beam width returned by `predict_nbest`. 5 mirrors the conventional
 # top-K reported in ranking benchmarks; callers can override per call.
@@ -181,16 +187,14 @@ class DecisionTree(BaseModel):
             y: Target values (strings for classification, numbers for regression)
             counts: Optional instance weights (default: all 1)
         """
-        if len(X) != len(y):
-            raise ValueError(f"X and y must have same length: {len(X)} != {len(y)}")
-        if counts is not None and len(counts) != len(y):
-            raise ValueError(
-                f"counts and y must have same length: {len(counts)} != {len(y)}"
-            )
-
-        self.X = [row[:] for row in X]  # Copy to avoid mutating input
-        self.y = list(y)  # Copy so caller mutations don't reach into the model
-        self.counts = list(counts) if counts is not None else [1] * len(y)
+        rows, targets, weights = validate_dataset(X, y, counts)
+        assert targets is not None
+        if self.feature_names and len(self.feature_names) != len(rows[0]):
+            raise ValueError("feature specifications must match training width")
+        self.X, self.y, self.counts = rows, targets, weights
+        self.model = None
+        self._sklearn_model = None
+        self._feature_importances = {}
 
         # Normalize bool features to 0/1 and collect known categorical values in
         # a single pass per column (bool + categorical features would otherwise
@@ -225,9 +229,9 @@ class DecisionTree(BaseModel):
         # small set of integer *class* labels (e.g. y=[0, 1, 0, 1]) is treated
         # as classification rather than regression; all-numeric targets with
         # many distinct values still resolve to regression.
-        if self.task == TASK_AUTO and y:
+        if self.task == TASK_AUTO and self.y:
             self._detected_task = (
-                TASK_REGRESSION if is_likely_regression(y) else TASK_CLASSIFICATION
+                TASK_REGRESSION if is_likely_regression(self.y) else TASK_CLASSIFICATION
             )
 
             if self.verbose:
@@ -305,6 +309,7 @@ class DecisionTree(BaseModel):
         Raises:
             ValueError: If `load_data` has not been called.
         """
+        validate_splits(validation_split, test_split)
         if not self.X:
             raise ValueError("No training data loaded. Call load_data() first.")
 
@@ -325,7 +330,7 @@ class DecisionTree(BaseModel):
         # out data pointlessly.
         effective_val_split = validation_split
         if prune:
-            if not trainer_instance.supports_pruning:
+            if not trainer_instance.supports_pruning or self._is_regression():
                 self.logger.warning(
                     "The %s backend does not support pruning; prune=True is "
                     "ignored (no validation data is held out).",
@@ -357,6 +362,10 @@ class DecisionTree(BaseModel):
                 len(test_rows),
             )
 
+        if not train_rows:
+            raise ValueError("splits leave no training observations")
+        self._sklearn_model = None
+        self._feature_importances = {}
         # Build tree
         tree_start = time()
         self.model = trainer_instance.train(
@@ -640,6 +649,7 @@ class DecisionTree(BaseModel):
         if not store_distributions:
             model = collapse_distributions(model)
         return {
+            "schema_version": MODEL_SCHEMA_VERSION,
             "model": model,
             "feature_specs": self._serialize_feature_specs(),
             "feature_names": self.feature_names,
@@ -703,6 +713,7 @@ class DecisionTree(BaseModel):
 
     def _apply_loaded_data(self, data: dict) -> dict:
         """Apply loaded data from JSON/pickle to instance."""
+        validate_model_data(data)
         self.model = data["model"]
         return super()._apply_loaded_data(data)
 
