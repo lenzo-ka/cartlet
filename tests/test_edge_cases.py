@@ -164,24 +164,13 @@ class TestMinSamplesLeafEdgeCases:
         # With weight 5 each, splitting would give < 10 per leaf
         assert dt.get_depth() == 0
 
-    def test_min_samples_split_uses_weighted_counts(self):
-        """min_samples_split must be gated on weighted totals, consistently.
-
-        The best-split search re-checked min_samples_split against the *raw*
-        row count while the build loop used the *weighted* total. For
-        instance-weighted data with few rows but large weights, this could
-        wrongly veto a valid split. Two rows weighted 5 each (total 10) should
-        satisfy min_samples_split=3 and split.
-        """
+    def test_min_samples_split_counts_positive_weight_rows(self):
+        """Frequency weights affect impurity, not minimum row constraints."""
         dt = DecisionTree(feature_names=["x"], min_samples_split=3, min_samples_leaf=1)
-        X = [["a"], ["b"]]
-        y = ["X", "Y"]
-        counts = [5, 5]  # weighted total 10 >= 3, raw rows 2 < 3
-        dt.load_data(X, y, counts)
+        dt.load_data([["a"], ["b"]], ["X", "Y"], [5, 5])
         dt.train(trainer="native")
-
-        assert dt.predict(["a"]) == "X"
-        assert dt.predict(["b"]) == "Y"
+        assert dt.get_depth() == 0
+        assert dt.model == {"X": 0.5, "Y": 0.5}
 
     def test_min_samples_leaf_falls_back_to_valid_split(self):
         """A min_samples_leaf-violating best split must not veto a valid one.

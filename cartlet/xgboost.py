@@ -10,12 +10,14 @@ Requires: xgboost>=1.5.0 (for native categorical support)
 from __future__ import annotations
 
 import json
+import math
 import pickle
+from copy import deepcopy
 from typing import Any
 
 from .base import BaseModel
 from .io.bytes import write_forest_bytes
-from .io.utils import write_with_optional_gzip
+from .io.utils import atomic_output_path, write_with_optional_gzip
 from .types import (
     BINARY_CLASSIFICATION_THRESHOLD,
     DEFAULT_N_ESTIMATORS,
@@ -27,6 +29,7 @@ from .types import (
     infer_feature_specs,
     is_likely_regression,
 )
+from .validation import MODEL_SCHEMA_VERSION, validate_dataset
 
 _DEFAULT_BASE_SCORE = 0.5
 _UNKNOWN_CATEGORY = -1
@@ -100,7 +103,7 @@ class XGBoostTree(BaseModel):
         # XGBoost-specific state
         self.trees: list[Any] = []
         self.class_labels: list[str] = []
-        self.base_score: float = _DEFAULT_BASE_SCORE
+        self.base_score: float | list[float] = _DEFAULT_BASE_SCORE
         self._xgb_model: Any = None  # Raw XGBoost Booster
         self._warned_missing_direction = False
 
@@ -115,10 +118,23 @@ class XGBoostTree(BaseModel):
         Returns None, matching ``DecisionTree.load_data`` and
         ``RandomForest.load_data`` (previously returned ``self``).
         """
-        self.X = list(X)
-        self.y = list(y)
-        self.counts = counts or [1] * len(y)
-        self._infer_features()
+        rows, targets, weights = validate_dataset(X, y, counts)
+        previous = self.__dict__.copy()
+        try:
+            self.feature_specs = deepcopy(self.feature_specs)
+            self.X = rows
+            self.y = targets if targets is not None else []
+            self.counts = weights
+            self.class_labels = []
+            self._infer_features()
+        except Exception:
+            self.__dict__.clear()
+            self.__dict__.update(previous)
+            raise
+        self._xgb_model = None
+        self.trees = []
+        self.base_score = _DEFAULT_BASE_SCORE
+        self._warned_missing_direction = False
 
     def _infer_features(self) -> None:
         """Infer feature types from data."""
@@ -238,7 +254,7 @@ class XGBoostTree(BaseModel):
             "n_estimators": self.n_estimators,
         }
 
-    def _extract_base_score(self) -> float:
+    def _extract_base_score(self) -> float | list[float]:
         """
         Read the trained booster's actual ``base_score`` (the additive offset
         applied to every prediction before tree contributions).
@@ -263,10 +279,11 @@ class XGBoostTree(BaseModel):
         # NOT a hex float: reading "5E-1" as hex 0x5p-1 gives 2.5, which for a
         # binary model is added as a bogus margin offset and inverts the
         # predictions.)
-        text = str(raw).strip()
-        if text.startswith("[") and text.endswith("]"):
-            text = text[1:-1]
-        return float(text)
+        parsed = json.loads(str(raw))
+        if isinstance(parsed, list):
+            values = [float(value) for value in parsed]
+            return values[0] if len(values) == 1 else values
+        return float(parsed)
 
     def _prepare_data(self, X: list[list[Any]]) -> tuple[list[list[Any]], set[int]]:
         """
@@ -425,18 +442,11 @@ class XGBoostTree(BaseModel):
         return self._xgb_model.predict(dtest)[0]
 
     def _require_class_labels(self) -> None:
-        """Fail clearly if a classification predict is attempted without labels.
-
-        ``XGBoostTree.load()`` / ``_load_pickle`` restore only the raw Booster;
-        feature specs and class labels are not persisted there, so a
-        classification predict would otherwise raise an opaque IndexError.
-        """
+        """Require class labels restored from training or native metadata."""
         if not self.class_labels:
             raise ValueError(
-                "This XGBoost model has no class labels. Models loaded via "
-                "XGBoostTree.load() or from a pickle do not carry feature specs "
-                "or class labels; set feature_specs and class_labels (e.g. via "
-                "load_data + train) before a classification predict."
+                "Classification metadata is missing; train first or load a "
+                "Cartlet-exported native XGBoost model"
             )
 
     def predict(self, vector: list[Any], **kwargs: Any) -> Any:
@@ -460,6 +470,8 @@ class XGBoostTree(BaseModel):
 
         self._require_class_labels()
         n_classes = len(self.class_labels)
+        if n_classes == 1:
+            return self.class_labels[0]
         if n_classes == 2:
             pred_class = 1 if pred > BINARY_CLASSIFICATION_THRESHOLD else 0
         else:
@@ -484,6 +496,8 @@ class XGBoostTree(BaseModel):
         pred = self._raw_predict(vector)
 
         n_classes = len(self.class_labels)
+        if n_classes == 1:
+            return {self.class_labels[0]: 1.0}
         if n_classes == 2:
             prob_1 = float(pred)
             return {
@@ -553,7 +567,7 @@ class XGBoostTree(BaseModel):
 
         if path.endswith((".xgb", ".ubj")):
             return "xgb-native"
-        if path.endswith(".json") and self._xgb_model is not None:
+        if path.endswith(".json"):
             return "xgb-native"
 
         bare = path[:-3] if path.endswith(".gz") else path
@@ -576,6 +590,8 @@ class XGBoostTree(BaseModel):
         strip.
         """
         return {
+            "schema_version": MODEL_SCHEMA_VERSION,
+            "model_type": "xgboost",
             "trees": self.trees,
             "feature_specs": self._serialize_feature_specs(),
             "feature_names": self.feature_names,
@@ -625,7 +641,23 @@ class XGBoostTree(BaseModel):
         """Export to native XGBoost format (.xgb, .ubj, or .json)."""
         if self._xgb_model is None:
             raise ValueError("No model to export. Call train() first.")
-        self._xgb_model.save_model(path)
+        payload = {
+            "schema_version": MODEL_SCHEMA_VERSION,
+            "task": self._effective_task(),
+            "feature_specs": self._serialize_feature_specs(),
+            "class_labels": self.class_labels,
+            "n_estimators": self.n_estimators,
+            "learning_rate": self.learning_rate,
+        }
+        previous = self._xgb_model.attr("cartlet_metadata")
+        try:
+            self._xgb_model.set_attr(
+                cartlet_metadata=json.dumps(payload, allow_nan=False)
+            )
+            with atomic_output_path(path) as output:
+                self._xgb_model.save_model(output)
+        finally:
+            self._xgb_model.set_attr(cartlet_metadata=previous)
 
     # =========================================================================
     # Load methods (override BaseModel abstracts)
@@ -656,31 +688,126 @@ class XGBoostTree(BaseModel):
         """sklearn load not applicable for XGBoost."""
         raise NotImplementedError("sklearn load not supported for XGBoost. Use .xgb")
 
+    def load_model(self, path: str, format: str | None = None) -> dict:
+        """Restore a native Booster and its versioned Cartlet training metadata.
+
+        Native XGBoost JSON is not Cartlet's generic JSON envelope. Use this
+        loader for .xgb/.ubj/.json, or the minimal runner for exported .cart.
+        """
+        native_formats = {"xgb", "ubj", "xgb-json", "json"}
+        if format is not None and format not in native_formats | {"cart"}:
+            raise ValueError("native XGBoost load requires xgb/ubj/json format")
+        if format is None and not path.endswith(
+            (".json", ".xgb", ".ubj", ".cart", ".cart.gz")
+        ):
+            raise ValueError("native XGBoost load requires .xgb/.ubj/.json")
+        if path.endswith(".cart") or path.endswith(".cart.gz") or format == "cart":
+            return self._load_cart(path, path.endswith(".gz"))
+        return self._load_xgb_native(path)
+
     def _load_xgb_native(self, path: str) -> dict:
-        """Load from native XGBoost format."""
         import xgboost as xgb
 
-        self._xgb_model = xgb.Booster()
-        self._xgb_model.load_model(path)
-        return {"loaded": True}
+        booster = xgb.Booster()
+        booster.load_model(path)
+        raw = booster.attr("cartlet_metadata")
+        if raw is None:
+            raise ValueError(
+                "Native XGBoost model lacks versioned Cartlet feature/class metadata; "
+                "load external models with the XGBoost API instead"
+            )
+        try:
+            payload = json.loads(raw)
+            if (
+                not isinstance(payload, dict)
+                or payload.get("schema_version") != MODEL_SCHEMA_VERSION
+            ):
+                raise ValueError("unsupported native Cartlet metadata version")
+            features = payload["feature_specs"]
+            labels = payload["class_labels"]
+            task = payload["task"]
+            if task not in {TASK_CLASSIFICATION, TASK_REGRESSION}:
+                raise ValueError("native metadata requires a resolved task")
+            if (
+                not isinstance(features, list)
+                or not features
+                or any(not isinstance(spec, dict) for spec in features)
+            ):
+                raise ValueError("native metadata requires feature specifications")
+            for spec in features:
+                values = spec.get("values")
+                if values is not None and (
+                    not isinstance(values, list)
+                    or any(not isinstance(value, str) for value in values)
+                ):
+                    raise ValueError("native categorical values must be a string list")
+            if (
+                not isinstance(labels, list)
+                or any(not isinstance(label, str) for label in labels)
+                or len(set(labels)) != len(labels)
+            ):
+                raise ValueError("native metadata requires unique string class labels")
+            if (task == TASK_CLASSIFICATION and not labels) or (
+                task == TASK_REGRESSION and labels
+            ):
+                raise ValueError("native class labels do not match task")
+            if (
+                not isinstance(payload["n_estimators"], int)
+                or isinstance(payload["n_estimators"], bool)
+                or payload["n_estimators"] <= 0
+            ):
+                raise ValueError("native metadata requires positive estimator count")
+            if (
+                not isinstance(payload["learning_rate"], (int, float))
+                or isinstance(payload["learning_rate"], bool)
+                or not math.isfinite(payload["learning_rate"])
+                or payload["learning_rate"] <= 0
+            ):
+                raise ValueError(
+                    "native metadata requires finite positive learning rate"
+                )
+            config = json.loads(booster.save_config())["learner"]
+            objective = config["objective"]["name"]
+            if (task == TASK_REGRESSION and objective != "reg:squarederror") or (
+                task == TASK_CLASSIFICATION
+                and objective not in {"binary:logistic", "multi:softprob"}
+            ):
+                raise ValueError(
+                    "native metadata task does not match Booster objective"
+                )
+            expected_classes = int(config["learner_model_param"]["num_class"])
+            if task == TASK_CLASSIFICATION and len(labels) != (expected_classes or 2):
+                raise ValueError("native metadata class count does not match Booster")
+            candidate = XGBoostTree(
+                features=features,
+                task=task,
+                n_estimators=payload["n_estimators"],
+                learning_rate=payload["learning_rate"],
+                verbose=self.verbose,
+            )
+            if len(candidate.feature_names) != booster.num_features() or len(
+                set(candidate.feature_names)
+            ) != len(candidate.feature_names):
+                raise ValueError(
+                    "native metadata feature count/names do not match Booster"
+                )
+            if (
+                booster.feature_names is not None
+                and candidate.feature_names != booster.feature_names
+            ):
+                raise ValueError("native metadata feature names do not match Booster")
+            candidate.class_labels = labels
+            candidate._xgb_model = booster
+            candidate.base_score = candidate._extract_base_score()
+            candidate.trees = candidate._extract_trees()
+        except (KeyError, TypeError, AttributeError) as error:
+            raise ValueError("invalid native Cartlet metadata") from error
+        self.__dict__.update(candidate.__dict__)
+        return payload
 
     @classmethod
     def load(cls, path: str) -> XGBoostTree:
-        """
-        Load an XGBoost model from file.
-
-        Args:
-            path: Path to model file (.xgb or .json)
-
-        Returns:
-            XGBoostTree instance
-        """
-        import xgboost as xgb
-
+        """Load a Cartlet-exported native XGBoost model with saved metadata."""
         model = cls()
-        model._xgb_model = xgb.Booster()
-        model._xgb_model.load_model(path)
-
-        # Note: feature specs and class labels need to be provided separately
-        # when loading from native format
+        model.load_model(path)
         return model

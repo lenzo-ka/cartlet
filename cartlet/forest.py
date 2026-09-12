@@ -337,7 +337,7 @@ class RandomForest(BaseModel):
 
         # One-hot encode categorical features
         X_encoded, encoded_names, cat_cols, cat_vals = encode_categorical(
-            self.X, self.feature_names, self.feature_specs
+            self.X, self.feature_names, self.feature_specs, sparse=True
         )
 
         is_regression = self._is_regression()

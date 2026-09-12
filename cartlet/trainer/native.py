@@ -15,6 +15,7 @@ from __future__ import annotations
 import math
 import random
 from collections.abc import Collection
+from dataclasses import dataclass
 from time import time
 from typing import TYPE_CHECKING, Any
 
@@ -35,6 +36,48 @@ _MAX_NATIVE_DEPTH = 500
 
 if TYPE_CHECKING:
     from ..tree import DecisionTree
+
+
+@dataclass(frozen=True)
+class _Moments:
+    """Mergeable weighted, centered moments; never subtract large raw squares."""
+
+    weight: float = 0.0
+    mean: float = 0.0
+    m2: float = 0.0
+    rows: int = 0
+
+    def merge(self, other: _Moments) -> _Moments:
+        if not self.weight:
+            return other
+        if not other.weight:
+            return self
+        weight = self.weight + other.weight
+        delta = other.mean - self.mean
+        mean = self.mean + delta * (other.weight / weight)
+        m2 = self.m2 + other.m2 + delta * delta * (self.weight / weight) * other.weight
+        return _Moments(weight, mean, m2, self.rows + other.rows)
+
+    @property
+    def variance(self) -> float:
+        return max(0.0, self.m2 / self.weight) if self.weight else 0.0
+
+
+def _partition_moments(parts: list[_Moments]) -> tuple[list[_Moments], list[_Moments]]:
+    """Prefix/suffix aggregates give stable complements without cancellation."""
+    prefix = [_Moments()]
+    for part in parts:
+        prefix.append(prefix[-1].merge(part))
+    suffix = [_Moments()] * (len(parts) + 1)
+    for i in range(len(parts) - 1, -1, -1):
+        suffix[i] = parts[i].merge(suffix[i + 1])
+    return prefix, suffix
+
+
+def _midpoint(low: float, high: float) -> float:
+    """A finite inclusive threshold that separates two distinct finite values."""
+    midpoint = low / 2 + high / 2
+    return low if midpoint >= high else midpoint
 
 
 def _count_leaf_correct(node: Any, tree: DecisionTree, val_rows: list[int]) -> int:
@@ -185,6 +228,7 @@ class Native(Trainer):
         self._feature_importances = dict.fromkeys(tree.feature_names, 0.0)
         self._total_samples = sum(tree.counts[i] for i in train_rows)
 
+        train_rows = [i for i in train_rows if tree.counts[i] > 0]
         model = self._build_tree(tree, set(train_rows))
 
         if self.prune and val_rows:
@@ -236,7 +280,7 @@ class Native(Trainer):
         # Early stopping conditions
         if self.max_depth is not None and depth >= self.max_depth:
             return self._make_leaf(tree, row_ids)
-        if total < tree.min_samples_split:
+        if len(row_ids) < tree.min_samples_split:
             return self._make_leaf(tree, row_ids)
 
         # For classification, check if node is pure
@@ -263,9 +307,9 @@ class Native(Trainer):
         # Check split validity
         if not yes or not no:
             return self._make_leaf(tree, row_ids)
-        if self._sum_counts(tree, yes) < tree.min_samples_leaf:
+        if len(yes) < tree.min_samples_leaf:
             return self._make_leaf(tree, row_ids)
-        if self._sum_counts(tree, no) < tree.min_samples_leaf:
+        if len(no) < tree.min_samples_leaf:
             return self._make_leaf(tree, row_ids)
 
         # Recurse
@@ -435,24 +479,15 @@ class Native(Trainer):
 
     def _mean_for_rows(
         self, tree: DecisionTree, row_ids: Collection[int]
-    ) -> tuple[float, float, int]:
+    ) -> tuple[float, float, float]:
         """Calculate weighted mean, variance, and count for regression."""
         if not row_ids:
             return 0.0, 0.0, 0
 
-        total_weight = sum(tree.counts[i] for i in row_ids)
-        if total_weight == 0:
-            return 0.0, 0.0, 0
-
-        weighted_sum = sum(tree.y[i] * tree.counts[i] for i in row_ids)
-        mean = weighted_sum / total_weight
-
-        variance = (
-            sum(tree.counts[i] * (tree.y[i] - mean) ** 2 for i in row_ids)
-            / total_weight
-        )
-
-        return mean, variance, total_weight
+        moments = _Moments()
+        for i in row_ids:
+            moments = moments.merge(_Moments(tree.counts[i], float(tree.y[i]), 0.0, 1))
+        return moments.mean, moments.variance, moments.weight
 
     def _variance_for_rows(self, tree: DecisionTree, row_ids: Collection[int]) -> float:
         """Calculate weighted variance for a set of rows (regression)."""
@@ -524,7 +559,9 @@ class Native(Trainer):
             # Skip values that would leave either side below min_samples_leaf,
             # so a valid alternative category can still be chosen instead of
             # collapsing the node post-hoc.
-            if count < min_leaf or outside_count < min_leaf:
+            if len(inside) < min_leaf or len(row_ids) - len(inside) < min_leaf:
+                continue
+            if count <= 0 or outside_count <= 0:
                 continue
             outside = row_ids - inside
 
@@ -561,6 +598,7 @@ class Native(Trainer):
 
         value_class_counts: dict[Any, dict[Any, float]] = {}
         value_total: dict[Any, float] = {}
+        value_rows: dict[Any, int] = {}
         total_class_counts: dict[Any, float] = {}
         total = 0.0
         for i in row_ids:
@@ -572,8 +610,10 @@ class Native(Trainer):
                 inside = {}
                 value_class_counts[value] = inside
                 value_total[value] = 0.0
+                value_rows[value] = 0
             inside[label] = inside.get(label, 0.0) + w
             value_total[value] += w
+            value_rows[value] += 1
             total_class_counts[label] = total_class_counts.get(label, 0.0) + w
             total += w
 
@@ -582,7 +622,12 @@ class Native(Trainer):
         for value, inside_counts in value_class_counts.items():
             in_total = value_total[value]
             out_total = total - in_total
-            if in_total < min_leaf or out_total < min_leaf:
+            if (
+                value_rows[value] < min_leaf
+                or len(row_ids) - value_rows[value] < min_leaf
+            ):
+                continue
+            if in_total <= 0 or out_total <= 0:
                 continue
             outside_counts = {
                 label: c - inside_counts.get(label, 0.0)
@@ -610,45 +655,31 @@ class Native(Trainer):
     ) -> tuple[Any, float]:
         """Single-pass categorical split search (regression).
 
-        Per-value weighted moments (w, wy, wyy) accumulated in one pass; each
-        partition's variance is derived as E[y^2] - E[y]^2 (the same moment
-        form the numeric split path uses).
+        Per-value centered moments and prefix/suffix merges retain numerical
+        stability without rescanning each candidate partition.
         """
         min_leaf = tree.min_samples_leaf
         X, y, counts = tree.X, tree.y, tree.counts
 
-        value_w: dict[Any, float] = {}
-        value_wy: dict[Any, float] = {}
-        value_wyy: dict[Any, float] = {}
-        total_w = 0.0
-        total_wy = 0.0
-        total_wyy = 0.0
+        groups: dict[Any, _Moments] = {}
         for i in row_ids:
             value = X[i][feat_id]
-            w = counts[i]
-            yi = y[i]
-            wy = w * yi
-            wyy = wy * yi
-            value_w[value] = value_w.get(value, 0.0) + w
-            value_wy[value] = value_wy.get(value, 0.0) + wy
-            value_wyy[value] = value_wyy.get(value, 0.0) + wyy
-            total_w += w
-            total_wy += wy
-            total_wyy += wyy
-
+            groups[value] = groups.get(value, _Moments()).merge(
+                _Moments(counts[i], float(y[i]), 0.0, 1)
+            )
+        prefix, suffix = _partition_moments(list(groups.values()))
+        total_w = prefix[-1].weight
         best_gain = 0.0
         best_value = None
-        for value, in_w in value_w.items():
-            out_w = total_w - in_w
-            if in_w < min_leaf or out_w < min_leaf:
+        for index, (value, inside) in enumerate(groups.items()):
+            outside = prefix[index].merge(suffix[index + 1])
+            if inside.rows < min_leaf or outside.rows < min_leaf:
                 continue
-            in_wy = value_wy[value]
-            in_wyy = value_wyy[value]
-            var_in = max(0.0, in_wyy / in_w - (in_wy / in_w) ** 2)
-            out_wy = total_wy - in_wy
-            out_wyy = total_wyy - in_wyy
-            var_out = max(0.0, out_wyy / out_w - (out_wy / out_w) ** 2)
-            impurity1 = in_w / total_w * var_in + out_w / total_w * var_out
+            if not inside.weight or not outside.weight:
+                continue
+            impurity1 = (
+                inside.weight * inside.variance + outside.weight * outside.variance
+            ) / total_w
             gain = impurity0 - impurity1
             if gain > best_gain:
                 best_value = value
@@ -723,17 +754,23 @@ class Native(Trainer):
         min_leaf = tree.min_samples_leaf
         left_counts: dict[Any, float] = {}
         left_count = 0
+        left_rows = 0
         best_gain = 0.0
         best_threshold: float | None = None
         prev_value = None
 
-        for value, idx, count in values_with_ids:
+        for left_rows, (value, idx, count) in enumerate(values_with_ids):
             if prev_value is not None and value != prev_value:
                 right_count = total - left_count
                 # Skip candidates that would leave either side below
                 # min_samples_leaf, so a valid alternative threshold can still
                 # win instead of the node collapsing to a leaf post-hoc.
-                if left_count >= min_leaf and right_count >= min_leaf:
+                if (
+                    left_rows >= min_leaf
+                    and len(values_with_ids) - left_rows >= min_leaf
+                    and left_count > 0
+                    and right_count > 0
+                ):
                     imp_left = self._impurity_from_counts(left_counts, left_count, gini)
                     imp_right = self._impurity_from_counts(
                         right_counts, right_count, gini
@@ -744,7 +781,7 @@ class Native(Trainer):
                     gain = impurity0 - impurity1
                     if gain > best_gain:
                         best_gain = gain
-                        best_threshold = (prev_value + value) / 2
+                        best_threshold = _midpoint(prev_value, value)
 
             label = tree.y[idx]
             left_counts[label] = left_counts.get(label, 0) + count
@@ -762,53 +799,29 @@ class Native(Trainer):
         values_with_ids: list[tuple[Any, int, int]],
         impurity0: float,
     ) -> tuple[float | None, float]:
-        # Running weighted sums let us derive each partition's variance as
-        # E[y^2] - E[y]^2 in O(1) per split point.
-        total_w = 0.0
-        total_wy = 0.0
-        total_wyy = 0.0
-        for _value, i, w in values_with_ids:
-            y = tree.y[i]
-            total_w += w
-            total_wy += w * y
-            total_wyy += w * y * y
-        if total_w == 0:
+        parts = [_Moments(w, float(tree.y[i]), 0.0, 1) for _, i, w in values_with_ids]
+        prefix, suffix = _partition_moments(parts)
+        total_w = prefix[-1].weight
+        if not total_w:
             return None, 0.0
-
-        min_leaf = tree.min_samples_leaf
-        left_w = 0.0
-        left_wy = 0.0
-        left_wyy = 0.0
         best_gain = 0.0
-        best_threshold: float | None = None
-        prev_value = None
-
-        for value, idx, count in values_with_ids:
-            if prev_value is not None and value != prev_value:
-                right_w = total_w - left_w
-                # Skip candidates violating min_samples_leaf (see the
-                # classification sweep) so a valid split isn't discarded.
-                if left_w >= min_leaf and right_w >= min_leaf:
-                    var_left = max(0.0, left_wyy / left_w - (left_wy / left_w) ** 2)
-                    right_wy = total_wy - left_wy
-                    right_wyy = total_wyy - left_wyy
-                    var_right = max(
-                        0.0, right_wyy / right_w - (right_wy / right_w) ** 2
-                    )
-                    impurity1 = (
-                        left_w / total_w * var_left + right_w / total_w * var_right
-                    )
-                    gain = impurity0 - impurity1
-                    if gain > best_gain:
-                        best_gain = gain
-                        best_threshold = (prev_value + value) / 2
-
-            y = tree.y[idx]
-            left_w += count
-            left_wy += count * y
-            left_wyy += count * y * y
-            prev_value = value
-
+        best_threshold = None
+        for index in range(1, len(values_with_ids)):
+            low, high = values_with_ids[index - 1][0], values_with_ids[index][0]
+            if low == high:
+                continue
+            left, right = prefix[index], suffix[index]
+            if left.rows < tree.min_samples_leaf or right.rows < tree.min_samples_leaf:
+                continue
+            if not left.weight or not right.weight:
+                continue
+            impurity1 = (
+                left.weight * left.variance + right.weight * right.variance
+            ) / total_w
+            gain = impurity0 - impurity1
+            if gain > best_gain:
+                best_gain = gain
+                best_threshold = _midpoint(low, high)
         return best_threshold, best_gain
 
     def _random_split_numerical(
@@ -836,7 +849,7 @@ class Native(Trainer):
 
         left_count = sum(tree.counts[i] for i in left)
         right_count = total - left_count
-        if left_count < tree.min_samples_leaf or right_count < tree.min_samples_leaf:
+        if len(left) < tree.min_samples_leaf or len(right) < tree.min_samples_leaf:
             return None, 0.0
         impurity1 = left_count / total * self._impurity_for_rows(
             tree, left
@@ -867,7 +880,7 @@ class Native(Trainer):
 
         in_count = sum(tree.counts[i] for i in inside)
         out_count = total - in_count
-        if in_count < tree.min_samples_leaf or out_count < tree.min_samples_leaf:
+        if len(inside) < tree.min_samples_leaf or len(outside) < tree.min_samples_leaf:
             return None, 0.0
         impurity1 = in_count / total * self._impurity_for_rows(
             tree, inside
@@ -878,10 +891,8 @@ class Native(Trainer):
         self, tree: DecisionTree, row_ids: set[int]
     ) -> tuple[str | None, int | None, Any | None, str, float]:
         """Find the best feature and value/threshold for splitting."""
-        # Weighted sample total, consistent with the min_samples_split gate in
-        # _build_tree (and with cartlet's weighted min_samples_leaf semantics).
-        # Using raw len(row_ids) here disagreed for instance-weighted data.
-        if self._sum_counts(tree, row_ids) < tree.min_samples_split:
+        # Minimum-sample constraints count active rows; impurity remains weighted.
+        if len(row_ids) < tree.min_samples_split:
             return None, None, None, "=", 0.0
 
         impurity0 = self._impurity_for_rows(tree, row_ids)

@@ -27,8 +27,8 @@ def make_classification_distribution(
         class_probs: List of (class_label, probability) tuples, sorted by prob desc
         store_distributions: Whether to store full distributions
         min_confidence: If best-class probability exceeds this, store only the
-            class label instead of the full distribution.  Set to 1.0 to always
-            keep distributions.
+            class label instead of the full distribution. Set to 1.0 to disable
+            this confidence gate; entropy and tiny-probability gates still apply.
         min_dist_entropy: If the distribution's entropy (bits) is below this,
             collapse to the best class. Applied consistently across backends so
             native and sklearn leaves agree (0.0 disables the gate).
