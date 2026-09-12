@@ -783,3 +783,6 @@ It's a little CART (Classification And Regression Trees).
 ## License
 
 BSD 2-Clause License - see [LICENSE](https://github.com/lenzo-ka/cartlet/blob/main/LICENSE) for details.
+
+For reproducible generated-data timing and memory comparisons, see the
+[scalability benchmark guide](docs/benchmarks.md).
