@@ -18,12 +18,11 @@ import random
 from time import time
 from typing import Any
 
-from .base import BaseModel
+from .base import BaseModel, _read_model_artifact
 from .evaluation import evaluate_tree
 from .io.bytes import write_tree_bytes
 from .io.cart_format import rebuild_tree_from_cart
-from .io.utils import open_file_binary, write_with_optional_gzip
-from .runner import _load_cart_from_bytes
+from .io.utils import write_with_optional_gzip
 from .trainer import Native, Trainer
 from .trainer.base import normalize_importances
 from .types import (
@@ -166,6 +165,7 @@ class DecisionTree(BaseModel):
 
         # Trained model
         self.model: Any = None
+        self.training_summary: dict[str, int] = {}
 
     def _feature_type(self, feat_idx: int) -> str:
         """Get the type (cat/num) for a feature."""
@@ -193,6 +193,7 @@ class DecisionTree(BaseModel):
             raise ValueError("feature specifications must match training width")
         self.X, self.y, self.counts = rows, targets, weights
         self.model = None
+        self.training_summary = {}
         self._sklearn_model = None
         self._feature_importances = {}
 
@@ -373,6 +374,11 @@ class DecisionTree(BaseModel):
             train_rows,
             val_rows if do_prune else None,
         )
+        self.training_summary = {
+            "training_samples": len(train_rows),
+            "validation_samples": len(val_rows),
+            "test_samples": len(test_rows),
+        }
         tree_time = time() - tree_start
 
         nodes = count_nodes(self.model)
@@ -660,9 +666,11 @@ class DecisionTree(BaseModel):
 
     def _load_cart(self, path: str, use_gzip: bool = False) -> dict:
         """Load from compact binary format."""
-        with open_file_binary(path, "rb") as f:
-            data = f.read()
-        model_data = _load_cart_from_bytes(data)
+        _, model_data = _read_model_artifact(path, "cart")
+        return self._apply_cart_data(model_data, path)
+
+    def _apply_cart_data(self, model_data: dict, path: str = "artifact") -> dict:
+        """Apply an already decoded binary model without rereading its source."""
 
         # XGBoost .cart files carry K trees per round and an additive
         # base_score that DecisionTree's single-tree shape can't represent.
@@ -690,9 +698,16 @@ class DecisionTree(BaseModel):
 
     def _load_sklearn(self, path: str, use_gzip: bool = False) -> dict:
         """Load sklearn model - converts to cartlet format for inference."""
+        _, estimator = _read_model_artifact(path, "skl")
+        return self._apply_sklearn_model(estimator)
+
+    def _apply_sklearn_model(self, estimator: Any) -> dict:
+        """Convert an already loaded sklearn estimator."""
         from .trainer.sklearn import Sklearn
 
-        sklearn_model, feature_names, feature_specs = self._read_sklearn_for_load(path)
+        sklearn_model, feature_names, feature_specs = self._prepare_sklearn_for_load(
+            estimator
+        )
         model, config = Sklearn.from_sklearn(sklearn_model, feature_names)
         self.model = model
         self.feature_names = feature_names

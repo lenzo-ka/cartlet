@@ -11,11 +11,10 @@ import random
 from collections import Counter
 from typing import Any
 
-from .base import BaseModel
+from .base import BaseModel, _read_model_artifact
 from .io.bytes import write_forest_bytes
 from .io.cart_format import rebuild_tree_from_cart
-from .io.utils import open_file_binary, write_with_optional_gzip
-from .runner import _load_cart_from_bytes
+from .io.utils import write_with_optional_gzip
 from .trainer import Native
 from .trainer.base import normalize_importances
 from .tree import DecisionTree
@@ -530,9 +529,11 @@ class RandomForest(BaseModel):
 
     def _load_cart(self, path: str, use_gzip: bool = False) -> dict:
         """Load from compact binary format."""
-        with open_file_binary(path, "rb") as f:
-            raw_data = f.read()
-        model_data = _load_cart_from_bytes(raw_data)
+        _, model_data = _read_model_artifact(path, "cart")
+        return self._apply_cart_data(model_data)
+
+    def _apply_cart_data(self, model_data: dict) -> dict:
+        """Apply an already decoded binary forest."""
 
         # Restore config
         self._apply_config_from_cart(model_data)
@@ -557,9 +558,16 @@ class RandomForest(BaseModel):
 
     def _load_sklearn(self, path: str, use_gzip: bool = False) -> dict:
         """Load sklearn model - converts to cartlet format for inference."""
+        _, estimator = _read_model_artifact(path, "skl")
+        return self._apply_sklearn_model(estimator)
+
+    def _apply_sklearn_model(self, estimator: Any) -> dict:
+        """Convert an already loaded sklearn forest estimator."""
         from .trainer.sklearn import convert_sklearn_tree
 
-        sklearn_rf, feature_names, feature_specs = self._read_sklearn_for_load(path)
+        sklearn_rf, feature_names, feature_specs = self._prepare_sklearn_for_load(
+            estimator
+        )
         self.feature_names = feature_names
         self.feature_specs = feature_specs
         self.n_estimators = len(sklearn_rf.estimators_)

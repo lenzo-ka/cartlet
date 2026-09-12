@@ -19,6 +19,7 @@ import pickle
 import struct
 from dataclasses import dataclass
 
+from .base import _read_model_artifact
 from .evaluation import (
     confusion_matrix,
     cross_validate,
@@ -48,6 +49,7 @@ from .runner import (
     read_cart_metadata,
 )
 from .trainer import Native, Trainer
+from .training import TrainingResult, TrainingSettings, train_file, train_model
 from .tree import DecisionTree
 from .types import (
     CRITERION_ENTROPY,
@@ -82,6 +84,14 @@ class ConversionResult:
     model_type: str
     input_path: str
     output_path: str
+
+    def to_dict(self) -> dict[str, str]:
+        """Return JSON-compatible conversion provenance."""
+        return {
+            "model_type": self.model_type,
+            "input_path": self.input_path,
+            "output_path": self.output_path,
+        }
 
 
 def convert(
@@ -129,9 +139,7 @@ def convert(
     require_distinct_paths([input_path], [output_path])
     ext_out, _ = resolve_format(output_path, output_format)
 
-    is_forest = _detect_is_forest(input_path, format=input_format)
-    model: DecisionTree | RandomForest = RandomForest() if is_forest else DecisionTree()
-    model.load_model(input_path, format=input_format)
+    model = _load_conversion_model(input_path, input_format)
 
     if ext_out in (".skl", ".joblib") and model._sklearn_model is None:
         raise ValueError(
@@ -141,6 +149,35 @@ def convert(
 
     model.export(output_path, format=output_format)
     return ConversionResult(type(model).__name__, input_path, output_path)
+
+
+def _load_conversion_model(
+    path: str, format: str | None
+) -> DecisionTree | RandomForest:
+    """Decode once, dispatch by artifact kind, then reuse model application."""
+    ext, data = _read_model_artifact(path, format)
+    if ext == ".cart":
+        if data.get("is_xgboost"):
+            raise ValueError("XGBoost artifacts require XGBoostTree or Predictor")
+        model: DecisionTree | RandomForest = (
+            RandomForest() if data.get("is_forest") else DecisionTree()
+        )
+        model._apply_cart_data(data)
+        return model
+    if ext in (".skl", ".joblib"):
+        estimator = data
+        from sklearn.ensemble import IsolationForest as SkIsolationForest
+
+        if isinstance(estimator, SkIsolationForest):
+            raise ValueError("IsolationForest conversion requires its dedicated API")
+        model = RandomForest() if hasattr(estimator, "estimators_") else DecisionTree()
+        model._apply_sklearn_model(estimator)
+        return model
+    if not isinstance(data, dict):
+        raise ValueError("model must be an object")
+    model = RandomForest() if "trees" in data else DecisionTree()
+    model._apply_loaded_data(data)
+    return model
 
 
 def _detect_is_forest(path: str, format: str | None = None) -> bool:
@@ -272,6 +309,10 @@ __all__ = [
     "bundle",
     "convert",
     "ConversionResult",
+    "TrainingResult",
+    "TrainingSettings",
+    "train_file",
+    "train_model",
 ]
 
 __version__ = "0.5.0"
