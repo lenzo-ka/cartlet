@@ -2,8 +2,8 @@
 > numeric comparison opcode for XGBoost and float64 numeric/probability pools.
 > Native thresholds, regression means and class probabilities retain Python
 > float precision; XGBoost inputs and thresholds are normalized to float32.
-> Native CART's nested `"<"` operation
-> retains its inclusive meaning; strict nodes use `"lt"`. Readers reject other
+> Nested native CART nodes use `"<="`; strict XGBoost nodes use `"<"`.
+> Readers reject other
 > versions rather than guessing their semantics.
 
 # .cart Binary Format Specification
@@ -162,8 +162,8 @@ Variable-size encoding for each node:
 ```
 feat_op: u8                     # Packed feature index + operation
 val: u16                        # Index into floats, cat_vals, or case_tables
-left: varint                    # Left child index (OP_LT/OP_STRICT_LT/OP_EQ only)
-right: varint                   # Right child index (OP_LT/OP_STRICT_LT/OP_EQ only)
+left: varint                    # Left child index (OP_LE/OP_LT/OP_EQ only)
+right: varint                   # Right child index (OP_LE/OP_LT/OP_EQ only)
 ```
 
 ### feat_op Encoding
@@ -177,8 +177,8 @@ right: varint                   # Right child index (OP_LT/OP_STRICT_LT/OP_EQ on
 
 | Value | Constant | Meaning | Children |
 |-------|----------|---------|----------|
-| 0 | `OP_LT` | Numeric: `feature <= floats[val]` | left, right |
-| 3 | `OP_STRICT_LT` | Numeric: `feature < floats[val]` | left, right |
+| 0 | `OP_LE` | Numeric: `feature <= floats[val]` | left, right |
+| 3 | `OP_LT` | Numeric: `feature < floats[val]` | left, right |
 | 1 | `OP_EQ` | Categorical: `feature == strings[cat_vals[val]]` | left, right |
 | 2 | `OP_SWITCH` | Case table lookup | In case_tables[val] |
 
@@ -271,8 +271,8 @@ FLAG_HAS_DISTRIBUTIONS = 0x04
 FLAG_IS_XGBOOST = 0x08
 
 # Operations
-OP_LT = 0
-OP_STRICT_LT = 3
+OP_LE = 0
+OP_LT = 3
 OP_EQ = 1
 OP_SWITCH = 2
 
@@ -299,3 +299,7 @@ When bundling a model with the Python runner, the raw `.cart` bytes are
 base64-encoded and inserted as a module-level constant
 (`_EMBEDDED_MODEL_B64`). At load time the runner decodes that constant when
 no explicit model path is supplied.
+
+Feature-table dtype bits are retained by both loaders. Known categorical values
+are restored as the declared bool/int/float/str type for vocabulary/OOV checks;
+comparison pools remain strings for traversal.

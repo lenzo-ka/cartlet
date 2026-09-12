@@ -28,9 +28,9 @@ from .cart_format import (
     LEAF_FLOAT,
     MAGIC,
     OP_EQ,
+    OP_LE,
     OP_LT,
     OP_SHIFT,
-    OP_STRICT_LT,
     OP_SWITCH,
     TYPE_CAT,
     TYPE_NUM,
@@ -82,7 +82,7 @@ class ByteWriter:
         # Case tables: list of (default_child, [(cat_val_idx, child_idx), ...])
         self.case_tables: list[tuple[int, list[tuple[int, int]]]] = []
         # Separate arrays for decisions and leaves
-        # For OP_LT/OP_EQ: (feat, op, val, left, right)
+        # For OP_LE/OP_EQ: (feat, op, val, left, right)
         # For OP_SWITCH: (feat, op, table_idx, 0, 0) - left/right unused
         self.decisions: list[tuple[int, int, int, int, int]] = []
         self.leaves: list[tuple[int, int]] = []  # type, val
@@ -200,7 +200,7 @@ class ByteWriter:
             feature, op, value, left_node, right_node = node
             feat_idx = self._resolve_feat_idx(feature, name_to_col)
 
-            if op in ("<", "lt"):
+            if op in ("<=", "<"):
                 numeric = float(value)
                 if self.is_xgboost:
                     try:
@@ -210,7 +210,7 @@ class ByteWriter:
                             "XGBoost threshold exceeds float32 range"
                         ) from e
                 val_idx = self._add_float(numeric)
-                op_type = OP_STRICT_LT if op == "lt" else OP_LT
+                op_type = OP_LT if op == "<" else OP_LE
             elif op == "=":
                 str_idx = self._add_string(str(value))
                 val_idx = self._add_cat_value(str_idx)
@@ -431,7 +431,7 @@ class ByteWriter:
                 f.write(encode_varint(off))
 
             # Decision nodes (variable size)
-            # OP_LT/OP_EQ: feat_op(1) + val(2) + left(varint) + right(varint)
+            # OP_LE/OP_EQ: feat_op(1) + val(2) + left(varint) + right(varint)
             # OP_SWITCH: feat_op(1) + table_idx(2) (no left/right)
             for feat, op, val, left, right in self.decisions:
                 feat_op = (feat & FEAT_MASK) | (op << OP_SHIFT)

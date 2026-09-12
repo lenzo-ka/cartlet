@@ -41,10 +41,10 @@ from collections import Counter
 OP_SHIFT = 6
 OP_MASK = 0xC0  # Upper 2 bits for op
 FEAT_MASK = 0x3F  # Lower 6 bits = feature index
-OP_LT = 0  # Numerical less-than
+OP_LE = 0  # Numerical less-than
 OP_EQ = 1  # Categorical equality
 OP_SWITCH = 2  # Case table lookup
-OP_STRICT_LT = 3  # Strict numeric comparison
+OP_LT = 3  # Strict numeric comparison
 
 # Leaf node types
 LEAF_CLASS = 0
@@ -287,6 +287,30 @@ def load_cart_from_bytes(data):
         raise ValueError(f"Malformed or truncated .cart file: {e}") from e
 
 
+def decode_feature_dtype(type_flags):
+    """Decode the same feature dtype bits as the package format owner."""
+    dtypes = {0: "str", 1: "int", 2: "float", 3: "bool"}
+    code = type_flags >> 2
+    if code not in dtypes:
+        raise ValueError(f"Invalid feature dtype code: {code}")
+    return dtypes[code]
+
+
+def decode_feature_value(value, dtype):
+    """Restore declared vocabulary types without package dependencies."""
+    if dtype == "int":
+        return int(value)
+    if dtype == "float":
+        return float(value)
+    if dtype == "bool":
+        if value in {"True", "true", "TRUE", "1", "yes", "Yes", "YES"}:
+            return True
+        if value in {"False", "false", "FALSE", "0", "no", "No", "NO"}:
+            return False
+        raise ValueError(f"Invalid boolean vocabulary value: {value!r}")
+    return value
+
+
 def _load_cart_from_bytes_impl(data):
     """Load model from bytes, return model dict."""
     pos = 0
@@ -378,11 +402,15 @@ def _load_cart_from_bytes_impl(data):
         cat_indices = list(struct.unpack_from(f"<{n_cat}H", data, pos))
         pos += 2 * n_cat
         feat_type = "cat" if (type_flags & TYPE_MASK) == 0 else "num"
+        dtype = decode_feature_dtype(type_flags)
         features.append(
             {
                 "name": strings[name_idx],
                 "type": feat_type,
-                "values": [strings[ci] for ci in cat_indices],
+                "dtype": dtype,
+                "values": [
+                    decode_feature_value(strings[ci], dtype) for ci in cat_indices
+                ],
             }
         )
 
@@ -408,7 +436,7 @@ def _load_cart_from_bytes_impl(data):
         tree_offsets.append(off)
 
     # Decision nodes (variable size)
-    # OP_LT/OP_EQ: feat_op(1) + val(2) + left(varint) + right(varint)
+    # OP_LE/OP_EQ: feat_op(1) + val(2) + left(varint) + right(varint)
     # OP_SWITCH: feat_op(1) + table_idx(2) (no left/right)
     decisions = []
     for _ in range(n_decisions):
@@ -590,7 +618,7 @@ def _predict_tree_recursive(
         # is 0 (which would otherwise jump traversal to decision node 0).
         feat_val = None if feat >= n_input_features else row[feat]
 
-        if op in (OP_LT, OP_STRICT_LT):
+        if op in (OP_LE, OP_LT):
             if val >= len(floats):
                 raise RuntimeError(f"Invalid float index in decision: {val}")
             threshold = floats[val]
@@ -599,7 +627,7 @@ def _predict_tree_recursive(
                 try:
                     go_left = (
                         (float(feat_val) < threshold)
-                        if op == OP_STRICT_LT
+                        if op == OP_LT
                         else (float(feat_val) <= threshold)
                     )
                 except (TypeError, ValueError):

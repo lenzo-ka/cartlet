@@ -37,10 +37,10 @@ from .io.cart_format import (
     LEAF_FLAG,
     MAGIC,
     OP_EQ,
+    OP_LE,
     OP_LT,
     OP_MASK,
     OP_SHIFT,
-    OP_STRICT_LT,
     OP_SWITCH,
     SIZE_DECISION_HEADER,
     SIZE_DIST_ENTRY,
@@ -52,6 +52,8 @@ from .io.cart_format import (
     SIZE_U16,
     TYPE_MASK,
     VERSION,
+    decode_feature_dtype,
+    decode_feature_value,
     decode_varint,
 )
 from .types import (
@@ -318,11 +320,15 @@ def _parse_feature_table(
         cat_indices = list(struct.unpack_from(f"<{n_cat}H", data, pos))
         pos += SIZE_U16 * n_cat
         feat_type = "cat" if (type_flags & TYPE_MASK) == 0 else "num"
+        dtype = decode_feature_dtype(type_flags)
         features.append(
             {
                 "name": strings[name_idx],
                 "type": feat_type,
-                "values": [strings[ci] for ci in cat_indices],
+                "dtype": dtype,
+                "values": [
+                    decode_feature_value(strings[ci], dtype) for ci in cat_indices
+                ],
             }
         )
     return features, pos
@@ -528,7 +534,7 @@ def _predict_tree_recursive(
         # is 0 (which would otherwise jump traversal to decision node 0).
         feat_val = None if feat >= n_input_features else vector[feat]
 
-        if op in (OP_LT, OP_STRICT_LT):
+        if op in (OP_LE, OP_LT):
             # Numeric comparison. Coerce the value to float regardless of the
             # declared feature type; a non-numeric value at a numeric node
             # fails the comparison and goes right (matches the bundled runner).
@@ -540,7 +546,7 @@ def _predict_tree_recursive(
                 try:
                     go_left = (
                         (float(feat_val) < threshold)
-                        if op == OP_STRICT_LT
+                        if op == OP_LT
                         else (float(feat_val) <= threshold)
                     )
                 except (TypeError, ValueError):

@@ -195,7 +195,7 @@ class equivalent to the bundled runner's.
 The package and standalone CART loaders recognize gzip by content, including a
 compressed file without a `.gz` suffix. Invalid numeric values at numeric nodes
 take the right branch in both nested-model and exported inference. XGBoost inputs and thresholds use float32 precision to match DMatrix. Strict
-XGBoost nodes use `<`; native CART nodes remain inclusive. Multiclass XGBoost
+XGBoost nodes use `<`; native CART nodes use `<=`. Multiclass XGBoost
 metadata may carry one finite raw intercept per class; binary intercepts remain
 in probability space and are converted to a logit for additive prediction.
 

@@ -241,7 +241,8 @@ class TestCategoricalSplitStrategy:
         import random as stdlib_random
 
         rng = stdlib_random.Random(0)
-        X, y = [], []
+        X = []
+        y: list[str | float] = []
         for _ in range(200):
             hi = f"c{rng.randint(0, 60)}"
             lo = rng.choice(["a", "b", "c"])

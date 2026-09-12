@@ -245,13 +245,13 @@ def eval_tree(
 
         feat_val = vector[col] if col < len(vector) else None
 
-        if op in ("<", "lt"):
+        if op in ("<=", "<"):
             go_left = False
             if feat_val is not None:
                 with suppress(TypeError, ValueError):
                     go_left = (
                         (float(feat_val) < float(value))
-                        if op == "lt"
+                        if op == "<"
                         else (float(feat_val) <= float(value))
                     )
         else:  # op == "="

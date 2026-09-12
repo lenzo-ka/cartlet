@@ -1,6 +1,8 @@
 """Discriminating IO and standalone parity regressions."""
 
 import gzip
+from collections.abc import Callable
+from typing import Any
 
 import pytest
 
@@ -46,7 +48,12 @@ def test_jsonl_schema_has_line_errors(tmp_path, text):
     path = str(tmp_path / "bad.jsonl")
     with open(path, "w") as f:
         f.write(text)
-    for reader in [load_training_data, read_vectors, lambda p: list(iter_vectors(p))]:
+    readers: list[Callable[[str], Any]] = [
+        load_training_data,
+        read_vectors,
+        lambda p: list(iter_vectors(p)),
+    ]
+    for reader in readers:
         with pytest.raises(ValueError, match="line [12]"):
             reader(path)
 
@@ -67,7 +74,7 @@ def test_writer_rejects_ragged_rows_without_replacing(tmp_path):
 
 
 def test_numeric_invalid_nested_exported_parity(tmp_path):
-    node = ["x", "<", 1.0, "L", "R"]
+    node = ["x", "<=", 1.0, "L", "R"]
     path = str(tmp_path / "model.cart")
     write_tree_bytes(
         path, node, [FeatureSpec("x", dtype="float")], {"x": 0}, ["L", "R"], False
@@ -89,7 +96,7 @@ def test_strict_threshold_roundtrip(tmp_path):
     from cartlet.io.cart_format import rebuild_tree_from_cart
 
     path = str(tmp_path / "strict.cart")
-    node = ["x", "lt", 1.0, "L", "R"]
+    node = ["x", "<", 1.0, "L", "R"]
     write_tree_bytes(
         path, node, [FeatureSpec("x", dtype="float")], {"x": 0}, ["L", "R"], False
     )
@@ -151,7 +158,7 @@ def test_xgboost_input_precision_matches_float32_threshold(tmp_path):
     import struct
 
     path = str(tmp_path / "xgb.cart")
-    node = ["x", "lt", 1.0, [10.0, 0, 1], [20.0, 0, 1]]
+    node = ["x", "<", 1.0, [10.0, 0, 1], [20.0, 0, 1]]
     write_tree_bytes(
         path,
         node,
@@ -194,9 +201,35 @@ def test_bundle_and_gzip_reject_input_alias(tmp_path):
 def test_native_float64_boundary_and_mean_preserved(tmp_path):
     threshold = 1.00000001
     path = str(tmp_path / "native.cart")
-    node = ["x", "<", threshold, [1e100, 0, 1], [2.0, 0, 1]]
+    node = ["x", "<=", threshold, [1e100, 0, 1], [2.0, 0, 1]]
     write_tree_bytes(path, node, [FeatureSpec("x", dtype="float")], {"x": 0}, [], True)
     for value in [1.0, threshold, 1.00000002]:
         expected = eval_tree(node, [value], {"x": 0})
         assert predict(load_model(path), [value]) == expected
         assert bundled_predict(load_cart(path), [value]) == expected
+
+
+@pytest.mark.parametrize("dtype,values", [("bool", [False, True]), ("int", [1, 2])])
+def test_feature_dtype_and_typed_vocabulary_roundtrip(tmp_path, dtype, values):
+    from cartlet.bundled.predict import Predictor as BundledPredictor
+    from cartlet.runner import Predictor
+
+    path = str(tmp_path / "model.cart")
+    node = ["x", "=", values[0], "A", "B"]
+    write_tree_bytes(
+        path,
+        node,
+        [FeatureSpec("x", dtype=dtype, type="cat", values=set(values))],
+        {"x": 0},
+        ["A", "B"],
+        False,
+    )
+    model = load_model(path)
+    assert model["meta"]["features"][0].get("dtype") == dtype
+    assert set(model["meta"]["features"][0]["values"]) == set(values)
+    assert load_cart(path)["features"][0]["dtype"] == dtype
+    predictors: list[Any] = [Predictor(path), BundledPredictor(path)]
+    for predictor in predictors:
+        for value, expected in zip(values, ["A", "B"], strict=True):
+            assert predictor.predict([value]) == expected
+            assert not predictor.is_oov(0, value)
