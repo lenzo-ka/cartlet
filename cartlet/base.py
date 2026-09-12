@@ -28,6 +28,29 @@ from .types import (
 from .utils import default_logger
 
 
+def _read_model_artifact(path: str, format: str | None = None) -> tuple[str, Any]:
+    """Shared supervised codec reader; decode a source exactly once."""
+    ext, _ = resolve_format(path, format)
+    if ext in (".json", ".jsonl"):
+        with open_file(path, "r") as stream:
+            data = (
+                json.loads(stream.readline()) if ext == ".jsonl" else json.load(stream)
+            )
+    elif ext in (".pkl", ".pickle"):
+        with open_file_binary(path, "rb") as binary_stream:
+            data = pickle.load(binary_stream)
+    elif ext in (".skl", ".joblib"):
+        data = require_joblib().load(path)
+    elif ext == ".cart":
+        from .runner import _load_cart_from_bytes
+
+        with open_file_binary(path, "rb") as binary_stream:
+            data = _load_cart_from_bytes(binary_stream.read())
+    else:
+        raise ValueError(f"Unknown format: {ext}")
+    return ext, data
+
+
 class BaseModel(ABC):
     """
     Base class for cartlet supervised tree models.
@@ -282,17 +305,10 @@ class BaseModel(ABC):
         compress = 3 if use_gzip else 0
         require_joblib().dump(self._sklearn_model, path, compress=compress)
 
-    def _read_sklearn_for_load(
-        self, path: str
+    def _prepare_sklearn_for_load(
+        self, sklearn_model: Any
     ) -> tuple[Any, list[str], list[FeatureSpec]]:
-        """
-        Common boilerplate for `_load_sklearn`: load the joblib file, derive
-        feature names (from `feature_names_in_` if present, otherwise `f0..fN`)
-        and build numeric FeatureSpec entries. Returns the raw sklearn model
-        plus the derived feature names and specs; subclasses are responsible
-        for the model-specific reconstruction that follows.
-        """
-        sklearn_model = require_joblib().load(path)
+        """Derive shared feature metadata from an already decoded estimator."""
         self._sklearn_model = sklearn_model
         n_features = sklearn_model.n_features_in_
         if hasattr(sklearn_model, "feature_names_in_"):
@@ -356,6 +372,8 @@ class BaseModel(ABC):
         self._detected_task = None
         self.task = TASK_AUTO
         self.target_spec = None
+        if hasattr(self, "training_summary"):
+            self.training_summary: dict[str, int] = {}
 
         ext, use_gzip = resolve_format(path, format)
 
@@ -386,20 +404,17 @@ class BaseModel(ABC):
 
     def _load_json(self, path: str, use_gzip: bool = False) -> dict:
         """Load from JSON format."""
-        with open_file(path, "r") as f:
-            data = json.load(f)
+        _, data = _read_model_artifact(path, "json")
         return self._apply_loaded_data(data)
 
     def _load_jsonl(self, path: str, use_gzip: bool = False) -> dict:
         """Load from JSON Lines format."""
-        with open_file(path, "r") as f:
-            data = json.loads(f.readline())
+        _, data = _read_model_artifact(path, "jsonl")
         return self._apply_loaded_data(data)
 
     def _load_pickle(self, path: str, use_gzip: bool = False) -> dict:
         """Load from pickle format."""
-        with open_file_binary(path, "rb") as f:
-            data = pickle.load(f)
+        _, data = _read_model_artifact(path, "pkl")
         return self._apply_loaded_data(data)
 
     @abstractmethod

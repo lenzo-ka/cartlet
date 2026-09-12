@@ -18,11 +18,9 @@ import contextlib
 import csv
 import json
 import os
-import random
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime
 from typing import Any, TextIO
 
 # Optional YAML support
@@ -36,17 +34,11 @@ except ImportError:
 
 from . import __version__, convert
 from .evaluation import evaluate_predictions, per_class_metrics, regression_metrics
-from .forest import RandomForest
 from .io import detect_delimiter, detect_format, load_training_data, resolve_format
 from .io.bytes import bundle
 from .io.cart_format import VERSION
-from .isolation import (
-    ANOMALY_SCORE_MIDPOINT,
-    DEFAULT_MAX_SAMPLES,
-    IsolationForest,
-)
 from .runner import load_model, predict_batch
-from .tree import DecisionTree
+from .training import TrainingSettings, train_file
 from .types import (
     DEFAULT_MIN_SAMPLES_LEAF,
     DEFAULT_MIN_SAMPLES_SPLIT,
@@ -58,10 +50,8 @@ from .types import (
     TASK_REGRESSION,
     infer_feature_specs,
     is_likely_regression,
-    normalize_feature_spec,
 )
-from .utils import max_depth, tree_stats
-from .validation import align_features, require_distinct_paths, validate_splits
+from .validation import align_features, require_distinct_paths
 
 _MAX_CAT_VALUES_DISPLAY = 10
 _MAX_TARGET_VALUES_DISPLAY = 20
@@ -290,387 +280,57 @@ def _get_subparser(
     return None
 
 
-def load_feature_specs(spec_input: str, feature_names: list[str]) -> list[dict]:
-    """
-    Load feature specifications from JSON file or inline JSON.
-
-    Args:
-        spec_input: Path to JSON file or inline JSON string
-        feature_names: Feature names from data (for validation)
-
-    Returns:
-        List of feature spec dicts
-
-    JSON format (array or object):
-        Array: [{"name": "age", "dtype": "int", "type": "num"}, ...]
-        Object: {"age": {"dtype": "int", "type": "num"}, ...}
-        Simple: {"age": "num", "color": "cat"}  # Just type
-    """
-    # Try to load from file first
-    if os.path.exists(spec_input):
-        with open(spec_input, encoding="utf-8") as f:
-            specs = json.load(f)
-    else:
-        # Try parsing as inline JSON
-        try:
-            specs = json.loads(spec_input)
-        except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid feature specs JSON: {e}") from e
-
-    # Normalize different formats
-    if isinstance(specs, list):
-        # Already in list format
-        return specs
-
-    if isinstance(specs, dict):
-        result = []
-        for name in feature_names:
-            if name not in specs:
-                # Default to categorical string when caller didn't specify
-                result.append({"name": name, "dtype": "str", "type": "cat"})
-                continue
-            fs = normalize_feature_spec(specs[name], name=name)
-            result.append(
-                {
-                    "name": fs.name,
-                    "dtype": fs.dtype,
-                    "type": fs.type or "cat",
-                }
-            )
-        return result
-
-    raise ValueError(f"Feature specs must be a list or object, got: {type(specs)}")
-
-
-def _cmd_train_isolation_forest(
-    args: argparse.Namespace,
-    X: list[list[Any]],
-    feature_names: list[str],
-) -> int:
-    """Train an IsolationForest (called from cmd_train)."""
-    # IsolationForest is unsupervised: several supervised-training flags have no
-    # effect here. Warn instead of silently ignoring them.
-    ignored = []
-    if getattr(args, "prune", False):
-        ignored.append("--prune")
-    if getattr(args, "task", TASK_AUTO) != TASK_AUTO:
-        ignored.append("--task")
-    if getattr(args, "criterion", "entropy") != "entropy":
-        ignored.append("--criterion")
-    if getattr(args, "test_file", None):
-        ignored.append("--test-file")
-    if ignored:
-        print(
-            "Warning: isolation-forest training ignores "
-            f"{', '.join(ignored)} (unsupervised model).",
-            file=sys.stderr,
-        )
-
-    max_samples = min(DEFAULT_MAX_SAMPLES, len(X))
-    print(
-        f"Training IsolationForest with {args.n_estimators} trees, "
-        f"max_samples={max_samples}...",
-        file=sys.stderr,
-    )
-
-    model = IsolationForest(
-        n_estimators=args.n_estimators,
-        max_samples=max_samples,
-        max_depth=args.max_depth,
-        feature_names=feature_names,
-        random_state=args.random_seed,
-        verbose=args.verbose,
-    )
-    model.load_data(X)
-    model.train()
-    print(f"  Trees: {len(model.trees)}", file=sys.stderr)
-
-    scores = model.predict_batch(X)
-    n_anomalies = sum(1 for s in scores if s > ANOMALY_SCORE_MIDPOINT)
-    print(
-        f"  Anomaly scores: min={min(scores):.3f}, max={max(scores):.3f}, "
-        f"mean={sum(scores) / len(scores):.3f}, "
-        f"anomalies(>{ANOMALY_SCORE_MIDPOINT})={n_anomalies}/{len(X)}",
-        file=sys.stderr,
-    )
-
-    if args.output:
-        model.export(args.output)
-        print(f"Model saved to {args.output}", file=sys.stderr)
-
-    return 0
-
-
-def _create_model(
-    args: argparse.Namespace,
-    feature_specs: list[dict],
-    target_spec: dict,
-    task: str,
-) -> RandomForest | DecisionTree:
-    """Create and return the appropriate model from CLI args."""
-    extra_trees = getattr(args, "extra_trees", False)
-    if extra_trees:
-        args.forest = True
-
-    common_kwargs: dict[str, Any] = {
-        "features": feature_specs,
-        "target": target_spec,
-        "task": task,
-        "max_depth": args.max_depth,
-        "min_samples_split": args.min_samples_split,
-        "min_samples_leaf": args.min_samples_leaf,
-        "criterion": getattr(args, "criterion", "entropy"),
-        "categorical_split": getattr(args, "categorical_split", "exact"),
-        "verbose": args.verbose,
-    }
-
-    if args.forest:
-        kind = "ExtraTrees" if extra_trees else "RandomForest"
-        print(f"Training {kind} with {args.n_estimators} trees...")
-        return RandomForest(
-            n_estimators=args.n_estimators,
-            extra_trees=extra_trees,
-            **common_kwargs,
-        )
-
-    print("Training DecisionTree...")
-    return DecisionTree(**common_kwargs)
-
-
-def _split_train_test(
-    args: argparse.Namespace,
-    X: list[list[Any]],
-    y: list[Any],
-    task: str,
-    column_names: list[str] | None,
-) -> tuple[list[list[Any]], list[Any], list[list[Any]], list[Any]]:
-    """Split data into train and test sets based on CLI args."""
-    if args.test_file:
-        X_test, y_test, test_names, _ = load_training_data(
-            args.test_file,
-            delimiter=args.delimiter,
-            has_header=not args.no_header,
-            target_col=args.target,
-            column_names=column_names,
-        )
-        if not args.no_header or args.test_file.endswith(".jsonl"):
-            X_test = align_features(X_test, test_names, args.training_feature_names)
-        if task == TASK_REGRESSION:
-            y_test = [float(v) for v in y_test]
-        print(f"  Test file: {args.test_file} ({len(X_test)} samples)")
-        return X, y, X_test, y_test
-    if args.test_split > 0:
-        # Shuffle before splitting so a class-sorted file (e.g. iris) does not
-        # yield a single-class test set -- and drop that class from training
-        # entirely. Seeded by --random-seed for reproducibility.
-        indices = list(range(len(X)))
-        random.Random(args.random_seed).shuffle(indices)
-        split_idx = int(len(X) * (1 - args.test_split))
-        train_idx, test_idx = indices[:split_idx], indices[split_idx:]
-        print(f"  Train/test split: {split_idx}/{len(X) - split_idx}")
-        return (
-            [X[i] for i in train_idx],
-            [y[i] for i in train_idx],
-            [X[i] for i in test_idx],
-            [y[i] for i in test_idx],
-        )
-    return X, y, [], []
-
-
-def _build_training_meta(
-    args: argparse.Namespace,
-    task: str,
-    n_features: int,
-    n_train: int,
-) -> dict[str, Any]:
-    """Build the training metadata dict for export."""
-    config = {
-        "forest": args.forest,
-        "extra_trees": getattr(args, "extra_trees", False) or None,
-        "n_estimators": args.n_estimators if args.forest else None,
-        "criterion": getattr(args, "criterion", "entropy"),
-        "task": task,
-        "max_depth": args.max_depth,
-        "min_samples_split": args.min_samples_split,
-        "min_samples_leaf": args.min_samples_leaf,
-        "trainer": args.trainer,
-        "n_jobs": getattr(args, "n_jobs", None),
-        "random_seed": args.random_seed,
-        "prune": args.prune if not args.forest else None,
-        "validation_split": args.validation_split
-        if args.validation_split > 0
-        else None,
-        "test_split": args.test_split if args.test_split > 0 else None,
-        "test_file": args.test_file,
-        "config_file": getattr(args, "config_file_used", None),
-        "config_preset": getattr(args, "config_preset_used", None),
-    }
-    return {
-        "trained_at": datetime.now().isoformat(),
-        "data_source": os.path.basename(args.data),
-        "samples": n_train,
-        "features": n_features,
-        "config": {k: v for k, v in config.items() if v is not None},
-    }
-
-
-def _evaluate_test(
-    model: RandomForest | DecisionTree,
-    X_test: list[list[Any]],
-    y_test: list[Any],
-    task: str,
-) -> dict[str, Any] | None:
-    """Evaluate model on test data and print results. Returns metrics dict or None."""
-    if not X_test:
-        return None
-    y_pred = model.predict_batch(X_test)
-    if task == TASK_CLASSIFICATION:
-        metrics = evaluate_predictions(y_test, y_pred)
-        print(
-            f"  Test accuracy: {metrics['accuracy']:.2%} ({metrics['correct']}/{metrics['total']})"
-        )
-        return {"accuracy": metrics["accuracy"], "samples": len(X_test)}
-    metrics = regression_metrics(y_test, y_pred)
-    print(f"  Test MSE: {metrics['mse']:.4f}, MAE: {metrics['mae']:.4f}")
-    return {
-        "mse": metrics["mse"],
-        "mae": metrics["mae"],
-        "samples": len(X_test),
-    }
-
-
 def cmd_train(args: argparse.Namespace) -> int:
-    """Train a model."""
-    validate_splits(args.validation_split, args.test_split)
-    if args.save_config:
-        save_config(args, args.save_config)
-
-    print(f"Loading data from {args.data}...", file=sys.stderr)
-
-    column_names = _parse_column_names(args)
-
-    X, y, feature_names, target_name = load_training_data(
+    """Parse presentation choices and delegate the library training workflow."""
+    if args.forest and args.isolation_forest:
+        raise ValueError("forest and isolation-forest are mutually exclusive")
+    settings = TrainingSettings(
+        model_type="isolation"
+        if args.isolation_forest
+        else ("forest" if args.forest or args.extra_trees else "tree"),
+        task=args.task,
+        trainer=args.trainer,
+        n_estimators=args.n_estimators,
+        extra_trees=args.extra_trees,
+        max_depth=args.max_depth,
+        min_samples_split=args.min_samples_split,
+        min_samples_leaf=args.min_samples_leaf,
+        criterion=args.criterion,
+        categorical_split=args.categorical_split,
+        prune=args.prune,
+        validation_split=args.validation_split,
+        test_split=args.test_split,
+        random_state=args.random_seed,
+        n_jobs=args.n_jobs,
+        store_distributions=not args.no_distributions,
+    )
+    result = train_file(
         args.data,
+        settings=settings,
+        output=args.output,
+        test_file=args.test_file,
         delimiter=args.delimiter,
         has_header=not args.no_header,
-        target_col=args.target,
-        column_names=column_names,
+        target=args.target,
+        column_names=_parse_column_names(args),
+        features=args.features,
     )
-    print(f"  Loaded {len(X)} samples, {len(feature_names)} features", file=sys.stderr)
-
-    if getattr(args, "isolation_forest", False):
-        return _cmd_train_isolation_forest(args, X, feature_names)
-
-    # Load or infer feature specs
-    if args.features:
-        feature_specs = load_feature_specs(args.features, feature_names)
-        print("  Using provided feature specs", file=sys.stderr)
-    else:
-        feature_specs = infer_feature_specs(X, feature_names)
-
-    # Determine task and target spec
-    task = args.task
-    if task == TASK_AUTO:
-        task = TASK_REGRESSION if is_likely_regression(y) else TASK_CLASSIFICATION
-
-    if task == TASK_REGRESSION:
-        target_spec = {"name": target_name, "dtype": "float", "type": "num"}
-    else:
-        all_int = all(isinstance(v, int) and not isinstance(v, bool) for v in y)
-        target_dtype = "int" if all_int else "str"
-        target_spec = {"name": target_name, "dtype": target_dtype, "type": "cat"}
-
-    print(f"  Task: {task}", file=sys.stderr)
-
-    model = _create_model(args, feature_specs, target_spec, task)
-
-    # Split data
-    args.training_feature_names = feature_names
-    X_train, y_train, X_test, y_test = _split_train_test(args, X, y, task, column_names)
-
-    # Validation split logic. When test rows come from --test-split, the
-    # training set is only (1 - test_split) of the input, so scale up the
-    # validation fraction so it stays the intended fraction of the original.
-    # When test rows come from --test-file, X_train is the full input, so no
-    # adjustment is needed.
-    validation_split = args.validation_split
-    if args.prune and validation_split <= 0 and not args.forest:
-        validation_split = DEFAULT_VALIDATION_SPLIT
-
-    if args.test_split > 0 and validation_split > 0 and not args.test_file:
-        adjusted_validation_split = validation_split / (1 - args.test_split)
-    else:
-        adjusted_validation_split = validation_split
-
-    # Train
-    model.load_data(X_train, y_train)
-    if args.forest:
-        if not isinstance(model, RandomForest):
-            raise TypeError("Expected RandomForest model for --forest flag")
-        if args.n_jobs and args.trainer != "sklearn":
-            print(
-                "  Note: --n-jobs ignored for native trainer (use -B sklearn for parallelism)",
-                file=sys.stderr,
-            )
-        model.train(
-            trainer=args.trainer,
-            random_state=args.random_seed,
-            n_jobs=args.n_jobs,
-        )
-    else:
-        if not isinstance(model, DecisionTree):
-            raise TypeError("Expected DecisionTree model")
-        model.train(
-            validation_split=adjusted_validation_split,
-            prune=args.prune,
-            random_state=args.random_seed,
-            trainer=args.trainer,
-        )
-        if args.prune:
-            actual_train_frac = 1.0 - args.test_split - validation_split
-            print(
-                f"  Splits: train={actual_train_frac:.0%}, "
-                f"val={validation_split:.0%}, test={args.test_split:.0%}"
-            )
-
-    # Metadata
-    training_meta = _build_training_meta(args, task, len(feature_names), len(X_train))
-
-    # Stats
-    if args.forest:
-        if not isinstance(model, RandomForest):
-            raise TypeError("Expected RandomForest model for --forest flag")
-        trees = model.trees
-        avg_depth = sum(max_depth(t.model) for t in trees) / len(trees)
-        print(f"  Trees: {len(trees)}, Avg depth: {avg_depth:.1f}")
-        training_meta["stats"] = {
-            "n_trees": len(trees),
-            "avg_depth": round(avg_depth, 1),
-        }
-    else:
-        if not isinstance(model, DecisionTree):
-            raise TypeError("Expected DecisionTree model")
-        stats = tree_stats(model.model)
-        print(
-            f"  Nodes: {stats['total_nodes']} ({stats['leaf_nodes']} leaves), Depth: {stats['max_depth']}"
-        )
-        training_meta["stats"] = stats
-
-    # Evaluate
-    test_metrics = _evaluate_test(model, X_test, y_test, task)
-    if test_metrics:
-        training_meta["test"] = test_metrics
-
-    # Export
+    if args.save_config:
+        save_config(args, args.save_config)
+    if args.json:
+        print(json.dumps(result.to_dict(), allow_nan=False))
+        return 0
+    for warning in result.warnings:
+        print(f"Warning: {warning}", file=sys.stderr)
+    print(
+        f"Trained {type(result.model).__name__}: {result.training_samples} training samples"
+    )
+    if result.metrics:
+        print(json.dumps(result.metrics))
+    if args.verbose:
+        print(json.dumps(result.stats))
     if args.output:
-        store_dist = not getattr(args, "no_distributions", False)
-        model.export(
-            args.output,
-            metadata={"training": training_meta},
-            store_distributions=store_dist,
-        )
         print(f"Model saved to {args.output}")
-
     return 0
 
 
@@ -1543,6 +1203,11 @@ Examples:
     )
     train_parser.add_argument(
         "-v", "--verbose", action="store_true", help="Verbose output"
+    )
+    train_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the structured training report as JSON",
     )
     train_parser.set_defaults(func=cmd_train)
 

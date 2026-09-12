@@ -233,3 +233,50 @@ def test_feature_dtype_and_typed_vocabulary_roundtrip(tmp_path, dtype, values):
         for value, expected in zip(values, ["A", "B"], strict=True):
             assert predictor.predict([value]) == expected
             assert not predictor.is_oov(0, value)
+
+
+@pytest.mark.parametrize("forest", [False, True])
+def test_bundle_json_decodes_once_and_preserves_predictions(
+    tmp_path, monkeypatch, forest
+):
+    import json
+    import runpy
+
+    from cartlet import DecisionTree, RandomForest, bundle
+
+    model = RandomForest(n_estimators=2) if forest else DecisionTree()
+    model.load_data([["a"], ["b"], ["a"], ["b"]], ["A", "B", "A", "B"])
+    model.train(random_state=1)
+    source = tmp_path / "model.json"
+    output = tmp_path / "predictor.py"
+    model.export(str(source))
+    original = json.load
+    decoded = []
+
+    def record(stream, *args, **kwargs):
+        decoded.append(stream.name)
+        return original(stream, *args, **kwargs)
+
+    monkeypatch.setattr(json, "load", record)
+    bundle(str(source), str(output), library_only=True)
+    assert decoded == [str(source)]
+    namespace = runpy.run_path(str(output))
+    embedded = namespace["load_embedded"]()
+    for row in [["a"], ["b"]]:
+        assert namespace["predict"](embedded, row) == model.predict(row)
+
+
+def test_bundle_rejected_schema_preserves_existing_output(tmp_path):
+    from cartlet import bundle
+
+    source = tmp_path / "bad.json"
+    output = tmp_path / "existing.py"
+    source.write_text(
+        '{"schema_version":2,"model":[99,"=","a","A","B"],"feature_names":["x"]}'
+    )
+    output.write_bytes(b"KEEP")
+    before = source.read_bytes()
+    with pytest.raises(ValueError, match="decision reference"):
+        bundle(str(source), str(output))
+    assert output.read_bytes() == b"KEEP"
+    assert source.read_bytes() == before

@@ -15,15 +15,15 @@ A clean implementation supporting:
 from __future__ import annotations
 
 import random
+from collections.abc import Sequence
 from time import time
 from typing import Any
 
-from .base import BaseModel
+from .base import BaseModel, _read_model_artifact
 from .evaluation import evaluate_tree
 from .io.bytes import write_tree_bytes
 from .io.cart_format import rebuild_tree_from_cart
-from .io.utils import open_file_binary, write_with_optional_gzip
-from .runner import _load_cart_from_bytes
+from .io.utils import write_with_optional_gzip
 from .trainer import Native, Trainer
 from .trainer.base import normalize_importances
 from .types import (
@@ -55,9 +55,11 @@ from .utils import (
 )
 from .validation import (
     MODEL_SCHEMA_VERSION,
+    effective_validation_split,
     validate_dataset,
     validate_model_data,
     validate_splits,
+    validate_training_parameters,
 )
 
 # Default beam width returned by `predict_nbest`. 5 mirrors the conventional
@@ -130,14 +132,14 @@ class DecisionTree(BaseModel):
                 {"name": "price", "dtype": "float"} for regression
                 {"name": "class", "dtype": "str"} for classification
             task: "classification", "regression", or "auto" (detect from target/y)
-            max_depth: Maximum tree depth (None = unlimited)
-            min_samples_split: Minimum samples to split a node
-            min_samples_leaf: Minimum samples in a leaf
+            max_depth: Nonnegative integer depth (None = unlimited; native 0 = leaf).
+            min_samples_split: Positive integer samples to split a node (sklearn >= 2).
+            min_samples_leaf: Positive integer samples in a leaf.
             store_distributions: Store probability distributions at leaves
             min_dist_entropy: Minimum entropy to store distribution
             min_confidence: If best-class probability exceeds this, store only the
                 class label instead of the full distribution (default 0.95).
-                Set to 1.0 to always keep distributions.
+                Set to 1.0 to disable this confidence gate; entropy and tiny-probability gates still apply.
             criterion: Split criterion for classification ("entropy" or "gini")
             categorical_split: Categorical split-search strategy for the native
                 backend: "exact" (default, fully reproducible) or "fast" (O(n)
@@ -146,6 +148,14 @@ class DecisionTree(BaseModel):
             verbose: Enable verbose output
             logger: Custom logger (uses default if None)
         """
+        validate_training_parameters(
+            max_depth=max_depth,
+            min_samples_split=min_samples_split,
+            min_samples_leaf=min_samples_leaf,
+            criterion=criterion,
+            categorical_split=categorical_split,
+            store_distributions=store_distributions,
+        )
         super().__init__(
             features=features,
             feature_names=feature_names,
@@ -166,6 +176,7 @@ class DecisionTree(BaseModel):
 
         # Trained model
         self.model: Any = None
+        self.training_summary: dict[str, int] = {}
 
     def _feature_type(self, feat_idx: int) -> str:
         """Get the type (cat/num) for a feature."""
@@ -175,17 +186,22 @@ class DecisionTree(BaseModel):
 
     def load_data(
         self,
-        X: list[list[Any]],
-        y: list[Any],
-        counts: list[int] | None = None,
+        X: Sequence[Sequence[Any]],
+        y: Sequence[Any],
+        counts: Sequence[float] | None = None,
     ) -> None:
         """
         Load training data.
 
         Args:
-            X: Feature vectors (list of lists of feature values)
-            y: Target values (strings for classification, numbers for regression)
-            counts: Optional instance weights (default: all 1)
+            X: Rectangular Python row sequences containing finite scalar values.
+                Convert arrays with .tolist(); missing values are unsupported.
+            y: Target values (strings for classification, numbers for regression).
+            counts: Finite nonnegative weights with positive finite total; zero
+                weights omit rows (default: all 1). Inputs are detached.
+
+        Raises:
+            ValueError: For empty, ragged, mismatched, missing or nonfinite data.
         """
         rows, targets, weights = validate_dataset(X, y, counts)
         assert targets is not None
@@ -193,6 +209,7 @@ class DecisionTree(BaseModel):
             raise ValueError("feature specifications must match training width")
         self.X, self.y, self.counts = rows, targets, weights
         self.model = None
+        self.training_summary = {}
         self._sklearn_model = None
         self._feature_importances = {}
 
@@ -249,6 +266,7 @@ class DecisionTree(BaseModel):
         validation_split: float,
         test_split: float,
         random_state: int | None = None,
+        validation_count: int | None = None,
     ) -> tuple[list[int], list[int], list[int]]:
         """
         Split row indices into train/validation/test sets.
@@ -269,7 +287,11 @@ class DecisionTree(BaseModel):
         rng = random.Random(random_state)
         rng.shuffle(all_rows)
         test_size = int(len(all_rows) * test_split)
-        val_size = int(len(all_rows) * validation_split)
+        val_size = (
+            int(len(all_rows) * validation_split)
+            if validation_count is None
+            else validation_count
+        )
 
         test_rows = all_rows[:test_size] if test_size > 0 else []
         val_rows = all_rows[test_size : test_size + val_size] if val_size > 0 else []
@@ -279,19 +301,19 @@ class DecisionTree(BaseModel):
 
     def train(
         self,
-        validation_split: float = 0.0,
+        validation_split: float = DEFAULT_VALIDATION_SPLIT,
         test_split: float = 0.0,
         prune: bool = False,
         random_state: int | None = None,
         trainer: str | Trainer | None = None,
-    ) -> dict[str, float]:
+    ) -> dict[str, Any]:
         """
         Train the decision tree.
 
         Args:
-            validation_split: Fraction held out for reduced-error pruning.
-                When ``prune=True`` and this is left at 0.0, a default of
-                DEFAULT_VALIDATION_SPLIT is used so pruning actually happens.
+            validation_split: Fraction held out for supported reduced-error
+                pruning (default 0.05). Explicit zero with supported pruning
+                is an error; no rows are held out when pruning is off.
             test_split: Fraction for test (evaluation)
             prune: Whether to prune tree using validation data. Only the native
                 backend prunes; with the sklearn backend ``prune=True`` is a
@@ -309,12 +331,50 @@ class DecisionTree(BaseModel):
         Raises:
             ValueError: If `load_data` has not been called.
         """
-        validate_splits(validation_split, test_split)
+        return self._train(
+            validation_split=validation_split,
+            test_split=test_split,
+            prune=prune,
+            random_state=random_state,
+            trainer=trainer,
+        )
+
+    def _train(
+        self,
+        validation_split: float,
+        test_split: float = 0.0,
+        prune: bool = False,
+        random_state: int | None = None,
+        trainer: str | Trainer | None = None,
+        *,
+        validation_count: int | None = None,
+    ) -> dict[str, Any]:
+        """Shared implementation allowing exact workflow validation admission."""
+        validate_training_parameters(
+            max_depth=self.max_depth,
+            min_samples_split=self.min_samples_split,
+            min_samples_leaf=self.min_samples_leaf,
+            criterion=self.criterion,
+            categorical_split=self.categorical_split,
+            store_distributions=self.store_distributions,
+            prune=prune,
+            random_state=random_state,
+            trainer=trainer if isinstance(trainer, str) else None,
+        )
+        validate_splits(validation_split, 0)
+        validate_splits(0, test_split)
         if not self.X:
             raise ValueError("No training data loaded. Call load_data() first.")
 
         if self.verbose:
             self.logger.info("Building tree from %d observations", len(self.X))
+
+        if validation_count is not None and (
+            isinstance(validation_count, bool)
+            or not isinstance(validation_count, int)
+            or not 0 <= validation_count < len(self.X)
+        ):
+            raise ValueError("validation_count must leave training observations")
 
         # Get trainer instance up front so pruning support can inform the split.
         trainer_instance = self._get_trainer(trainer, prune, random_state)
@@ -322,30 +382,20 @@ class DecisionTree(BaseModel):
         if self.verbose:
             self.logger.info("Using trainer: %s", trainer_instance.name)
 
-        # Resolve the effective validation split for pruning. Historically
-        # ``prune=True`` with the default ``validation_split=0.0`` produced an
-        # empty validation set and silently never pruned; fall back to
-        # DEFAULT_VALIDATION_SPLIT so pruning actually happens. Backends that
-        # do not honour validation rows (e.g. sklearn) warn instead of holding
-        # out data pointlessly.
-        effective_val_split = validation_split
-        if prune:
-            if not trainer_instance.supports_pruning or self._is_regression():
-                self.logger.warning(
-                    "The %s backend does not support pruning; prune=True is "
-                    "ignored (no validation data is held out).",
-                    trainer_instance.name,
-                )
-                effective_val_split = 0.0
-            elif effective_val_split <= 0.0:
-                effective_val_split = DEFAULT_VALIDATION_SPLIT
-                if self.verbose:
-                    self.logger.info(
-                        "prune=True with no validation_split; using default "
-                        "%.3g for pruning.",
-                        effective_val_split,
-                    )
+        pruning_supported = (
+            trainer_instance.supports_pruning and not self._is_regression()
+        )
+        effective_val_split = effective_validation_split(
+            prune, validation_split, pruning_supported
+        )
+        if prune and not pruning_supported:
+            self.logger.warning(
+                "The %s backend/task does not support pruning; prune=True is "
+                "ignored (no validation data is held out).",
+                trainer_instance.name,
+            )
 
+        validate_splits(effective_val_split, test_split)
         do_prune = prune and effective_val_split > 0.0
 
         # Split data
@@ -353,6 +403,7 @@ class DecisionTree(BaseModel):
             effective_val_split if do_prune else 0.0,
             test_split,
             random_state,
+            validation_count=validation_count if do_prune else None,
         )
         if self.verbose and (val_rows or test_rows):
             self.logger.info(
@@ -373,6 +424,11 @@ class DecisionTree(BaseModel):
             train_rows,
             val_rows if do_prune else None,
         )
+        self.training_summary = {
+            "training_samples": len(train_rows),
+            "validation_samples": len(val_rows),
+            "test_samples": len(test_rows),
+        }
         tree_time = time() - tree_start
 
         nodes = count_nodes(self.model)
@@ -660,9 +716,11 @@ class DecisionTree(BaseModel):
 
     def _load_cart(self, path: str, use_gzip: bool = False) -> dict:
         """Load from compact binary format."""
-        with open_file_binary(path, "rb") as f:
-            data = f.read()
-        model_data = _load_cart_from_bytes(data)
+        _, model_data = _read_model_artifact(path, "cart")
+        return self._apply_cart_data(model_data, path)
+
+    def _apply_cart_data(self, model_data: dict, path: str = "artifact") -> dict:
+        """Apply an already decoded binary model without rereading its source."""
 
         # XGBoost .cart files carry K trees per round and an additive
         # base_score that DecisionTree's single-tree shape can't represent.
@@ -690,9 +748,16 @@ class DecisionTree(BaseModel):
 
     def _load_sklearn(self, path: str, use_gzip: bool = False) -> dict:
         """Load sklearn model - converts to cartlet format for inference."""
+        _, estimator = _read_model_artifact(path, "skl")
+        return self._apply_sklearn_model(estimator)
+
+    def _apply_sklearn_model(self, estimator: Any) -> dict:
+        """Convert an already loaded sklearn estimator."""
         from .trainer.sklearn import Sklearn
 
-        sklearn_model, feature_names, feature_specs = self._read_sklearn_for_load(path)
+        sklearn_model, feature_names, feature_specs = self._prepare_sklearn_for_load(
+            estimator
+        )
         model, config = Sklearn.from_sklearn(sklearn_model, feature_names)
         self.model = model
         self.feature_names = feature_names
