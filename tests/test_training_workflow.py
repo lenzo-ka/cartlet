@@ -198,3 +198,16 @@ def test_python_feature_specs_supply_named_model_columns():
     )
     assert result.model.feature_names == ["letter"]
     assert result.model.predict(["a"]) == "A"
+
+
+def test_workflow_requires_named_backend_before_training(tmp_path):
+    output = tmp_path / "model.json"
+    output.write_text("keep")
+    with pytest.raises(ValueError, match="named backend"):
+        train_model(
+            [["a"], ["b"]] * 20,
+            ["A", "B"] * 20,
+            settings=TrainingSettings(trainer=None, prune=True, test_split=0),
+            output=output,
+        )
+    assert output.read_text() == "keep"

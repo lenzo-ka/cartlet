@@ -45,7 +45,7 @@ class TrainingSettings:
 
     model_type: str = "tree"
     task: str = TASK_AUTO
-    trainer: str | None = "native"
+    trainer: str = "native"
     n_estimators: int = DEFAULT_N_ESTIMATORS
     extra_trees: bool = False
     max_depth: int | None = None
@@ -70,6 +70,8 @@ class TrainingSettings:
             TASK_REGRESSION,
         ):
             raise ValueError("invalid model_type or task")
+        if not isinstance(self.trainer, str):
+            raise ValueError("trainer must be a named backend: native or sklearn")
         validate_training_parameters(
             max_depth=self.max_depth,
             min_samples_split=self.min_samples_split,
@@ -86,7 +88,7 @@ class TrainingSettings:
         )
         if self.extra_trees and self.model_type != "forest":
             raise ValueError("extra_trees requires forest model_type")
-        if self.model_type == "isolation" and self.trainer not in (None, "native"):
+        if self.model_type == "isolation" and self.trainer != "native":
             raise ValueError("isolation workflow uses the native trainer")
 
     def to_dict(self) -> dict[str, Any]:
@@ -193,6 +195,10 @@ def train_model(
     ):
         raise ValueError("feature names must be unique and match data width")
     warnings: list[str] = []
+    if config.n_jobs is not None and not (
+        config.model_type == "forest" and config.trainer == "sklearn"
+    ):
+        warnings.append("n_jobs is ignored outside sklearn forest training")
     validation_samples = 0
     model: DecisionTree | RandomForest | IsolationForest
     test_X: list[list[Any]] = []
