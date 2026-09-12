@@ -29,7 +29,7 @@ RegressionLeaf = list[float]
 LeafNode = str | dict[str, float] | list[float]
 
 # Decision node: [feature_name, operator, value, left_child, right_child]
-# where operator is "<" for numerical or "=" for categorical splits
+# operators: "<=" inclusive numerical, "<" strict numerical, "=" categorical
 # Note: This is a forward reference since TreeNode references itself
 DecisionNode = list[Any]  # [str, str, Any, TreeNode, TreeNode]
 
@@ -46,8 +46,9 @@ class FeatureInfo(TypedDict):
     """Feature metadata from .cart file."""
 
     name: str
+    dtype: str  # "bool", "int", "float" or "str"
     type: str  # "cat" or "num"
-    values: list[str]  # known categorical values
+    values: list[Any]  # typed known categorical values
 
 
 class ModelMeta(TypedDict, total=False):

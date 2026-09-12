@@ -9,6 +9,8 @@ from itertools import chain
 from pathlib import Path
 from typing import Any
 
+MODEL_SCHEMA_VERSION = 2
+
 
 def validate_dataset(
     X: Sequence[Sequence[Any]],
@@ -19,14 +21,19 @@ def validate_dataset(
 
     Weights must be finite, nonnegative and have positive total mass. Missing
     values and nested/unhashable cells are not supported training inputs.
+    Inputs are Python sequences; convert NumPy arrays with .tolist() first.
     """
+    if not isinstance(X, Sequence) or isinstance(X, (str, bytes)):
+        raise ValueError(
+            "training data must be Python sequences; convert arrays with .tolist()"
+        )
     if not X:
         raise ValueError("training data must contain observations")
     if y is not None and len(X) != len(y):
         raise ValueError("X and y must have same length")
     if counts is not None and len(counts) != len(X):
         raise ValueError("counts and X must have same length")
-    if any(not isinstance(row, (list, tuple)) for row in X):
+    if any(not isinstance(row, Sequence) or isinstance(row, (str, bytes)) for row in X):
         raise ValueError("training rows must be sequences of feature values")
     rows = [list(row) for row in X]
     width = len(rows[0])
@@ -49,6 +56,12 @@ def validate_dataset(
         raise ValueError(
             "weights must be finite nonnegative numbers with positive total"
         )
+    try:
+        total = math.fsum(weights)
+    except OverflowError as exc:
+        raise ValueError("total training weight must be finite") from exc
+    if not math.isfinite(total):
+        raise ValueError("total training weight must be finite")
     active = [i for i, weight in enumerate(weights) if weight > 0]
     return (
         [rows[i] for i in active],
@@ -108,3 +121,123 @@ def require_distinct_paths(
             same(output, previous) for previous in outputs[:i]
         ):
             raise ValueError("output paths must differ from inputs and other outputs")
+
+
+def validate_model_data(data: Any, *, forest: bool = False) -> None:
+    """Validate decoded supervised model fields before applying instance state.
+
+    This checks the in-memory tree grammar; codecs remain owned by the IO layer.
+    Positional decision references do not require feature names.
+    """
+    from .types import VALID_DTYPES, VALID_TASKS, VALID_TYPES
+    from .utils import is_decision_node
+
+    if not isinstance(data, dict) or data.get("isolation_forest"):
+        raise ValueError("expected a supervised model object")
+    if data.get("schema_version") != MODEL_SCHEMA_VERSION:
+        raise ValueError(
+            "unsupported model schema; retrain or re-export with this release"
+        )
+    names = data.get("feature_names", [])
+    if (
+        not isinstance(names, list)
+        or any(not isinstance(n, str) for n in names)
+        or len(set(names)) != len(names)
+    ):
+        raise ValueError("model feature_names must be unique strings")
+    specs = data.get("feature_specs", [])
+    if not isinstance(specs, list) or any(
+        not isinstance(s, dict) or not isinstance(s.get("name"), str) for s in specs
+    ):
+        raise ValueError("model feature_specs must contain named objects")
+    for spec in specs:
+        dtype, kind = spec.get("dtype", "str"), spec.get("type")
+        if (
+            not isinstance(dtype, str)
+            or dtype not in VALID_DTYPES
+            or (
+                kind is not None
+                and (not isinstance(kind, str) or kind not in VALID_TYPES)
+            )
+        ):
+            raise ValueError("invalid model feature dtype or type")
+        values = spec.get("values")
+        if values is not None and (
+            not isinstance(values, (list, tuple, set))
+            or any(not isinstance(v, (str, int, float, bool)) for v in values)
+        ):
+            raise ValueError("model categorical values must be scalar sequences")
+    if (
+        not isinstance(data.get("metadata", {}), dict)
+        or not isinstance(data.get("task", "auto"), str)
+        or data.get("task", "auto") not in VALID_TASKS
+    ):
+        raise ValueError("invalid model metadata or task")
+    if forest:
+        roots = data.get("trees")
+        if not isinstance(roots, list) or not roots:
+            raise ValueError("forest must contain trees")
+    else:
+        if "model" not in data:
+            raise ValueError("tree model is missing model field")
+        roots = [data["model"]]
+    pending = [(root, False) for root in roots]
+    active: set[int] = set()
+    while pending:
+        node, exiting = pending.pop()
+        if exiting:
+            active.remove(id(node))
+            continue
+        if isinstance(node, str):
+            continue
+        if (
+            isinstance(node, dict)
+            and node
+            and all(
+                isinstance(label, str)
+                and isinstance(p, (int, float))
+                and not isinstance(p, bool)
+                and math.isfinite(p)
+                and p >= 0
+                for label, p in node.items()
+            )
+            and any(node.values())
+        ):
+            continue
+        if (
+            isinstance(node, list)
+            and len(node) == 3
+            and all(
+                isinstance(v, (int, float))
+                and not isinstance(v, bool)
+                and math.isfinite(v)
+                for v in node
+            )
+            and node[1] >= 0
+            and node[2] > 0
+        ):
+            continue
+        if is_decision_node(node):
+            feature, op, value, left, right = node
+            if not (
+                (isinstance(feature, str) and feature in names)
+                or (
+                    isinstance(feature, int)
+                    and not isinstance(feature, bool)
+                    and feature >= 0
+                )
+            ) or op not in ("=", "<=", "<"):
+                raise ValueError("invalid model decision reference or operator")
+            if op in ("<=", "<"):
+                try:
+                    finite = math.isfinite(float(value))
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise ValueError("invalid model numerical threshold") from exc
+                if not finite:
+                    raise ValueError("invalid model numerical threshold")
+            if id(node) in active:
+                raise ValueError("model tree contains a cycle")
+            active.add(id(node))
+            pending.extend([(node, True), (left, False), (right, False)])
+            continue
+        raise ValueError("invalid model tree node")

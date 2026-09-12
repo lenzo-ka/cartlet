@@ -228,9 +228,8 @@ class TestEdgeCases:
 
     def test_empty_data_raises(self):
         rf = RandomForest(n_estimators=5, feature_names=["x"])
-        rf.load_data([], [])
-        with pytest.raises(ValueError, match="No training data"):
-            rf.train()
+        with pytest.raises(ValueError, match="training data"):
+            rf.load_data([], [])
 
     def test_mismatched_lengths_raises(self):
         rf = RandomForest(n_estimators=5, feature_names=["x"])
