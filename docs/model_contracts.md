@@ -1,7 +1,7 @@
 # Model and data contracts
 
-Cartlet is in alpha. These contracts replace the earlier interfaces; no
-compatibility layer is provided for pre-version-2 model artifacts.
+Cartlet is in alpha. Version 0.6.0 introduces these contracts and model format 2;
+no compatibility layer is provided for pre-version-2 model artifacts.
 
 ## Saved models
 
