@@ -12,7 +12,10 @@ on a tiny dependency-free Python runtime.
 
 Cartlet is in alpha. Before 1.0, `0.X.0` releases may introduce breaking API
 and model-format changes. See the [changelog](https://github.com/lenzo-ka/cartlet/blob/main/CHANGELOG.md)
-for changes and migration notes.
+for changes and migration notes. Version 0.6.0 introduces model format 2; update
+copied runners together with exported models and read the
+[model migration contract](https://github.com/lenzo-ka/cartlet/blob/main/docs/model_contracts.md#saved-models)
+before loading older artifacts.
 
 ## Features
 

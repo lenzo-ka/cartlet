@@ -1,11 +1,11 @@
 # Changelog
 
-## Unreleased
-
 Cartlet is in alpha. Before 1.0, a `0.X.0` release may change APIs and model
 formats incompatibly. Keep the package and standalone runner used to export and
 load a model on the same release; retrain or re-export models when a release
 requires it.
+
+## 0.6.0 — 2026-09-13
 
 ### Breaking changes
 
@@ -13,7 +13,7 @@ requires it.
   tree operators now mean exactly `<` or `<=`; older binary runners reject the
   new version. JSON/JSONL/pickle tree and forest envelopes require
   `schema_version: 2`. See [model contracts](docs/model_contracts.md) for migration.
-- Training rejects malformed rows, nonfinite data, invalid weights and splits,
+- Training APIs reject malformed rows, nonfinite data, invalid weights and splits,
   invalid direct-model parameters, and inconsistent saved-model schemas.
   Zero-weight rows are omitted. Explicit zero validation with supported pruning
   is an error; disabled or unsupported pruning does not hold out rows.
@@ -29,7 +29,6 @@ requires it.
 - Process CSV/TSV/SSV records incrementally during batch loading to reduce peak
   memory. Share record validation with streaming readers; ignore blank records
   before headers consistently and warn when skipping ragged records.
-
 - Stabilize regression split statistics under target offsets and extreme finite
   feature bounds; choose varying columns for isolation-tree splits.
 - Preserve XGBoost strict float32 comparisons and multiclass intercepts through
@@ -51,6 +50,12 @@ requires it.
 
 ### Documentation and development
 
+- Add reproducible generated-data benchmarks for numeric, categorical, and forest
+  workloads, with JSON/TSV reports covering loading, training, export, model
+  loading, and prediction. Preserve source/fixture hashes, settings, and versions
+  in [recorded measurement snapshots](docs/scalability_results.md).
+- Document the measured tabular loader memory reduction and its limits; returned
+  batch data still occupies memory proportional to dataset size.
 - Correct the numeric regression quick start and shell continuation example.
 - Link runnable dataset tutorials and correct the standalone runner copy path.
 - Clean up temporary output from the deployment tutorial.
