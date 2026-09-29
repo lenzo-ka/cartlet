@@ -18,6 +18,7 @@ from typing import Any
 from ..types import normalize_bool
 from ..utils import split_feature_and_missing
 from .cart_format import (
+    CATEGORY_SET,
     DTYPE_MAP,
     FEAT_MASK,
     FLAG_HAS_DISTRIBUTIONS,
@@ -92,6 +93,9 @@ class ByteWriter:
         self.dist_to_idx: dict[tuple, int] = {}  # hashable dist -> index
         # Case tables: list of (default_child, [(cat_val_idx, child_idx), ...])
         self.case_tables: list[tuple[int, list[tuple[int, int]]]] = []
+        # Category sets: lists of cat_values indices for OP_EQ + CATEGORY_SET.
+        self.category_sets: list[list[int]] = []
+        self.category_set_to_idx: dict[tuple[int, ...], int] = {}
         # Separate arrays for decisions and leaves
         # For comparisons: (feat, op, missing_flags, val, left, right)
         # For OP_SWITCH: (feat, op, missing_flags, table_idx, 0, 0)
@@ -156,6 +160,16 @@ class ByteWriter:
         """Add case table, return index."""
         idx = len(self.case_tables)
         self.case_tables.append((default_child, cases))
+        return idx
+
+    def _add_category_set(self, values: list[int]) -> int:
+        """Add a categorical membership set, return its table index."""
+        key = tuple(values)
+        if key in self.category_set_to_idx:
+            return self.category_set_to_idx[key]
+        idx = len(self.category_sets)
+        self.category_sets.append(values)
+        self.category_set_to_idx[key] = idx
         return idx
 
     @staticmethod
@@ -234,6 +248,23 @@ class ByteWriter:
                 str_idx = self._add_string(str(value))
                 val_idx = self._add_cat_value(str_idx)
                 op_type = OP_EQ
+            elif op == "in":
+                if not isinstance(value, list) or not value:
+                    raise ValueError(
+                        "categorical membership value must be a nonempty list"
+                    )
+                canonical_values: set[str] = set()
+                for item in value:
+                    if feat_idx in self.bool_features:
+                        item = normalize_bool(item)
+                    canonical_values.add(str(item))
+                cat_indices = []
+                for item in sorted(canonical_values):
+                    str_idx = self._add_string(item)
+                    cat_indices.append(self._add_cat_value(str_idx))
+                val_idx = self._add_category_set(cat_indices)
+                op_type = OP_EQ
+                missing_flags |= CATEGORY_SET
             else:
                 raise ValueError(f"Unknown decision operation: {op!r}")
 
@@ -346,6 +377,9 @@ class ByteWriter:
         _check(len(self.cat_values), self._MAX_U16, "number of categorical values")
         _check(len(self.distributions), self._MAX_U16, "number of distributions")
         _check(len(self.case_tables), self._MAX_U16, "number of case tables")
+        _check(len(self.category_sets), self._MAX_U16, "number of category sets")
+        for category_set in self.category_sets:
+            _check(len(category_set), self._MAX_U16, "values in a category set")
 
         # String offsets are u16 into the string blob.
         if string_offsets:
@@ -448,6 +482,7 @@ class ByteWriter:
             f.write(struct.pack("<H", len(self.cat_values)))
             f.write(struct.pack("<H", len(self.distributions)))  # n_dists
             f.write(struct.pack("<H", len(self.case_tables)))  # n_case_tables
+            f.write(struct.pack("<H", len(self.category_sets)))  # n_category_sets
             f.write(struct.pack("<H", len(meta_bytes)))
 
             # String table
@@ -511,6 +546,13 @@ class ByteWriter:
                 for cat_val_idx, child_idx in cases:
                     f.write(struct.pack("<H", cat_val_idx))
                     f.write(encode_varint(child_idx))
+
+            # Category-set tables (for OP_EQ nodes with CATEGORY_SET).
+            # Format: for each set: n_values(u16) + cat_val_idx(u16)[n_values]
+            for category_set in self.category_sets:
+                f.write(struct.pack("<H", len(category_set)))
+                for cat_val_idx in category_set:
+                    f.write(struct.pack("<H", cat_val_idx))
 
             # Metadata
             if meta_bytes:

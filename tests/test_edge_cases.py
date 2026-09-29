@@ -50,7 +50,7 @@ class TestMalformedModelFiles:
         """Model file with truncated header."""
         p = tmp_path / "trunc.cart"
         p.write_bytes(b"CART")  # Just magic, no header
-        with pytest.raises(ValueError, match="header is 34 bytes"):
+        with pytest.raises(ValueError, match="header is 36 bytes"):
             DecisionTree().load_model(str(p))
 
     def test_unreasonable_header_raises(self, tmp_path):

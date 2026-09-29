@@ -20,8 +20,8 @@ VERSION = 3
 
 # Decision node encoding:
 # - feat_op: 1 byte (bits 0-5 = feature index, bits 6-7 = op)
-# - flags: 1 byte (learned missing direction)
-# - val: 2 bytes (index into floats, cat_vals, or case_tables)
+# - flags: 1 byte (learned missing direction and categorical-set marker)
+# - val: 2 bytes (index into floats, cat_vals, category_sets, or case_tables)
 # - left: varint (1-5 bytes) - only for OP_LE/OP_LT/OP_EQ
 # - right: varint (1-5 bytes) - only for OP_LE/OP_LT/OP_EQ
 # Note: OP_SWITCH nodes have children in the case table instead
@@ -34,6 +34,8 @@ MISSING_NONE = 0
 MISSING_LEFT = 1
 MISSING_RIGHT = 2
 MISSING_MASK = 0x03
+CATEGORY_SET = 0x04
+DECISION_FLAGS_MASK = MISSING_MASK | CATEGORY_SET
 
 # Operation types
 OP_LE = 0  # Numerical less-than-or-equal (<=) comparison; left branch = "yes"
@@ -90,7 +92,7 @@ def decode_feature_value(value: str, dtype: str) -> Any:
 
 
 # Header size (bytes)
-HEADER_SIZE = 34
+HEADER_SIZE = 36
 # Offset into header
 OFF_VERSION = 4
 OFF_FLAGS = 6
@@ -103,7 +105,8 @@ OFF_FLOATS = 22
 OFF_CAT_VALS = 26
 OFF_DISTS = 28
 OFF_CASE_TABLES = 30
-OFF_META_LEN = 32
+OFF_CATEGORY_SETS = 32
+OFF_META_LEN = 34
 
 # Breakdown:
 #   magic:          4 bytes
@@ -118,8 +121,9 @@ OFF_META_LEN = 32
 #   n_cat_vals:     2 bytes (u16)
 #   n_dists:        2 bytes (u16) -- number of distribution entries
 #   n_case_tables:  2 bytes (u16) -- number of case tables
+#   n_category_sets: 2 bytes (u16) -- number of categorical membership sets
 #   metadata_len:   2 bytes (u16)
-# Total: 4 + (5*2) + (3*4) + (4*2) = 4 + 10 + 12 + 8 = 34
+# Total: 4 + (5*2) + (3*4) + (5*2) = 4 + 10 + 12 + 10 = 36
 
 # Element sizes (bytes)
 SIZE_U16 = 2
@@ -131,9 +135,9 @@ SIZE_DECISION_HEADER = 4  # feat_op(1) + flags(1) + val(2); then child varints
 
 # Header struct groups parsed after the 4-byte magic (see the breakdown above).
 HEADER_FMT_COUNTS1 = "<HHHHH"  # version, flags, n_features, n_classes, n_trees
-HEADER_FMT_COUNTS2 = "<IIIHHHH"  # n_decisions/leaves/floats + cat/dist/case/meta
+HEADER_FMT_COUNTS2 = "<IIIHHHHH"  # nodes/floats + cat/dist/case/set/meta
 SIZE_HEADER_COUNTS1 = struct.calcsize(HEADER_FMT_COUNTS1)  # 10
-SIZE_HEADER_COUNTS2 = struct.calcsize(HEADER_FMT_COUNTS2)  # 20
+SIZE_HEADER_COUNTS2 = struct.calcsize(HEADER_FMT_COUNTS2)  # 22
 # Sanity: the magic + both count groups must equal the fixed header size.
 assert 4 + SIZE_HEADER_COUNTS1 + SIZE_HEADER_COUNTS2 == HEADER_SIZE
 
@@ -234,7 +238,8 @@ def rebuild_tree_from_cart(
             ]
         elif op == OP_EQ:
             _, _, missing_flags, val, left, right = node
-            value = strings[cat_vals[val]]
+            is_category_set = bool(missing_flags & CATEGORY_SET)
+            missing_flags &= MISSING_MASK
             left_tree = rebuild(left)
             right_tree = rebuild(right)
             feature = feature_name
@@ -242,6 +247,11 @@ def rebuild_tree_from_cart(
                 feature = {"feature": feature_name, "missing": "left"}
             elif missing_flags == MISSING_RIGHT:
                 feature = {"feature": feature_name, "missing": "right"}
+            if is_category_set:
+                category_sets = model_data.get("category_sets", [])
+                value = sorted(category_sets[val])
+                return [feature, "in", value, left_tree, right_tree]
+            value = strings[cat_vals[val]]
             return [feature, "=", value, left_tree, right_tree]
         elif op == OP_SWITCH:
             # Switch nodes retain placeholders for their unused child fields.

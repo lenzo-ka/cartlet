@@ -9,7 +9,8 @@ requires it.
 
 ### Breaking changes
 
-- `.cart` model format 3 adds a one-byte flags field to each decision record,
+- `.cart` model format 3 adds a one-byte flags field to each decision record
+  and a category-set table for compact categorical membership decisions,
   and JSON/JSONL/pickle tree and forest envelopes use `schema_version: 3`.
   Format 2 and schema 2, written by Cartlet 0.6.0, are refused. Migration:
   re-export from the training model or retrain, and replace copied standalone
@@ -46,6 +47,8 @@ requires it.
 
 ### Fixed
 
+- Export multi-category XGBoost splits as one set-membership decision instead
+  of duplicating the yes subtree once per category.
 - Preserve XGBoost's learned left/right missing direction in nested trees and
   `.cart` exports, so missing-value predictions and paths match the Booster.
 - Reduce training memory: build the sklearn categorical CSR in preallocated

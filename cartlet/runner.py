@@ -25,6 +25,8 @@ from collections import Counter
 from typing import Any, cast
 
 from .io.cart_format import (
+    CATEGORY_SET,
+    DECISION_FLAGS_MASK,
     FEAT_MASK,
     FLAG_HAS_DISTRIBUTIONS,
     FLAG_IS_FOREST,
@@ -172,9 +174,10 @@ def _load_cart_from_bytes(data: bytes) -> dict[str, Any]:
         each feature is ``{"name", "type", "values"}``.
       - ``class_labels``: list[str] (classification).
       - ``floats`` / ``cat_vals`` / ``strings``: the deduped value pools.
-      - ``decisions`` / ``leaves`` / ``distributions`` / ``case_tables``: the
-        flat node tables (case tables carry both raw ``cases`` and a resolved
-        ``lookup``; see ``_parse_case_tables``).
+      - ``decisions`` / ``leaves`` / ``distributions`` / ``case_tables`` /
+        ``category_sets``: the flat node tables. Case tables carry both raw
+        ``cases`` and a resolved ``lookup``; category sets are resolved to
+        strings once at load time.
       - ``tree_offsets``: per-tree start index into ``decisions``/``leaves``.
       - ``is_regression`` / ``is_forest`` / ``is_xgboost`` /
         ``has_distributions``: bool flags; ``n_trees``: int; ``version``: int.
@@ -220,8 +223,9 @@ def _load_cart_from_bytes(data: bytes) -> dict[str, Any]:
             n_cat_vals,
             n_dists,
             n_case_tables,
+            n_category_sets,
             metadata_len,
-        ) = struct.unpack_from("<IIIHHHH", data, pos)
+        ) = struct.unpack_from("<IIIHHHHH", data, pos)
         pos += SIZE_HEADER_COUNTS2
 
         if n_features > _CART_MAX_FEATURES:
@@ -293,6 +297,10 @@ def _load_cart_from_bytes(data: bytes) -> dict[str, Any]:
             data, pos, n_case_tables, cat_vals, strings
         )
 
+        category_sets, pos = _parse_category_sets(
+            data, pos, n_category_sets, cat_vals, strings
+        )
+
         # Trailing metadata blob (JSON, may carry XGBoost base_score etc.).
         # Length 0 is the common case for plain DecisionTree/RandomForest exports.
         metadata: dict[str, Any] = {}
@@ -320,6 +328,7 @@ def _load_cart_from_bytes(data: bytes) -> dict[str, Any]:
             "leaves": leaves,
             "distributions": distributions,
             "case_tables": case_tables,
+            "category_sets": category_sets,
             "bool_features": [feature["dtype"] == "bool" for feature in features],
             "tree_offsets": tree_offsets,
             "is_regression": is_regression,
@@ -405,12 +414,13 @@ def _parse_decision_nodes(
         pos += SIZE_DECISION_HEADER
         feat = feat_op & FEAT_MASK
         op = (feat_op & OP_MASK) >> OP_SHIFT
-        if missing_flags & ~MISSING_MASK or missing_flags not in (
-            MISSING_NONE,
-            MISSING_LEFT,
-            MISSING_RIGHT,
-        ):
+        if missing_flags & ~DECISION_FLAGS_MASK:
             raise ValueError(f"Invalid decision flags: {missing_flags}")
+        missing_direction = missing_flags & MISSING_MASK
+        if missing_direction not in (MISSING_NONE, MISSING_LEFT, MISSING_RIGHT):
+            raise ValueError(f"Invalid decision flags: {missing_flags}")
+        if missing_flags & CATEGORY_SET and op != OP_EQ:
+            raise ValueError("CATEGORY_SET flag requires OP_EQ")
         if op == OP_SWITCH:
             decisions.append((feat, op, missing_flags, val, 0, 0))
         else:
@@ -487,6 +497,29 @@ def _parse_case_tables(
     return case_tables, pos
 
 
+def _parse_category_sets(
+    data: bytes,
+    pos: int,
+    n_category_sets: int,
+    cat_vals: list[int],
+    strings: list[str],
+) -> tuple[list[set[str]], int]:
+    """Parse category sets and resolve each to strings once for O(1) lookup."""
+    category_sets: list[set[str]] = []
+    for _ in range(n_category_sets):
+        (n_values,) = struct.unpack_from("<H", data, pos)
+        pos += SIZE_U16
+        values: set[str] = set()
+        for _ in range(n_values):
+            (cat_val_idx,) = struct.unpack_from("<H", data, pos)
+            pos += SIZE_U16
+            if cat_val_idx >= len(cat_vals) or cat_vals[cat_val_idx] >= len(strings):
+                raise ValueError("Invalid categorical value index in category set")
+            values.add(strings[cat_vals[cat_val_idx]])
+        category_sets.append(values)
+    return category_sets, pos
+
+
 def predict(
     model: ModelData,
     vector: list[Any],
@@ -540,6 +573,7 @@ def _predict_tree(
         model["strings"],
         model.get("distributions", []),
         model.get("case_tables", []),
+        model.get("category_sets", []),
         model["meta"]["features"],
         model["bool_features"],
         len(vector),
@@ -560,6 +594,7 @@ def _predict_tree_recursive(
     strings: list[str],
     distributions: list[list[tuple[int, float]]],
     case_tables: list[CaseTable],
+    category_sets: list[set[str]],
     features: list[Any],
     bool_features: list[bool],
     n_input_features: int,
@@ -581,6 +616,7 @@ def _predict_tree_recursive(
             strings,
             distributions,
             case_tables,
+            category_sets,
             features,
             bool_features,
             n_input_features,
@@ -633,7 +669,8 @@ def _predict_tree_recursive(
                     is_missing = math.isnan(numeric_value)
         else:
             is_missing = _is_categorical_missing(feat_val)
-        learned_missing = is_missing and missing_flags != MISSING_NONE
+        missing_direction = missing_flags & MISSING_MASK
+        learned_missing = is_missing and missing_direction != MISSING_NONE
         if is_missing and not learned_missing and missing == "error":
             feature_name = features[feat].get("name", str(feat))
             raise MissingFeatureError(
@@ -649,7 +686,7 @@ def _predict_tree_recursive(
             if val >= len(floats):
                 raise RuntimeError(f"Invalid float index in decision: {val}")
             threshold = floats[val]
-            go_left = learned_missing and missing_flags == MISSING_LEFT
+            go_left = learned_missing and missing_direction == MISSING_LEFT
             if not is_missing and numeric_value is not None:
                 go_left = (
                     numeric_value < threshold
@@ -658,22 +695,35 @@ def _predict_tree_recursive(
                 )
             idx = left if go_left else right
         elif op == OP_EQ:
-            if val >= len(cat_vals):
-                raise RuntimeError(f"Invalid cat_val index in decision: {val}")
-            cat_idx = cat_vals[val]
-            if cat_idx >= len(strings):
-                raise RuntimeError(f"Invalid string index in cat_vals: {cat_idx}")
+            is_category_set = bool(missing_flags & CATEGORY_SET)
+            predicate: str | set[str]
+            if is_category_set:
+                if val >= len(category_sets):
+                    raise RuntimeError(f"Invalid category_set index in decision: {val}")
+                predicate = category_sets[val]
+            else:
+                if val >= len(cat_vals):
+                    raise RuntimeError(f"Invalid cat_val index in decision: {val}")
+                cat_idx = cat_vals[val]
+                if cat_idx >= len(strings):
+                    raise RuntimeError(f"Invalid string index in cat_vals: {cat_idx}")
+                predicate = strings[cat_idx]
             go_left = (
-                missing_flags == MISSING_LEFT
+                missing_direction == MISSING_LEFT
                 if learned_missing
-                else not is_missing and str(feat_val) == strings[cat_idx]
+                else not is_missing
+                and (
+                    str(feat_val) in predicate
+                    if is_category_set
+                    else str(feat_val) == predicate
+                )
             )
             idx = left if go_left else right
         elif op == OP_SWITCH:
             if val >= len(case_tables):
                 raise RuntimeError(f"Invalid case_table index in decision: {val}")
             table = case_tables[val]
-            if learned_missing and missing_flags == MISSING_LEFT:
+            if learned_missing and missing_direction == MISSING_LEFT:
                 idx = table["cases"][0][1]
             elif is_missing:
                 idx = table["default"]
@@ -692,6 +742,7 @@ def _predict_tree_path_recursive(
     strings: list[str],
     distributions: list[list[tuple[int, float]]],
     case_tables: list[CaseTable],
+    category_sets: list[set[str]],
     features: list[Any],
     bool_features: list[bool],
     n_input_features: int,
@@ -760,7 +811,8 @@ def _predict_tree_path_recursive(
                     is_missing = math.isnan(numeric_value)
         else:
             is_missing = _is_categorical_missing(feat_val)
-        learned_missing = is_missing and missing_flags != MISSING_NONE
+        missing_direction = missing_flags & MISSING_MASK
+        learned_missing = is_missing and missing_direction != MISSING_NONE
         if is_missing and not learned_missing and missing == "error":
             feature_name = features[feat].get("name", str(feat))
             raise MissingFeatureError(
@@ -795,7 +847,7 @@ def _predict_tree_path_recursive(
             if val >= len(floats):
                 raise RuntimeError(f"Invalid float index in decision: {val}")
             threshold = floats[val]
-            go_left = learned_missing and missing_flags == MISSING_LEFT
+            go_left = learned_missing and missing_direction == MISSING_LEFT
             if not is_missing and numeric_value is not None:
                 go_left = (
                     (numeric_value < threshold)
@@ -818,16 +870,31 @@ def _predict_tree_path_recursive(
             idx = left if go_left else right
         elif op == OP_EQ:
             # Categorical comparison
-            if val >= len(cat_vals):
-                raise RuntimeError(f"Invalid cat_val index in decision: {val}")
-            cat_idx = cat_vals[val]
-            if cat_idx >= len(strings):
-                raise RuntimeError(f"Invalid string index in cat_vals: {cat_idx}")
-            cat_str = strings[cat_idx]
+            is_category_set = bool(missing_flags & CATEGORY_SET)
+            predicate: str | set[str]
+            if is_category_set:
+                if val >= len(category_sets):
+                    raise RuntimeError(f"Invalid category_set index in decision: {val}")
+                predicate = category_sets[val]
+                path_value: str | list[str] = sorted(predicate)
+            else:
+                if val >= len(cat_vals):
+                    raise RuntimeError(f"Invalid cat_val index in decision: {val}")
+                cat_idx = cat_vals[val]
+                if cat_idx >= len(strings):
+                    raise RuntimeError(f"Invalid string index in cat_vals: {cat_idx}")
+                cat_str = strings[cat_idx]
+                predicate = cat_str
+                path_value = cat_str
             go_left = (
-                missing_flags == MISSING_LEFT
+                missing_direction == MISSING_LEFT
                 if learned_missing
-                else not is_missing and str(feat_val) == cat_str
+                else not is_missing
+                and (
+                    str(feat_val) in predicate
+                    if is_category_set
+                    else str(feat_val) == predicate
+                )
             )
             branch = "left" if go_left else "right"
             if path is not None:
@@ -835,8 +902,8 @@ def _predict_tree_path_recursive(
                     "node": idx,
                     "feature": feat,
                     "name": features[feat].get("name", str(feat)),
-                    "op": "=",
-                    "value": cat_str,
+                    "op": "in" if is_category_set else "=",
+                    "value": path_value,
                     "branch": branch,
                 }
                 if learned_missing:
@@ -850,7 +917,7 @@ def _predict_tree_path_recursive(
             table = case_tables[val]
             next_idx = table["default"]
             branch = "default"
-            if learned_missing and missing_flags == MISSING_LEFT:
+            if learned_missing and missing_direction == MISSING_LEFT:
                 next_idx = table["cases"][0][1]
                 branch = "case"
             elif not is_missing:
@@ -889,6 +956,7 @@ def _tree_path(
         model["strings"],
         model.get("distributions", []),
         model.get("case_tables", []),
+        model.get("category_sets", []),
         model["meta"]["features"],
         model["bool_features"],
         len(vector),
@@ -935,6 +1003,7 @@ def _predict_forest(
     strings = model["strings"]
     distributions = model.get("distributions", [])
     case_tables = model.get("case_tables", [])
+    category_sets = model.get("category_sets", [])
     features = model["meta"]["features"]
     n_input_features = len(vector)
 
@@ -949,6 +1018,7 @@ def _predict_forest(
             strings,
             distributions,
             case_tables,
+            category_sets,
             features,
             model["bool_features"],
             n_input_features,
@@ -1085,6 +1155,7 @@ def _predict_xgboost(
     strings = model["strings"]
     distributions = model.get("distributions", [])
     case_tables = model.get("case_tables", [])
+    category_sets = model.get("category_sets", [])
     features = model["meta"]["features"]
     n_input_features = len(vector)
 
@@ -1099,6 +1170,7 @@ def _predict_xgboost(
             strings,
             distributions,
             case_tables,
+            category_sets,
             features,
             model["bool_features"],
             n_input_features,

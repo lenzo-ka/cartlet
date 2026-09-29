@@ -1,7 +1,7 @@
 > Current writer/reader format version: **3**. Version 3 adds a one-byte flags
-> field to every decision record so XGBoost's learned missing direction is
-> stored. Version 2 added a distinct strict numeric comparison opcode for
-> XGBoost and float64 numeric/probability pools.
+> field to every decision record so XGBoost's learned missing direction and
+> categorical set membership are stored. Version 2 added a distinct strict
+> numeric comparison opcode for XGBoost and float64 numeric/probability pools.
 > Native thresholds, regression means and class probabilities retain Python
 > float precision; XGBoost inputs and thresholds are normalized to float32.
 > Nested native CART nodes use `"<="`; strict XGBoost nodes use `"<"`.
@@ -28,7 +28,7 @@ The `.cart` format is a compact binary representation of decision trees, random 
 
 ```
 ┌──────────────────────────────────────┐
-│ Header (34 bytes)                    │
+│ Header (36 bytes)                    │
 ├──────────────────────────────────────┤
 │ String Table                         │
 ├──────────────────────────────────────┤
@@ -50,13 +50,15 @@ The `.cart` format is a compact binary representation of decision trees, random 
 ├──────────────────────────────────────┤
 │ Case Tables (optional)               │
 ├──────────────────────────────────────┤
+│ Category-Set Tables (optional)        │
+├──────────────────────────────────────┤
 │ Metadata JSON (optional)             │
 └──────────────────────────────────────┘
 ```
 
 ---
 
-## Header (34 bytes)
+## Header (36 bytes)
 
 | Offset | Size | Field | Description |
 |--------|------|-------|-------------|
@@ -72,7 +74,8 @@ The `.cart` format is a compact binary representation of decision trees, random 
 | 26 | 2 | n_cat_vals | Size of categorical value pool |
 | 28 | 2 | n_dists | Number of distributions |
 | 30 | 2 | n_case_tables | Number of case tables |
-| 32 | 2 | metadata_len | Length of metadata JSON |
+| 32 | 2 | n_category_sets | Number of category-set tables |
+| 34 | 2 | metadata_len | Length of metadata JSON |
 
 ### Flags (16-bit bitfield)
 
@@ -163,8 +166,8 @@ Variable-size encoding for each node:
 
 ```
 feat_op: u8                     # Packed feature index + operation
-flags: u8                       # Learned missing direction (see below)
-val: u16                        # Index into floats, cat_vals, or case_tables
+flags: u8                       # Missing direction and set-membership marker
+val: u16                        # Index into an operation-specific value table
 left: varint                    # Left child index (OP_LE/OP_LT/OP_EQ only)
 right: varint                   # Right child index (OP_LE/OP_LT/OP_EQ only)
 ```
@@ -182,20 +185,26 @@ right: varint                   # Right child index (OP_LE/OP_LT/OP_EQ only)
 |-------|----------|---------|----------|
 | 0 | `OP_LE` | Numeric: `feature <= floats[val]` | left, right |
 | 3 | `OP_LT` | Numeric: `feature < floats[val]` | left, right |
-| 1 | `OP_EQ` | Categorical: `feature == strings[cat_vals[val]]` | left, right |
+| 1 | `OP_EQ` | Categorical equality, or set membership when `CATEGORY_SET` is set | left, right |
 | 2 | `OP_SWITCH` | Case table lookup | In case_tables[val] |
 
 ### Decision flags
 
 Every decision record has one flags byte, including native CART and switch
-nodes. Exactly one of these complete byte values is valid; bits 2-7 are
-reserved and must be zero.
+nodes. Bits 0-1 encode the missing direction. Bit 2 marks category-set
+membership and is valid only with `OP_EQ`; bits 3-7 are reserved and zero.
 
 | Value | Constant | Meaning |
 |-------|----------|---------|
 | 0 | `MISSING_NONE` | No learned route; apply the runner's missing policy |
 | 1 | `MISSING_LEFT` | A missing value follows the left/yes branch |
 | 2 | `MISSING_RIGHT` | A missing value follows the right/no branch |
+| 4 | `CATEGORY_SET` | `val` indexes `category_sets` instead of `cat_vals` |
+
+`CATEGORY_SET` is combined with one missing-direction value, so valid set
+flags are 4, 5, or 6. For a present value, the left branch is taken exactly
+when its canonical string is in the referenced set. Bool-dtype values are
+normalized to `"0"` or `"1"` before lookup, as for `OP_EQ`.
 
 For `OP_SWITCH`, left means the XGBoost yes/category child and right means the
 default/no child. The flags field costs exactly one byte per decision node; the
@@ -270,6 +279,23 @@ model validator does not admit switch nodes.
 
 ---
 
+## Category-Set Tables (if n_category_sets > 0)
+
+For `OP_EQ` decisions whose `CATEGORY_SET` flag is set:
+
+```
+n_values: u16
+cat_val_indices: u16[n_values]  # Indices into the categorical value pool
+```
+
+Sets occur after all case tables and before metadata. The writer canonicalizes
+each category to its stored string, removes duplicates, and sorts the strings
+before interning the table. Readers resolve each table once to a set of strings
+so membership is O(1) per evaluated decision. The decision retains ordinary
+left and right child varints and ordinary learned-missing semantics.
+
+---
+
 ## Varint Encoding
 
 Protobuf-style variable-length integers:
@@ -300,6 +326,9 @@ For implementers, here are the key constants:
 # Magic
 MAGIC = b"CART"
 VERSION = 3
+HEADER_SIZE = 36
+OFF_CATEGORY_SETS = 32
+OFF_META_LEN = 34
 
 # Flags
 FLAG_IS_FOREST = 0x01
@@ -312,6 +341,8 @@ MISSING_NONE = 0
 MISSING_LEFT = 1
 MISSING_RIGHT = 2
 MISSING_MASK = 0x03
+CATEGORY_SET = 0x04
+DECISION_FLAGS_MASK = 0x07
 
 # Operations
 OP_LE = 0

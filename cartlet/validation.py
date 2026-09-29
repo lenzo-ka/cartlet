@@ -329,7 +329,7 @@ def validate_model_data(data: Any, *, forest: bool = False) -> None:
                     and feature >= 0
                     and (not names or feature < len(names))
                 )
-            ) or op not in ("=", "<=", "<"):
+            ) or op not in ("=", "in", "<=", "<"):
                 raise ValueError("invalid model decision reference or operator")
             if isinstance(raw_feature, dict) and learned_missing is None:
                 raise ValueError("invalid model learned missing direction")
@@ -340,6 +340,15 @@ def validate_model_data(data: Any, *, forest: bool = False) -> None:
                     raise ValueError("invalid model numerical threshold") from exc
                 if not finite:
                     raise ValueError("invalid model numerical threshold")
+            elif op == "in" and (
+                not isinstance(value, list)
+                or not value
+                or any(not isinstance(item, str) for item in value)
+                or value != sorted(set(value))
+            ):
+                raise ValueError(
+                    "model categorical membership values must be sorted unique strings"
+                )
             if id(node) in active:
                 raise ValueError("model tree contains a cycle")
             active.add(id(node))

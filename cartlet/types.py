@@ -29,7 +29,8 @@ RegressionLeaf = list[float]
 LeafNode = str | dict[str, float] | list[float]
 
 # Decision node: [feature_name, operator, value, left_child, right_child]
-# operators: "<=" inclusive numerical, "<" strict numerical, "=" categorical
+# operators: "<=" inclusive numerical, "<" strict numerical, "=" categorical,
+# and "in" categorical set membership
 # Note: This is a forward reference since TreeNode references itself
 DecisionNode = list[Any]  # [str, str, Any, TreeNode, TreeNode]
 
@@ -103,6 +104,7 @@ class ModelData(TypedDict):
     # Optional structure
     distributions: list[list[tuple[int, float]]]  # [(class_idx, prob), ...]
     case_tables: list[CaseTable]
+    category_sets: list[set[str]]
     bool_features: list[bool]
 
     # Flags

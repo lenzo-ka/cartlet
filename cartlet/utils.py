@@ -74,7 +74,7 @@ def is_decision_node(node: Any) -> bool:
     """
     Check if node is a decision node.
 
-    Format: [feature, op, value, left, right]
+    Format: [feature, op, value, left, right], including categorical ``in``.
     """
     return isinstance(node, list) and len(node) == DECISION_ARITY
 
@@ -465,6 +465,21 @@ def _eval_tree(
                 branch = "case"
                 selector = ("case", selected[0])
                 next_address = address + (selector,)
+        elif op == "in":
+            predicates = value
+            if spec is not None and getattr(spec, "dtype", None) == "bool":
+                from .types import normalize_bool
+
+                predicates = [normalize_bool(predicate) for predicate in predicates]
+            go_left = (
+                learned_missing == "left"
+                if used_learned_missing
+                else not is_missing
+                and str(feat_val) in {str(predicate) for predicate in predicates}
+            )
+            branch = "left" if go_left else "right"
+            selector = 0 if go_left else 1
+            next_address = address + (selector,)
         else:
             predicate = value
             if spec is not None and getattr(spec, "dtype", None) == "bool":
@@ -480,7 +495,7 @@ def _eval_tree(
             selector = 0 if go_left else 1
             next_address = address + (selector,)
         if collect_path:
-            path_value: str | float | None
+            path_value: str | float | list[str] | None
             if is_switch:
                 path_value = None
             elif op == "=":
@@ -490,6 +505,14 @@ def _eval_tree(
 
                     predicate = normalize_bool(predicate)
                 path_value = str(predicate)
+            elif op == "in":
+                predicates = value
+                if spec is not None and getattr(spec, "dtype", None) == "bool":
+                    from .types import normalize_bool
+
+                    predicates = [normalize_bool(predicate) for predicate in predicates]
+                # Match the writer, which stores the canonical set once.
+                path_value = sorted({str(predicate) for predicate in predicates})
             else:
                 path_value = float(value)
             step = {
