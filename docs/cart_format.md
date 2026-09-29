@@ -1,9 +1,11 @@
 > Current writer/reader format version: **3**. Version 3 adds a one-byte flags
 > field to every decision record so XGBoost's learned missing direction and
-> categorical set membership are stored. Version 2 added a distinct strict
-> numeric comparison opcode for XGBoost and float64 numeric/probability pools.
-> Native thresholds, regression means and class probabilities retain Python
-> float precision; XGBoost inputs and thresholds are normalized to float32.
+> categorical set membership are stored. It also uses 32-bit varints for
+> repeated indices and counts, fixed u32 header counts, and q16 classification
+> probabilities. Version 2 added a
+> distinct strict numeric comparison opcode for XGBoost and float64 numeric
+> pools. Native thresholds and regression means retain Python float precision;
+> XGBoost inputs and thresholds are normalized to float32.
 > Nested native CART nodes use `"<="`; strict XGBoost nodes use `"<"`.
 > Readers reject other versions rather than guessing their semantics. In
 > particular, format 2 must be re-exported from the training model or retrained.
@@ -28,7 +30,7 @@ The `.cart` format is a compact binary representation of decision trees, random 
 
 ```
 ┌──────────────────────────────────────┐
-│ Header (36 bytes)                    │
+│ Header (52 bytes)                    │
 ├──────────────────────────────────────┤
 │ String Table                         │
 ├──────────────────────────────────────┤
@@ -44,7 +46,7 @@ The `.cart` format is a compact binary representation of decision trees, random 
 ├──────────────────────────────────────┤
 │ Decision Nodes (variable size)       │
 ├──────────────────────────────────────┤
-│ Leaf Nodes (3 bytes each)            │
+│ Leaf Nodes (variable size)           │
 ├──────────────────────────────────────┤
 │ Distributions (optional)             │
 ├──────────────────────────────────────┤
@@ -58,24 +60,24 @@ The `.cart` format is a compact binary representation of decision trees, random 
 
 ---
 
-## Header (36 bytes)
+## Header (52 bytes)
 
 | Offset | Size | Field | Description |
 |--------|------|-------|-------------|
 | 0 | 4 | magic | `CART` (0x43 0x41 0x52 0x54) |
 | 4 | 2 | version | Format version (currently 3) |
 | 6 | 2 | flags | Bitfield (see below) |
-| 8 | 2 | n_features | Number of features |
-| 10 | 2 | n_classes | Number of class labels |
-| 12 | 2 | n_trees | Number of trees |
-| 14 | 4 | n_decisions | Number of decision nodes |
-| 18 | 4 | n_leaves | Number of leaf nodes |
-| 22 | 4 | n_floats | Size of float pool |
-| 26 | 2 | n_cat_vals | Size of categorical value pool |
-| 28 | 2 | n_dists | Number of distributions |
-| 30 | 2 | n_case_tables | Number of case tables |
-| 32 | 2 | n_category_sets | Number of category-set tables |
-| 34 | 2 | metadata_len | Length of metadata JSON |
+| 8 | 4 | n_features | Number of features |
+| 12 | 4 | n_classes | Number of class labels |
+| 16 | 4 | n_trees | Number of trees |
+| 20 | 4 | n_decisions | Number of decision nodes |
+| 24 | 4 | n_leaves | Number of leaf nodes |
+| 28 | 4 | n_floats | Size of float pool |
+| 32 | 4 | n_cat_vals | Size of categorical value pool |
+| 36 | 4 | n_dists | Number of distributions |
+| 40 | 4 | n_case_tables | Number of case tables |
+| 44 | 4 | n_category_sets | Number of category-set tables |
+| 48 | 4 | metadata_len | Length of metadata JSON |
 
 ### Flags (16-bit bitfield)
 
@@ -91,9 +93,8 @@ The `.cart` format is a compact binary representation of decision trees, random 
 ## String Table
 
 ```
-n_strings: u16
-offsets: u16[n_strings]     # Offsets into string data
-data: bytes[]               # Null-terminated UTF-8 strings
+n_strings: varint
+strings: (byte_length: varint, utf8: bytes[byte_length])[n_strings]
 ```
 
 All strings (feature names, class labels, categorical values) are stored once and referenced by index.
@@ -105,10 +106,10 @@ All strings (feature names, class labels, categorical values) are stored once an
 For each feature (n_features entries):
 
 ```
-name_idx: u16               # Index into string table
+name_idx: varint            # Index into string table
 type_flags: u8              # Bits 0-1: type, Bits 2-4: dtype
-n_cat: u8                   # Number of known categorical values
-cat_indices: u16[n_cat]     # String indices for each value
+n_cat: varint               # Number of known categorical values
+cat_indices: varint[n_cat]  # String indices for each value
 ```
 
 ### Type Flags
@@ -125,7 +126,7 @@ cat_indices: u16[n_cat]     # String indices for each value
 For classification models:
 
 ```
-class_indices: u16[n_classes]   # String indices for class labels
+class_indices: varint[n_classes]  # String indices for class labels
 ```
 
 ---
@@ -143,7 +144,7 @@ Referenced by index from decision nodes (thresholds) and leaf nodes (regression 
 ## Categorical Value Pool
 
 ```
-cat_vals: u16[n_cat_vals]       # String indices for categorical comparisons
+cat_vals: varint[n_cat_vals]    # String indices for categorical comparisons
 ```
 
 When a decision node does `feature == "value"`, it stores an index into this pool, which contains the string table index.
@@ -165,19 +166,13 @@ For forests, each tree's root node index. For single trees, just one entry.
 Variable-size encoding for each node:
 
 ```
-feat_op: u8                     # Packed feature index + operation
+feature: varint                 # Feature index
+op: u8                          # Operation type
 flags: u8                       # Missing direction and set-membership marker
-val: u16                        # Index into an operation-specific value table
+val: varint                     # Index into an operation-specific value table
 left: varint                    # Left child index (OP_LE/OP_LT/OP_EQ only)
 right: varint                   # Right child index (OP_LE/OP_LT/OP_EQ only)
 ```
-
-### feat_op Encoding
-
-| Bits | Field | Description |
-|------|-------|-------------|
-| 0-5 | feature | Feature index (0-63); this is a **hard limit** — models that split on a feature with index > 63 cannot be written to `.cart` and export raises `ValueError`. Use a full-fidelity format (`.json`/`.pkl`) for wider models. |
-| 6-7 | op | Operation type |
 
 ### Operations
 
@@ -207,8 +202,9 @@ when its canonical string is in the referenced set. Bool-dtype values are
 normalized to `"0"` or `"1"` before lookup, as for `OP_EQ`.
 
 For `OP_SWITCH`, left means the XGBoost yes/category child and right means the
-default/no child. The flags field costs exactly one byte per decision node; the
-header, pools, leaf records, and child varints are unchanged.
+default/no child. Every decision record stores feature and value varints around
+the two fixed bytes; comparison records then carry two child varints, while
+switch records end after the value varint.
 
 ### Child Index Encoding
 
@@ -219,11 +215,11 @@ Child indices use a flag bit to distinguish decisions from leaves:
 
 ---
 
-## Leaf Nodes (3 bytes each)
+## Leaf Nodes
 
 ```
 leaf_type: u8                   # Type of leaf value
-val: u16                        # Index into appropriate pool
+val: varint                     # Index into appropriate pool
 ```
 
 ### Leaf Types
@@ -252,11 +248,25 @@ distribution payloads may share pool entries.
 For each distribution (n_dists entries):
 
 ```
-n_entries: u16
-entries: (class_idx: u16, prob: f64)[n_entries]
+n_entries: varint
+entries: (class_idx: varint, probability_q16: u16)[n_entries]
 ```
 
-Sorted by probability descending. Used for `predict_nbest()` support.
+The writer sorts each distribution by the original probability, descending,
+then stores `probability_q16 = round(probability * 65535)`. The sort is stable,
+so a quantization tie retains the same best class as the in-process argmax.
+Distribution deduplication uses the ordered `(class_idx, probability_q16)`
+values. Both runners decode each entry to `probability_q16 / 65535`, then divide
+the decoded entries by their sum; the rebuild path uses those normalized values.
+
+Before renormalization, rounding gives an absolute error of at most
+`1 / 131070`, approximately `7.6e-6`, per probability. For a distribution of
+`k` entries whose original probabilities sum to one, let `Q` be the sum of its
+stored q16 integers. After renormalization, each absolute error is at most
+`(k - 1) / (2Q)`. Since `Q >= 65535 - k/2`, this is at most
+`(k - 1) / (131070 - k)` when `k < 131070`. The bound is zero for `k = 1`.
+These bounds do not apply to regression or XGBoost float leaves or to numeric
+thresholds, which remain float64.
 
 ---
 
@@ -265,9 +275,9 @@ Sorted by probability descending. Used for `predict_nbest()` support.
 For `OP_SWITCH` nodes (n-ary categorical splits):
 
 ```
-n_cases: u16
+n_cases: varint
 default_child: varint           # Child index for unmatched values
-cases: (cat_val_idx: u16, child: varint)[n_cases]
+cases: (cat_val_idx: varint, child: varint)[n_cases]
 ```
 
 Case keys are stored as strings. Bool-dtype case keys are normalized to `"0"`
@@ -284,8 +294,8 @@ model validator does not admit switch nodes.
 For `OP_EQ` decisions whose `CATEGORY_SET` flag is set:
 
 ```
-n_values: u16
-cat_val_indices: u16[n_values]  # Indices into the categorical value pool
+n_values: varint
+cat_val_indices: varint[n_values]  # Indices into the categorical value pool
 ```
 
 Sets occur after all case tables and before metadata. The writer canonicalizes
@@ -303,6 +313,8 @@ Protobuf-style variable-length integers:
 - 7 bits per byte, MSB = continuation flag
 - Little-endian order
 - 1-5 bytes for 32-bit values
+- Values above `2^32 - 1`, a continuation chain longer than five bytes, and a
+  truncated continuation chain are invalid
 
 ```
 0xxxxxxx                        # 1 byte: 0-127
@@ -326,9 +338,23 @@ For implementers, here are the key constants:
 # Magic
 MAGIC = b"CART"
 VERSION = 3
-HEADER_SIZE = 36
-OFF_CATEGORY_SETS = 32
-OFF_META_LEN = 34
+HEADER_SIZE = 52
+OFF_VERSION = 4
+OFF_FLAGS = 6
+OFF_FEATURES = 8
+OFF_CLASSES = 12
+OFF_TREES = 16
+OFF_DECISIONS = 20
+OFF_LEAVES = 24
+OFF_FLOATS = 28
+OFF_CAT_VALS = 32
+OFF_DISTS = 36
+OFF_CASE_TABLES = 40
+OFF_CATEGORY_SETS = 44
+OFF_META_LEN = 48
+
+SIZE_F64 = 8
+SIZE_Q16 = 2
 
 # Flags
 FLAG_IS_FOREST = 0x01
@@ -350,11 +376,6 @@ OP_LT = 3
 OP_EQ = 1
 OP_SWITCH = 2
 
-# feat_op encoding
-OP_SHIFT = 6
-OP_MASK = 0xC0
-FEAT_MASK = 0x3F
-
 # Leaf types
 LEAF_CLASS = 0
 LEAF_FLOAT = 1
@@ -364,6 +385,29 @@ LEAF_CLASS_DIST = 2
 LEAF_FLAG = 0x80000000
 INDEX_MASK = 0x7FFFFFFF
 ```
+
+## Capacity Limits
+
+Format 3 keeps the 52-byte header's model counts and metadata length as fixed
+u32 fields. String counts and byte lengths, feature names and vocabulary
+counts/indices, class indices, categorical-value indices, decision
+feature/value indices, leaf values, distribution counts/class indices, case
+counts/indices, category-set counts/indices, child IDs, and tree offsets are
+32-bit varints. Both encodings have a format limit of `2^32 - 1`.
+
+Decision and leaf arrays are each limited to `2^31 - 1` entries because bit 31
+distinguishes leaf child IDs. This preserves the documented node-ID capacity;
+those flagged child IDs still fit in a five-byte 32-bit varint.
+
+The u16 fields that remain are the version, header flags, and q16 probability;
+the u8 fields that remain are feature type/dtype flags, the decision operation
+and flags, and the leaf type. These encode fixed enums or the requested q16
+value rather than model cardinalities. Float-pool values remain f64.
+
+Both runners also apply defensive load-time caps of 10,000 features, 100,000
+classes, 100,000 trees, and 10,000,000 decision or leaf nodes. These are
+resource-safety checks, not narrower on-disk fields; string and categorical
+vocabulary cardinalities and string byte lengths use their full u32 range.
 
 ---
 

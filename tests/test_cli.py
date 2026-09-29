@@ -211,9 +211,10 @@ class TestTrainCommand:
         default_report = json.loads(capsys.readouterr().out)
         assert default_report["settings"]["min_confidence"] == 1.0
         assert default_report["settings"]["min_dist_entropy"] == 0.0
+        normalized_q16_bound = 1 / (2 * 65535 - 2)
         assert predict(
             load_model(str(default_model)), ["same"], return_dist=True
-        ) == pytest.approx({"A": 0.97, "B": 0.03})
+        ) == pytest.approx({"A": 0.97, "B": 0.03}, abs=normalized_q16_bound)
 
         assert (
             main(

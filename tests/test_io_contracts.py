@@ -9,10 +9,12 @@ import pytest
 from cartlet import DecisionTree
 from cartlet.bundled.predict import load_cart
 from cartlet.bundled.predict import predict as bundled_predict
-from cartlet.io.bytes import write_tree_bytes
+from cartlet.bundled.predict import predict_path as bundled_predict_path
+from cartlet.io.bytes import ByteWriter, write_tree_bytes
+from cartlet.io.cart_format import rebuild_tree_from_cart
 from cartlet.io.loader import iter_vectors, load_training_data, read_vectors
 from cartlet.io.writer import write_vectors
-from cartlet.runner import load_model, predict
+from cartlet.runner import load_model, predict, predict_path
 from cartlet.types import FeatureSpec
 from cartlet.utils import eval_tree
 
@@ -56,12 +58,88 @@ def test_default_training_preserves_97_3_leaf_distribution(tmp_path):
     expected = {"A": 0.97, "B": 0.03}
     assert tree.predict(["same"], return_dist=True) == pytest.approx(expected)
     assert json_tree.predict(["same"], return_dist=True) == pytest.approx(expected)
+    normalized_q16_bound = 1 / (2 * 65535 - 2)
     assert predict(load_model(cart_path), ["same"], return_dist=True) == pytest.approx(
-        expected
+        expected, abs=normalized_q16_bound
     )
     assert bundled_predict(
         load_cart(cart_path), ["same"], return_dist=True
-    ) == pytest.approx(expected)
+    ) == pytest.approx(expected, abs=normalized_q16_bound)
+
+
+def test_q16_distributions_roundtrip_best_class_and_deduplicate(tmp_path):
+    left = {"A": 0.400001, "B": 0.4, "C": 0.199999}
+    right = {"B": 0.400001, "A": 0.4, "C": 0.199999}
+    tree = DecisionTree(feature_names=["x"])
+    tree.model = ["x", "=", "left", left, right]
+    path = str(tmp_path / "q16.cart")
+    tree.export(path, store_distributions=True)
+
+    package_model = load_model(path)
+    bundled_model = load_cart(path)
+    rebuilt = rebuild_tree_from_cart(package_model, ["x"])
+    normalized_q16_bound = 2 / (2 * 65535 - 3)
+
+    for row, expected in [(["left"], left), (["right"], right)]:
+        assert predict(package_model, row) == tree.predict(row)
+        assert bundled_predict(bundled_model, row) == tree.predict(row)
+        assert predict(package_model, row, return_dist=True) == pytest.approx(
+            expected, abs=normalized_q16_bound
+        )
+        assert bundled_predict(bundled_model, row, return_dist=True) == pytest.approx(
+            expected, abs=normalized_q16_bound
+        )
+        rebuilt_leaf = rebuilt[3] if row[0] == "left" else rebuilt[4]
+        assert rebuilt_leaf == pytest.approx(expected, abs=normalized_q16_bound)
+
+    writer = ByteWriter(store_distributions=True)
+    first = writer._add_distribution({"A": 0.6, "B": 0.4})
+    second = writer._add_distribution({"A": 0.6000001, "B": 0.3999999})
+    assert first == second
+    assert len(writer.distributions) == 1
+
+
+def test_wide_categorical_model_roundtrip(tmp_path):
+    n_features = 112
+
+    def value(feature: int, category: int) -> str:
+        return f"f{feature:03d}-v{category:05d}-" + "x" * 72
+
+    features = [
+        FeatureSpec(
+            name=f"feature_{feature:03d}",
+            dtype="str",
+            type="cat",
+            values={value(feature, category) for category in range(256)},
+        )
+        for feature in range(n_features)
+    ]
+    tree = DecisionTree(features=features)
+    tree.model = [features[-1].name, "=", value(111, 0), "hit", "miss"]
+    path = tmp_path / "wide.cart"
+    tree.export(str(path))
+
+    package_model = load_model(str(path))
+    bundled_model = load_cart(str(path))
+    assert len(package_model["strings"]) >= n_features * 256
+    assert sum(len(item.encode("utf-8")) + 1 for item in package_model["strings"]) > (
+        2_350_000
+    )
+    assert package_model["decisions"][0][0] == 111
+    assert bundled_model["decisions"][0][0] == 111
+
+    rows = [
+        [value(feature, (row + feature) % 256) for feature in range(n_features)]
+        for row in range(300)
+    ]
+    rows[0][-1] = value(111, 0)
+    for row in rows:
+        expected = tree.predict(row)
+        expected_path = tree.predict_path(row)
+        assert predict(package_model, row) == expected
+        assert bundled_predict(bundled_model, row) == expected
+        assert predict_path(package_model, row) == expected_path
+        assert bundled_predict_path(bundled_model, row) == expected_path
 
 
 def test_explicit_min_confidence_still_collapses_97_3_leaf():
@@ -350,3 +428,40 @@ def test_bundle_rejected_schema_preserves_existing_output(tmp_path):
         bundle(str(source), str(output))
     assert output.read_bytes() == b"KEEP"
     assert source.read_bytes() == before
+
+
+def test_writer_refuses_models_beyond_loader_caps(tmp_path):
+    import cartlet.bundled.predict as bundled
+    import cartlet.runner as package
+
+    assert (
+        package._CART_MAX_FEATURES,
+        package._CART_MAX_CLASSES,
+        package._CART_MAX_TREES,
+        package._CART_MAX_NODES,
+    ) == (
+        bundled._MAX_FEATURES,
+        bundled._MAX_CLASSES,
+        bundled._MAX_TREES,
+        bundled._MAX_NODES,
+    )
+    classes = [f"c{i}" for i in range(package._CART_MAX_CLASSES + 1)]
+    with pytest.raises(ValueError, match="number of classes"):
+        write_tree_bytes(
+            "c0",
+            str(tmp_path / "classes.cart"),
+            [FeatureSpec("x", "str", "cat", None)],
+            {"x": 0},
+            classes,
+            False,
+        )
+    n = package._CART_MAX_FEATURES + 1
+    with pytest.raises(ValueError, match="number of features"):
+        write_tree_bytes(
+            "c0",
+            str(tmp_path / "features.cart"),
+            [FeatureSpec(f"f{i}", "str", "cat", None) for i in range(n)],
+            {f"f{i}": i for i in range(n)},
+            ["c0"],
+            False,
+        )

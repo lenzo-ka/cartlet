@@ -5,6 +5,8 @@ import importlib.util
 import pytest
 
 from cartlet import TASK_REGRESSION, DecisionTree, RandomForest
+from cartlet.bundled.predict import load_cart as bundled_load_cart
+from cartlet.io.cart_format import VERSION
 from cartlet.runner import load_model, predict
 
 # Whether scikit-learn is importable. Evaluated once at collection time so the
@@ -50,22 +52,36 @@ class TestMalformedModelFiles:
         """Model file with truncated header."""
         p = tmp_path / "trunc.cart"
         p.write_bytes(b"CART")  # Just magic, no header
-        with pytest.raises(ValueError, match="header is 36 bytes"):
+        with pytest.raises(ValueError, match="header is 52 bytes"):
             DecisionTree().load_model(str(p))
+
+    @pytest.mark.parametrize(
+        ("payload", "message"),
+        [
+            (b"\x80", "[Tt]runcated"),
+            (b"\x80" * 5 + b"\x00", "varint too long"),
+            (b"\xff\xff\xff\xff\x10", "varint exceeds u32"),
+        ],
+    )
+    def test_invalid_varint_raises_clear_error(self, tmp_path, payload, message):
+        header = b"CART" + VERSION.to_bytes(2, "little") + b"\x00" * 46
+        path = tmp_path / "invalid-varint.cart"
+        path.write_bytes(header + payload)
+
+        for loader in (load_model, bundled_load_cart):
+            with pytest.raises(ValueError, match=message):
+                loader(str(path))
 
     def test_unreasonable_header_raises(self, tmp_path):
         """Model file with insane header values."""
-        # CART (4) + version(2) + flags(2) + n_feat(2) + n_class(2) + n_trees(2)
-        # n_feat = 65535 (too high)
+        # CART (4) + version(2) + flags(2) + n_features(u32).
         p = tmp_path / "insane.cart"
-        from cartlet.io.cart_format import VERSION
-
         p.write_bytes(
             b"CART"
             + VERSION.to_bytes(2, "little")
             + b"\x00\x00"
-            + b"\xff\xff"
-            + b"\x00" * 30
+            + (10_001).to_bytes(4, "little")
+            + b"\x00" * 40
         )
         with pytest.raises(ValueError, match="Unreasonable n_features"):
             DecisionTree().load_model(str(p))
@@ -83,8 +99,8 @@ class TestMalformedModelFiles:
         import struct
 
         raw = self._valid_model_bytes(tmp_path)
-        # n_trees is the 5th u16 after the 4-byte magic (offset 12).
-        struct.pack_into("<H", raw, 12, 2)
+        # n_trees is a u32 at offset 16.
+        struct.pack_into("<I", raw, 16, 2)
         bad = tmp_path / "bad_trees.cart"
         bad.write_bytes(raw)
         dt = DecisionTree()
@@ -96,9 +112,8 @@ class TestMalformedModelFiles:
         import struct
 
         raw = self._valid_model_bytes(tmp_path)
-        # Second header group starts at offset 14; n_dists is the 5th field
-        # (I,I,I,H,H,...) -> offset 14 + 4+4+4+2 = 28.
-        struct.pack_into("<H", raw, 28, 1)
+        # n_dists is a u32 at offset 36.
+        struct.pack_into("<I", raw, 36, 1)
         bad = tmp_path / "bad_dists.cart"
         bad.write_bytes(raw)
         dt = DecisionTree()
