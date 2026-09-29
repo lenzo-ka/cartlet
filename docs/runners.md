@@ -67,6 +67,7 @@ model = Predictor("model.cart.gz")  # gzip supported
 # Predict
 result = model.predict(["red", "large"])
 results = model.predict_batch([["red", "large"], ["blue", "small"]])
+attribution = model.predict_path(["red", "large"])
 
 # With distribution (classification only, if model has distributions)
 dist = model.predict(["red", "large"], return_dist=True)
@@ -161,14 +162,91 @@ At load time, the runner:
 
 ## Missing Values
 
-When a feature value is `None`, missing, or out of bounds:
+All prediction entry points accept `missing="error"` or `missing="right"`.
+The default is `"error"`. If an evaluated decision tests a missing value,
+prediction raises `MissingFeatureError` naming the feature, tree, and decision
+node. Missing values in features that the evaluated paths do not test are
+irrelevant. `None` and an index at or beyond the vector length are always
+missing. At a numeric node, any value that successfully converts with `float()`
+and produces NaN is missing, including the string `"nan"`. At equality and
+switch nodes, a non-string scalar is missing when comparing it with itself using
+`!=` produces a Boolean true result. This covers Python and NumPy scalar NaNs
+without making NumPy a runner dependency. Training rejects nonfinite values, so
+no model can learn a NaN category.
 
-- **Numeric comparisons** (`<=`): comparison fails → go right (value > threshold).
-- **Categorical comparisons** (`==`): comparison fails → go right (value ≠ target).
-- **Switch/case tables**: use default branch.
+Self-inequality is deliberately conservative: an exception from `__ne__`, or a
+result that is neither a built-in Boolean nor NumPy's scalar Boolean, does not
+establish missingness. The value continues through ordinary comparison or bool
+normalization, which may then reject it. Strings never use this test, so a
+literal `"nan"` remains an ordinary category at equality and switch nodes.
 
-This policy is consistent across the runner and the in-process predictor and
-ensures deterministic behavior even with incomplete input vectors.
+For compatibility with 0.6.0, `missing="right"` makes values that are missing
+under the new definition take the right branch at comparisons and the default
+branch at switches. This is not exact 0.6.0 behavior for a non-string NaN at an
+equality or switch decision keyed `"nan"`: 0.6.0 converted that value to the
+string `"nan"` and could take the left/case branch, while it is now missing and
+takes the right/default branch. CLI callers use `--missing {error,right}`.
+Empty delimited fields are parsed as `None`; absent named fields are also
+missing. Non-numeric strings at numeric nodes retain their established
+right-branch behavior.
+
+`XGBoostTree.predict` uses the native Booster and its learned missing direction.
+Its `.cart` exports use the explicit runner policy because the binary format
+does not store those directions.
+
+## Decision paths
+
+`predict_path(model, vector, *, missing="error")` and
+`Predictor.predict_path(vector, *, missing="error")` return the ordinary
+prediction plus one path record per evaluated tree. Decision and leaf IDs are
+the model-global `.cart` array indexes documented in
+[the binary format](cart_format.md#stable-node-ids). Training-side
+`DecisionTree` and `RandomForest` expose the same result. For XGBoost, use one
+of the `.cart` runners for path attribution. A step's predicate `value` is the
+writer-canonical value: numeric thresholds are floats, equality values are
+strings, and bool-dtype equality values are normalized to `"0"` or `"1"`.
+
+## Lazy feature access
+
+Prediction indexes a vector only through `len(vector)` and `vector[i]`, where
+`i` is an integer feature index tested along an evaluated path. It does not
+iterate, slice, copy, or convert the whole vector, and reads each decision's
+feature at most once. This applies to trees, forests, and XGBoost `.cart`
+models in both runners, and to non-strict in-process tree and forest prediction.
+Exceptions raised by `vector[i]` propagate unchanged. `strict=True` is the
+documented exception: out-of-vocabulary validation must inspect every present
+feature. It skips absent and missing values, but normalizes every present bool
+and rejects unrecognized bool or out-of-vocabulary values before traversal.
+Missing values are then handled during traversal by `missing`, exactly as in
+non-strict prediction. Thus strict validation takes precedence for invalid
+present values, while the missing policy takes precedence for missing values.
+The executable contracts are covered by `tests/test_lazy_features.py` and
+`tests/test_missing_scalar_contract.py`.
+
+When a tested feature has bool dtype, runners first check it for missingness,
+then normalize the value at that read
+using the same accepted true/false spellings as in-process prediction. An
+unrecognized bool value raises `ValueError`; an untested bool feature is never
+read or normalized. Accepted true strings are `"1"`, `"true"`, `"True"`,
+`"TRUE"`, `"yes"`, `"Yes"`, and `"YES"`; accepted false strings are `"0"`,
+`"false"`, `"False"`, `"FALSE"`, `"no"`, `"No"`, and `"NO"`. Boolean values
+and numeric `1` and `0` are also accepted.
+
+Those spellings describe values as the prediction library receives them, after
+any CLI field parsing. The package `cartlet predict` command leaves JSONL value
+types intact. For delimited CSV, TSV, and SSV input, it maps an empty field to
+`None`; for every other field, regardless of the model feature type, it tries
+`float(field)` when the text contains a period and `int(field)` otherwise,
+leaving the field as a string if conversion fails. Thus a delimited field such
+as `01` reaches bool normalization as the integer `1` and is accepted even
+though the library rejects the literal string `"01"`.
+
+The bundled CLI uses the model split type instead: for file input and positional
+arguments it converts fields for numerical features with `float()` and leaves
+categorical fields, including bool-dtype categorical fields, as strings. In
+file input only, an empty field becomes `None`; a positional empty string stays
+an empty string. These CLI conversions do not change the library APIs or their
+accepted bool values.
 
 ---
 
@@ -193,8 +271,9 @@ class equivalent to the bundled runner's.
 ## Input and export contracts
 
 The package and standalone CART loaders recognize gzip by content, including a
-compressed file without a `.gz` suffix. Invalid numeric values at numeric nodes
-take the right branch in both nested-model and exported inference. XGBoost inputs and thresholds use float32 precision to match DMatrix. Strict
+compressed file without a `.gz` suffix. Invalid non-numeric values at numeric
+nodes take the right branch in both nested-model and exported inference.
+XGBoost inputs and thresholds use float32 precision to match DMatrix. Strict
 XGBoost nodes use `<`; native CART nodes use `<=`. Multiclass XGBoost
 metadata may carry one finite raw intercept per class; binary intercepts remain
 in probability space and are converted to a logit for additive prediction.

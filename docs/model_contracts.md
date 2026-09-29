@@ -20,6 +20,10 @@ inspect it and perform an explicit conversion of its representation. The new
 release does not automatically migrate old artifacts. Replace copied standalone
 runners together with the models they load.
 
+Decision and leaf attribution uses the existing model-format-2 array indexes;
+adding `predict_path` does not change the binary format. See
+[stable node IDs](cart_format.md#stable-node-ids).
+
 A failed load leaves the existing model usable. A successful load replaces its
 training data and backend provenance; loading JSON over a sklearn-trained model
 cannot leave an old estimator available for `.skl` export.
@@ -37,6 +41,29 @@ numbers, with aligned targets and weights. Missing or nested training values
 are rejected. Weights must be finite, nonnegative, and have a finite positive
 total; zero-weight rows are omitted from fitting. Loaded observations are copied
 so caller mutations do not change the stored training data.
+
+Prediction has a separate missing-input policy. The default, `missing="error"`,
+raises `MissingFeatureError` only when an evaluated decision tests a missing
+value. `None` and a feature beyond the vector length are always missing. A
+numeric-node value is missing when `float(value)` is NaN, so the string `"nan"`
+is missing there. At categorical equality and switch decisions, a non-string
+scalar whose self-inequality returns a trusted Boolean true is missing; a string
+`"nan"` remains a category. Training rejects nonfinite values, so no model
+learns a NaN. The compatibility policy `missing="right"` routes those values
+right, or to a switch default, under this new missing definition. It differs
+from 0.6.0 when a non-string NaN reaches an equality or switch decision keyed
+`"nan"`: 0.6.0 could match the string conversion and take the left/case branch;
+the new policy takes the right/default branch. Native XGBoost in-process
+prediction continues to use the Booster's learned missing directions; use a
+`.cart` runner for path attribution.
+Bool-dtype inputs are checked for missingness and then normalized only when
+their feature is tested, with the
+same accepted values in nested prediction and both `.cart` runners.
+
+With `strict=True`, OOV validation inspects every present value, normalizes
+bools, and rejects unrecognized bool and OOV values. It skips absent and missing
+values; traversal then applies the selected missing policy exactly as in
+non-strict prediction. This precedence is the same for trees and forests.
 
 Named prediction and evaluation inputs are aligned to model feature names.
 Reordering CSV or JSONL columns therefore does not change predictions or

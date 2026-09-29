@@ -15,6 +15,7 @@ import struct
 import tempfile
 from typing import Any
 
+from ..types import normalize_bool
 from .cart_format import (
     DTYPE_MAP,
     FEAT_MASK,
@@ -67,9 +68,15 @@ class ByteWriter:
     See `cartlet/io/cart_format.py` for the byte layout and opcode encoding.
     """
 
-    def __init__(self, store_distributions: bool = False, is_xgboost: bool = False):
+    def __init__(
+        self,
+        store_distributions: bool = False,
+        is_xgboost: bool = False,
+        bool_features: set[int] | None = None,
+    ):
         self.store_distributions = store_distributions
         self.is_xgboost = is_xgboost
+        self.bool_features = bool_features or set()
         self.strings: list[str] = []
         self.string_to_idx: dict[str, int] = {}
         self.floats: list[float] = []
@@ -212,6 +219,8 @@ class ByteWriter:
                 val_idx = self._add_float(numeric)
                 op_type = OP_LT if op == "<" else OP_LE
             elif op == "=":
+                if feat_idx in self.bool_features:
+                    value = normalize_bool(value)
                 str_idx = self._add_string(str(value))
                 val_idx = self._add_cat_value(str_idx)
                 op_type = OP_EQ
@@ -236,6 +245,21 @@ class ByteWriter:
             feature, _, cases, default_node = node
             feat_idx = self._resolve_feat_idx(feature, name_to_col)
 
+            cases_items = list(cases.items()) if isinstance(cases, dict) else cases
+            canonical_cases = []
+            seen_case_keys: set[str] = set()
+            for val, subtree in cases_items:
+                if feat_idx in self.bool_features:
+                    val = normalize_bool(val)
+                key = str(val)
+                if key in seen_case_keys:
+                    raise ValueError(
+                        f"duplicate canonical switch case key {key!r} "
+                        f"for feature {feature!r}"
+                    )
+                seen_case_keys.add(key)
+                canonical_cases.append((key, subtree))
+
             # Reserve decision slot
             dec_idx = len(self.decisions)
             self.decisions.append((0, 0, 0, 0, 0))  # placeholder
@@ -243,12 +267,9 @@ class ByteWriter:
             # Process default first
             default_idx = self._flatten_node(default_node, name_to_col)
 
-            # Process cases
-            cases_items = list(cases.items()) if isinstance(cases, dict) else cases
-
             case_list: list[tuple[int, int]] = []
-            for val, subtree in cases_items:
-                str_idx = self._add_string(str(val))
+            for key, subtree in canonical_cases:
+                str_idx = self._add_string(key)
                 cat_val_idx = self._add_cat_value(str_idx)
                 child_idx = self._flatten_node(subtree, name_to_col)
                 case_list.append((cat_val_idx, child_idx))
@@ -478,7 +499,16 @@ def write_tree_bytes(
     is_xgboost: bool = False,
 ) -> None:
     """Write a single decision tree to binary format."""
-    writer = ByteWriter(store_distributions=store_distributions, is_xgboost=is_xgboost)
+    bool_features = {
+        index
+        for index, spec in enumerate(feature_specs)
+        if getattr(spec, "dtype", None) == "bool"
+    }
+    writer = ByteWriter(
+        store_distributions=store_distributions,
+        is_xgboost=is_xgboost,
+        bool_features=bool_features,
+    )
     writer.add_tree(model, name_to_col)
     writer.write(path, feature_specs, class_labels, is_regression, metadata)
 
@@ -495,7 +525,16 @@ def write_forest_bytes(
     is_xgboost: bool = False,
 ) -> None:
     """Write a random forest or XGBoost model to binary format."""
-    writer = ByteWriter(store_distributions=store_distributions, is_xgboost=is_xgboost)
+    bool_features = {
+        index
+        for index, spec in enumerate(feature_specs)
+        if getattr(spec, "dtype", None) == "bool"
+    }
+    writer = ByteWriter(
+        store_distributions=store_distributions,
+        is_xgboost=is_xgboost,
+        bool_features=bool_features,
+    )
     for tree in trees:
         writer.add_tree(tree, name_to_col)
     writer.write(path, feature_specs, class_labels, is_regression, metadata)

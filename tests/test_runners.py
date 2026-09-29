@@ -132,6 +132,30 @@ class TestPythonRunner:
         assert "Error:" in result.stderr
         assert "Traceback" not in result.stderr
 
+    def test_missing_policy_cli(self, numeric_model_path, tmp_path):
+        input_file = tmp_path / "missing.csv"
+        input_file.write_text(",\n")
+        command = [
+            sys.executable,
+            "cartlet/bundled/predict.py",
+            "-m",
+            numeric_model_path,
+            "-f",
+            str(input_file),
+            "--delimiter",
+            ",",
+        ]
+        result = subprocess.run(command, capture_output=True, text=True)
+        assert result.returncode == 1
+        assert "feature 0 ('x') is missing at tree 0 node 0" in result.stderr
+        assert "Traceback" not in result.stderr
+
+        result = subprocess.run(
+            command + ["--missing", "right"], capture_output=True, text=True
+        )
+        assert result.returncode == 0
+        assert "high" in result.stdout
+
     def test_predict_from_file(self, model_path, tmp_path):
         """Predict from file."""
         input_file = tmp_path / "input.txt"
@@ -355,11 +379,23 @@ class TestCrossRunnerConsistency:
 
         # Missing value (short vector)
         test_vec = [1.0]
-        assert abs(lib_p.predict(test_vec) - std_p.predict(test_vec)) < 1e-6
+        assert (
+            abs(
+                lib_p.predict(test_vec, missing="right")
+                - std_p.predict(test_vec, missing="right")
+            )
+            < 1e-6
+        )
 
         # Explicit None
         test_vec = [1.0, None]
-        assert abs(lib_p.predict(test_vec) - std_p.predict(test_vec)) < 1e-6
+        assert (
+            abs(
+                lib_p.predict(test_vec, missing="right")
+                - std_p.predict(test_vec, missing="right")
+            )
+            < 1e-6
+        )
 
 
 class TestOOVCategorical:

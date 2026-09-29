@@ -407,6 +407,8 @@ def _build_feature_vectors(
         for idx in feature_indices:
             if idx is not None and idx < len(row):
                 val = row[idx]
+                if val == "":
+                    val = None
                 if isinstance(val, str):
                     with contextlib.suppress(ValueError):
                         val = float(val) if "." in val else int(val)
@@ -506,7 +508,7 @@ def cmd_predict(args: argparse.Namespace) -> int:
         raw_rows, header, model_feature_names, model_features, is_jsonl
     )
 
-    predictions = predict_batch(model_data, feature_vectors)
+    predictions = predict_batch(model_data, feature_vectors, missing=args.missing)
 
     # Determine output format and delimiter
     output_format = args.output_format
@@ -1261,6 +1263,12 @@ Examples:
         "--output-format",
         choices=["csv", "tsv", "ssv", "json", "jsonl"],
         help="Output format: csv, tsv, ssv, json, jsonl (default: same as input)",
+    )
+    predict_parser.add_argument(
+        "--missing",
+        choices=["error", "right"],
+        default="error",
+        help="Missing-feature policy (default: error)",
     )
     predict_parser.set_defaults(func=cmd_predict)
 

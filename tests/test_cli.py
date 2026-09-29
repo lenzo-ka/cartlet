@@ -539,6 +539,33 @@ class TestErrorHandling:
         assert result == 1
         assert "Error:" in capsys.readouterr().err
 
+    def test_predict_missing_policy_is_clean_and_configurable(self, capsys, tmp_path):
+        from cartlet import DecisionTree
+
+        model = DecisionTree(features=[{"name": "x", "dtype": "float", "type": "num"}])
+        model.load_data([[0.0], [1.0]], ["left", "right"])
+        model.train(validation_split=0)
+        model_path = tmp_path / "missing.cart"
+        model.export(str(model_path))
+        data_path = tmp_path / "missing.csv"
+        data_path.write_text("x\n\n")
+
+        # A blank line is not a data row, so use a two-column CSV whose tested
+        # first field is empty.
+        data_path.write_text("x,unused\n,0\n")
+        result = main(["predict", str(model_path), str(data_path)])
+        captured = capsys.readouterr()
+        assert result == 1
+        assert "feature 0 ('x') is missing at tree 0 node 0" in captured.err
+        assert "Traceback" not in captured.err
+
+        result = main(
+            ["predict", str(model_path), str(data_path), "--missing", "right"]
+        )
+        captured = capsys.readouterr()
+        assert result == 0
+        assert "right" in captured.out
+
 
 class TestMalformedTrainingData:
     """Test handling of malformed training data rows."""

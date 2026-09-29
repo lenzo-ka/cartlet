@@ -102,6 +102,7 @@ class ModelData(TypedDict):
     # Optional structure
     distributions: list[list[tuple[int, float]]]  # [(class_idx, prob), ...]
     case_tables: list[CaseTable]
+    bool_features: list[bool]
 
     # Flags
     is_regression: bool

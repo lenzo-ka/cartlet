@@ -30,7 +30,7 @@ from .types import (
     TASK_REGRESSION,
     TYPE_NUM,
 )
-from .utils import collapse_distributions
+from .utils import collapse_distributions, eval_tree, eval_tree_path, tree_array_size
 from .validation import (
     MODEL_SCHEMA_VERSION,
     validate_model_data,
@@ -137,7 +137,16 @@ class RandomForest(BaseModel):
         self._logger = logger
 
         # Trained trees
-        self.trees: list[DecisionTree] = []
+        self._trees: list[DecisionTree] = []
+
+    @property
+    def trees(self) -> list[DecisionTree]:
+        """The forest's trained trees."""
+        return self._trees
+
+    @trees.setter
+    def trees(self, value: list[DecisionTree]) -> None:
+        self._trees = value
 
     def load_data(
         self,
@@ -430,12 +439,27 @@ class RandomForest(BaseModel):
 
         return {"n_estimators": len(self.trees)}
 
-    def predict(self, vector: list[Any], **kwargs: Any) -> Any:
+    def predict(
+        self,
+        vector: list[Any],
+        *,
+        strict: bool = False,
+        missing: str = "error",
+        **kwargs: Any,
+    ) -> Any:
         """
         Predict for a feature vector.
 
         Args:
             vector: Feature vector
+            strict: If True, inspect every present feature, normalize bools, and
+                raise ValueError for unrecognized bool or OOV categorical values.
+                Missing values are skipped here and handled by ``missing`` only
+                if an evaluated tree tests them.
+            missing: Whether a tested missing value raises or follows the right
+                or default branch. Numeric float-convertible NaNs and
+                categorical non-string self-unequal scalars are missing. Unlike
+                0.6.0, such a NaN does not match a stored ``"nan"`` category.
 
         Returns:
             Prediction (majority vote for classification, mean for regression)
@@ -445,19 +469,32 @@ class RandomForest(BaseModel):
 
         # All trees share the same feature schema, so normalize the input once
         # and reuse it across every tree rather than re-normalizing per tree.
-        normalized = self.trees[0]._normalize_vector(vector)
-        predictions = [t._eval_normalized(normalized) for t in self.trees]
+        if strict:
+            normalized = self.trees[0]._normalize_vector(vector)
+            oov_features = self.trees[0]._check_oov(normalized)
+            if oov_features:
+                raise ValueError(f"OOV values for features: {oov_features}")
+        else:
+            normalized = vector
+        models = [tree.model for tree in self.trees]
+        predictions = [
+            eval_tree(
+                tree.model,
+                normalized,
+                tree.name_to_col,
+                missing=missing,
+                tree_idx=tree_idx,
+                feature_specs=tree.feature_specs,
+                id_trees=models,
+            )
+            for tree_idx, tree in enumerate(self.trees)
+        ]
 
-        if self._is_regression():
-            # In regression mode, predictions are numeric (mypy can't infer from runtime check)
-            values = [float(p) for p in predictions]  # type: ignore[arg-type]
-            return sum(values) / len(values)
+        return self._aggregate_predictions(predictions)
 
-        # Majority vote for classification
-        votes = Counter(predictions)
-        return votes.most_common(1)[0][0]
-
-    def predict_proba(self, vector: list[Any]) -> dict[Any, float]:
+    def predict_proba(
+        self, vector: list[Any], *, missing: str = "error"
+    ) -> dict[Any, float]:
         """
         Get class probabilities (classification only).
 
@@ -473,11 +510,59 @@ class RandomForest(BaseModel):
         if self._is_regression():
             raise ValueError("predict_proba not available for regression")
 
-        normalized = self.trees[0]._normalize_vector(vector)
-        predictions = [t._eval_normalized(normalized) for t in self.trees]
+        models = [tree.model for tree in self.trees]
+        predictions = [
+            eval_tree(
+                tree.model,
+                vector,
+                tree.name_to_col,
+                missing=missing,
+                tree_idx=tree_idx,
+                feature_specs=tree.feature_specs,
+                id_trees=models,
+            )
+            for tree_idx, tree in enumerate(self.trees)
+        ]
         votes = Counter(predictions)
         total = len(predictions)
         return {cls: count / total for cls, count in votes.items()}
+
+    def predict_path(
+        self, vector: list[Any], *, missing: str = "error"
+    ) -> dict[str, Any]:
+        """Predict and return each tree's decisions and model-global leaf ID."""
+        if not self.trees:
+            raise ValueError("Forest not trained. Call train() first.")
+        values = []
+        paths = []
+        decision_offset = 0
+        leaf_offset = 0
+        for tree_idx, tree in enumerate(self.trees):
+            prediction, leaf, path = eval_tree_path(
+                tree.model,
+                vector,
+                tree.name_to_col,
+                missing=missing,
+                tree_idx=tree_idx,
+                feature_specs=tree.feature_specs,
+                decision_offset=decision_offset,
+                leaf_offset=leaf_offset,
+            )
+            values.append(prediction)
+            paths.append({"tree": tree_idx, "leaf": leaf, "path": path})
+            if tree_idx + 1 < len(self.trees):
+                decisions, leaves = tree_array_size(tree.model)
+                decision_offset += decisions
+                leaf_offset += leaves
+        prediction = self._aggregate_predictions(values)
+        return {"prediction": prediction, "trees": paths}
+
+    def _aggregate_predictions(self, predictions: list[Any]) -> Any:
+        """Aggregate per-tree values for predict and predict_path."""
+        if self._is_regression():
+            values = [float(prediction) for prediction in predictions]
+            return sum(values) / len(values)
+        return Counter(predictions).most_common(1)[0][0]
 
     @property
     def feature_importances_(self) -> dict[str, float]:

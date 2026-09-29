@@ -206,6 +206,17 @@ val: u16                        # Index into appropriate pool
 | 1 | `LEAF_FLOAT` | Float index (regression value) |
 | 2 | `LEAF_CLASS_DIST` | Distribution index |
 
+### Stable node IDs
+
+The decision-array index and leaf-array index are the public IDs returned by
+`predict_path`. They are model-global and stable across supported save/load
+formats. The writer numbers trees in tree order. Within each nested tree it
+reserves each decision in preorder, visits the left subtree before the right
+subtree, and, for a switch, visits the default subtree before case subtrees in
+stored order. Every leaf node appends one leaf-array entry in that traversal;
+leaf nodes are never deduplicated, although their string, float, and
+distribution payloads may share pool entries.
+
 ---
 
 ## Distributions (if FLAG_HAS_DISTRIBUTIONS)
@@ -230,6 +241,13 @@ n_cases: u16
 default_child: varint           # Child index for unmatched values
 cases: (cat_val_idx: u16, child: varint)[n_cases]
 ```
+
+Case keys are stored as strings. Bool-dtype case keys are normalized to `"0"`
+or `"1"` first. The writer rejects a switch when two authored keys have the
+same stored string (for example, `"yes"` and `True` on a bool feature), rather
+than emitting an ambiguous table. Hand-authored switch nodes are supported by
+the `.cart` writer, runners, and binary rebuild path; the JSON/pickle nested
+model validator does not admit switch nodes.
 
 ---
 

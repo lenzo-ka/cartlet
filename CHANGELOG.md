@@ -5,6 +5,41 @@ formats incompatibly. Keep the package and standalone runner used to export and
 load a model on the same release; retrain or re-export models when a release
 requires it.
 
+## Unreleased
+
+### Breaking changes
+
+- Prediction now raises `MissingFeatureError` by default when an evaluated
+  decision tests a missing value: `None`, an index past the vector, a value
+  whose float conversion is NaN at a numeric decision, or a non-string NaN at an
+  equality or switch decision. Untested features are never read. Pass `missing="right"` (or CLI
+  `--missing right`) for the 0.6.0 right/default routing under the new missing
+  definition. Exception: at equality or switch decisions, 0.6.0 could match a
+  non-string NaN to a stored `"nan"` category; it is now missing and therefore
+  takes the right/default branch.
+
+### Added
+
+- Add `predict_path` to nested tree and forest models and to both `.cart`
+  runners, with stable model-global decision and leaf IDs.
+- Guarantee lazy feature reads during non-strict prediction: only features
+  tested along evaluated paths are indexed, once per decision test.
+
+### Fixed
+
+- Normalize bool-dtype features when evaluated by both `.cart` runners, keeping
+  raw bool and accepted string inputs aligned with in-process prediction.
+- Canonicalize hand-authored bool-dtype predicates during nested prediction to
+  match `.cart` export, and reject switch cases with duplicate canonical keys.
+- Evaluate switch nodes in nested trees.
+- Reject multiclass XGBoost `.cart` models whose tree count is not a multiple of
+  the class count instead of ignoring the remainder trees.
+
+### Development
+
+- Ruff is a floor (`>=0.16.7`) in the development extra and `required-version`,
+  so newer Ruff releases run the checks.
+
 ## 0.6.0 — 2026-09-13
 
 ### Breaking changes

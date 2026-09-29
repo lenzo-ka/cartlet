@@ -48,7 +48,9 @@ from .utils import (
     collapse_distributions,
     count_nodes,
     eval_tree,
+    eval_tree_path,
     is_decision_node,
+    is_missing_for_feature,
 )
 from .utils import (
     max_depth as compute_max_depth,
@@ -175,8 +177,17 @@ class DecisionTree(BaseModel):
         self.categorical_split = categorical_split
 
         # Trained model
-        self.model: Any = None
+        self._model: Any = None
         self.training_summary: dict[str, int] = {}
+
+    @property
+    def model(self) -> Any:
+        """The nested trained tree."""
+        return self._model
+
+    @model.setter
+    def model(self, value: Any) -> None:
+        self._model = value
 
     def _feature_type(self, feat_idx: int) -> str:
         """Get the type (cat/num) for a feature."""
@@ -501,6 +512,7 @@ class DecisionTree(BaseModel):
         vector: list[Any],
         return_dist: bool = False,
         strict: bool = False,
+        missing: str = "error",
         **kwargs: Any,
     ) -> Any | dict[str, float] | float:
         """
@@ -509,7 +521,15 @@ class DecisionTree(BaseModel):
         Args:
             vector: Feature vector
             return_dist: If True, return distribution when available (classification)
-            strict: If True, raise ValueError for OOV categorical values
+            strict: If True, inspect every present feature, normalize bools, and
+                raise ValueError for unrecognized bool or OOV categorical values.
+                Missing values are skipped here and handled by ``missing`` only
+                if evaluation tests them.
+            missing: Whether a tested missing value raises or follows the right
+                or default branch. At numeric nodes, any value whose float
+                conversion is NaN is missing; at equality and switch nodes,
+                non-string self-unequal scalar values are missing. Unlike
+                0.6.0, such a NaN does not match a stored ``"nan"`` category.
 
         Returns:
             Classification: category (str) or distribution (dict)
@@ -521,19 +541,22 @@ class DecisionTree(BaseModel):
         if self.model is None:
             raise ValueError("Model not trained. Call train() first.")
 
-        # Normalize bool features
-        normalized = self._normalize_vector(vector)
-
         # Check for OOV values in strict mode
         if strict:
+            normalized = self._normalize_vector(vector)
             oov_features = self._check_oov(normalized)
             if oov_features:
                 raise ValueError(f"OOV values for features: {oov_features}")
+            return self._eval_normalized(normalized, return_dist, missing=missing)
 
-        return self._eval_normalized(normalized, return_dist)
+        return self._eval_normalized(vector, return_dist, missing=missing)
 
     def _eval_normalized(
-        self, normalized: list[Any], return_dist: bool = False
+        self,
+        normalized: list[Any],
+        return_dist: bool = False,
+        *,
+        missing: str = "error",
     ) -> Any | dict[str, float] | float:
         """Evaluate an already-normalized vector against this tree.
 
@@ -542,7 +565,32 @@ class DecisionTree(BaseModel):
         """
         if self.model is None:
             raise ValueError("Model not trained. Call train() first.")
-        return eval_tree(self.model, normalized, self.name_to_col, return_dist)
+        return eval_tree(
+            self.model,
+            normalized,
+            self.name_to_col,
+            return_dist,
+            missing=missing,
+            feature_specs=self.feature_specs,
+        )
+
+    def predict_path(
+        self, vector: list[Any], *, missing: str = "error"
+    ) -> dict[str, Any]:
+        """Predict and return the decisions and model-global leaf ID."""
+        if self.model is None:
+            raise ValueError("Model not trained. Call train() first.")
+        prediction, leaf, path = eval_tree_path(
+            self.model,
+            vector,
+            self.name_to_col,
+            missing=missing,
+            feature_specs=self.feature_specs,
+        )
+        return {
+            "prediction": prediction,
+            "trees": [{"tree": 0, "leaf": leaf, "path": path}],
+        }
 
     def _check_oov(self, vector: list[Any]) -> list[tuple[str, Any]]:
         """Check for OOV categorical values in a vector."""
@@ -552,6 +600,7 @@ class DecisionTree(BaseModel):
         for col, spec in enumerate(self.feature_specs):
             if (
                 col < len(vector)
+                and not is_missing_for_feature(vector[col], spec)
                 and spec.values is not None
                 and vector[col] not in spec.values
             ):
@@ -570,13 +619,19 @@ class DecisionTree(BaseModel):
         """
         if not self.feature_specs:
             return vector
-        result = vector[:]
+        result = [vector[col] for col in range(len(vector))]
         for col, spec in enumerate(self.feature_specs):
-            if col < len(result) and spec.dtype == DTYPE_BOOL:
+            if (
+                col < len(result)
+                and spec.dtype == DTYPE_BOOL
+                and not is_missing_for_feature(result[col], spec)
+            ):
                 result[col] = normalize_bool(result[col])
         return result
 
-    def predict_with_confidence(self, vector: list[Any]) -> tuple[Any, float]:
+    def predict_with_confidence(
+        self, vector: list[Any], *, missing: str = "error"
+    ) -> tuple[Any, float]:
         """
         Predict with confidence score (classification only).
 
@@ -589,7 +644,7 @@ class DecisionTree(BaseModel):
             argmax class in the leaf distribution. Returns `("-", 0.0)` for
             non-classification leaves.
         """
-        dist = self.predict(vector, return_dist=True)
+        dist = self.predict(vector, return_dist=True, missing=missing)
         if isinstance(dist, str):
             return dist, 1.0
         if isinstance(dist, dict):
@@ -600,7 +655,7 @@ class DecisionTree(BaseModel):
         return "-", 0.0
 
     def predict_nbest(
-        self, vector: list[Any], n: int = _DEFAULT_NBEST
+        self, vector: list[Any], n: int = _DEFAULT_NBEST, *, missing: str = "error"
     ) -> list[tuple[Any, float]]:
         """
         Get n-best predictions with scores.
@@ -612,7 +667,7 @@ class DecisionTree(BaseModel):
         Returns:
             List of (category, probability) tuples, sorted by probability
         """
-        dist = self.predict(vector, return_dist=True)
+        dist = self.predict(vector, return_dist=True, missing=missing)
 
         if isinstance(dist, str):
             return [(dist, 1.0)]
