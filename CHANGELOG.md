@@ -5,28 +5,37 @@ formats incompatibly. Keep the package and standalone runner used to export and
 load a model on the same release; retrain or re-export models when a release
 requires it.
 
-## Unreleased
+## 0.7.0 — 2026-09-29
 
 ### Breaking changes
 
 - `.cart` model format 3 adds a one-byte flags field to each decision record,
-  and JSON/JSONL/pickle tree envelopes use `schema_version: 3`. Format 2,
-  written by Cartlet 0.6.0, is refused; re-export from the training model or
-  retrain.
-
+  and JSON/JSONL/pickle tree and forest envelopes use `schema_version: 3`.
+  Format 2 and schema 2, written by Cartlet 0.6.0, are refused. Migration:
+  re-export from the training model or retrain, and replace copied standalone
+  runners (`cartlet/bundled/predict.py`) together with the models they load.
+  See [model contracts](docs/model_contracts.md#saved-models).
 - Classification leaves keep their class distribution by default:
-  `min_confidence=1.0` and `min_dist_entropy=0.0`. Only class probabilities
-  below `PROB_MIN_THRESHOLD` (1e-8) are dropped. Explicit lower confidence or
-  higher entropy thresholds remain lossy compression controls. Default-trained
-  `.cart` files may be larger.
+  `min_confidence=1.0` and `min_dist_entropy=0.0` (previously 0.95 and 0.1);
+  the exported `PROB_HIGH_CONFIDENCE` and `DEFAULT_MIN_DIST_ENTROPY` constants
+  change accordingly. Only class probabilities below `PROB_MIN_THRESHOLD`
+  (1e-8) are dropped. Explicit lower confidence or higher entropy thresholds
+  remain lossy compression controls. Default-trained `.cart` files may be
+  larger. Migration: pass `min_confidence=0.95, min_dist_entropy=0.1` to
+  `DecisionTree` to keep 0.6.0's collapsed leaves.
 - Prediction now raises `MissingFeatureError` by default when an evaluated
   decision tests a missing value: `None`, an index past the vector, a value
   whose float conversion is NaN at a numeric decision, or a non-string NaN at an
-  equality or switch decision. Untested features are never read. Pass `missing="right"` (or CLI
-  `--missing right`) for the 0.6.0 right/default routing under the new missing
-  definition. Exception: at equality or switch decisions, 0.6.0 could match a
-  non-string NaN to a stored `"nan"` category; it is now missing and therefore
-  takes the right/default branch.
+  equality or switch decision. Untested features are never read. CLI `predict`
+  reads empty delimited fields as missing. Migration: pass `missing="right"`
+  (or CLI `--missing right`) for the 0.6.0 right/default routing under the new
+  missing definition. Exception: at equality or switch decisions, 0.6.0 could
+  match a non-string NaN to a stored `"nan"` category; it is now missing and
+  therefore takes the right/default branch.
+- Both `.cart` runners return `{label: 1.0}` instead of the bare label when
+  `predict(..., return_dist=True)` reaches a classification leaf without a
+  stored distribution, matching in-process prediction. Migration: callers that
+  handled a string result from `return_dist=True` receive a dict in every case.
 
 ### Added
 
@@ -39,9 +48,6 @@ requires it.
 
 - Preserve XGBoost's learned left/right missing direction in nested trees and
   `.cart` exports, so missing-value predictions and paths match the Booster.
-
-- Return `{label: 1.0}` from both `.cart` runners when `return_dist=True`
-  reaches a bare classification leaf, matching in-process prediction.
 - Reduce training memory: build the sklearn categorical CSR in preallocated
   arrays instead of per-value Python lists, and train through indexed views of
   the loaded rows instead of further row copies. Trained models are unchanged;

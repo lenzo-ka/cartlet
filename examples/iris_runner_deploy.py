@@ -50,7 +50,7 @@ def run(
     * ``accuracy`` -- in-memory test accuracy.
     * ``agreement`` -- fraction of test rows where the in-memory model
       and the reloaded ``Predictor`` produce identical labels. Should be
-      1.0: format 2 preserves native numerical thresholds as float64.
+      1.0: the model format preserves native numerical thresholds as float64.
     * ``metadata`` -- the trailer dict read back from the exported file.
     """
     dataset = load_dataset(
