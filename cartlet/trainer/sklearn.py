@@ -110,7 +110,10 @@ def encode_categorical(
                 for col, value in enumerate(row)
                 if col in cat_values or float(value) != 0
             )
-        data = np.empty(nnz, dtype=np.float32)
+        data_dtype = (
+            np.float32 if len(cat_columns) == len(feature_names) else np.float64
+        )
+        data = np.empty(nnz, dtype=data_dtype)
         indices = np.empty(nnz, dtype=np.int32)
         indptr = np.empty(len(X) + 1, dtype=np.int64)
         cursor = 0

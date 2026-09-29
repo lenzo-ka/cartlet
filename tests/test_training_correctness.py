@@ -89,12 +89,12 @@ def test_sparse_categorical_encoding_matches_dense_without_quadratic_storage():
 
 
 def test_sparse_categorical_encoding_matches_reference_csr():
-    np = pytest.importorskip("numpy")
+    pytest.importorskip("numpy")
     sparse_module = pytest.importorskip("scipy.sparse")
     from cartlet.trainer.sklearn import encode_categorical
     from cartlet.types import FeatureSpec
 
-    X = [["b", 0.0], ["a", 2.5], ["b", -1.0]]
+    X = [["b", 0.0], ["a", 2.5], ["b", -1.0], ["a", 16777217.0]]
     specs = [
         FeatureSpec(name="kind", dtype="str", type="cat"),
         FeatureSpec(name="score", dtype="float", type="num"),
@@ -103,7 +103,12 @@ def test_sparse_categorical_encoding_matches_reference_csr():
         X, ["kind", "score"], specs, sparse=True
     )
     expected = sparse_module.csr_matrix(
-        np.asarray([[0, 1, 0], [1, 0, 2.5], [0, 1, -1]], dtype=np.float32)
+        [
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 2.5],
+            [0.0, 1.0, -1.0],
+            [1.0, 0.0, 16777217.0],
+        ]
     )
 
     assert names == ["kind=a", "kind=b", "score"]

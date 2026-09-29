@@ -118,8 +118,9 @@ def validate_dataset(
     width = len(X[0])
     if width == 0 or any(len(row) != width for row in X):
         raise ValueError("training rows must be rectangular with at least one feature")
+    rows = [list(row) for row in X]
     targets = list(y) if y is not None else None
-    for value in chain(chain.from_iterable(X), targets or []):
+    for value in chain(chain.from_iterable(rows), targets or []):
         if not isinstance(value, (str, int, float, bool)) or (
             isinstance(value, (int, float)) and not math.isfinite(value)
         ):
@@ -142,9 +143,9 @@ def validate_dataset(
     if not math.isfinite(total):
         raise ValueError("total training weight must be finite")
     if all(weight > 0 for weight in weights):
-        return [list(row) for row in X], targets, weights
+        return rows, targets, weights
     return (
-        [list(row) for row, weight in zip(X, weights, strict=True) if weight > 0],
+        [row for row, weight in zip(rows, weights, strict=True) if weight > 0],
         (
             [
                 target
