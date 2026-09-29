@@ -108,6 +108,39 @@ def test_string_nan_is_missing_only_at_numeric_nodes(tmp_path):
         assert predict(["nan"]) == "case"
 
 
+@pytest.mark.parametrize("kind", ["equality", "switch"])
+def test_categorical_nan_missing_right_uses_new_missing_definition(tmp_path, kind):
+    *implementations, _ = _models(tmp_path, kind)
+    for predict, _error in implementations:
+        assert predict([float("nan")], missing="right") == "default"
+
+
+def test_large_int_at_bool_numeric_split_raises_valueerror_everywhere(tmp_path):
+    model = DecisionTree(
+        features=[{"name": "flag", "dtype": "bool", "type": "num", "values": [0, 1]}]
+    )
+    model.model = ["flag", "<=", 0.5, "off", "on"]
+    cart_path = tmp_path / "bool-numeric.cart"
+    model.export(str(cart_path))
+    package = package_runner.Predictor(str(cart_path))
+    bundled = _bundled().Predictor(str(cart_path))
+    value = 10**400
+
+    routes = [
+        model.predict,
+        model.predict_path,
+        package.predict,
+        package.predict_path,
+        bundled.predict,
+        bundled.predict_path,
+    ]
+    for route in routes:
+        with pytest.raises(ValueError, match="Cannot convert .* to bool"):
+            route([value])
+    with pytest.raises(ValueError, match="Cannot convert .* to bool"):
+        model.predict([value], strict=True)
+
+
 @pytest.mark.parametrize(
     ("predicate", "matching", "other"),
     [

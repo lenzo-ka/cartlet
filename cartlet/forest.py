@@ -458,7 +458,8 @@ class RandomForest(BaseModel):
                 if an evaluated tree tests them.
             missing: Whether a tested missing value raises or follows the right
                 or default branch. Numeric float-convertible NaNs and
-                categorical non-string self-unequal scalars are missing.
+                categorical non-string self-unequal scalars are missing. Unlike
+                0.6.0, such a NaN does not match a stored ``"nan"`` category.
 
         Returns:
             Prediction (majority vote for classification, mean for regression)

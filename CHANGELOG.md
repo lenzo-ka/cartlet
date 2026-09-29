@@ -10,8 +10,13 @@ requires it.
 ### Breaking changes
 
 - Prediction now raises `MissingFeatureError` by default when an evaluated
-  decision tests a missing value. Pass `missing="right"` (or CLI
-  `--missing right`) for the 0.6.0 routing behavior.
+  decision tests a missing value: `None`, an index past the vector, a value
+  whose float conversion is NaN at a numeric decision, or a non-string NaN at an
+  equality or switch decision. Untested features are never read. Pass `missing="right"` (or CLI
+  `--missing right`) for the 0.6.0 right/default routing under the new missing
+  definition. Exception: at equality or switch decisions, 0.6.0 could match a
+  non-string NaN to a stored `"nan"` category; it is now missing and therefore
+  takes the right/default branch.
 
 ### Added
 
@@ -22,21 +27,18 @@ requires it.
 
 ### Fixed
 
-- Keep nested tree and forest prediction and path IDs correct after public
-  models are edited in place; ordinary prediction no longer uses a node-ID
-  cache, and path attribution computes current writer-order IDs per call.
-- Preserve the 0.6.0 base-first, tree-order floating-point accumulation for
-  XGBoost runner predictions and path predictions.
-- Canonicalize nested `predict_path` predicate values exactly as the `.cart`
-  writer does, and reject switch cases with duplicate canonical keys.
-- Treat float-convertible NaN as missing at numeric nodes and non-string
-  self-unequal scalar NaN as missing at equality and switch nodes, before
-  normalizing bool-dtype features in all prediction implementations.
-- Canonicalize hand-authored bool-dtype predicates during nested prediction to
-  match `.cart` export, and let strict OOV validation defer missing values to
-  the selected missing policy for trees and forests.
 - Normalize bool-dtype features when evaluated by both `.cart` runners, keeping
   raw bool and accepted string inputs aligned with in-process prediction.
+- Canonicalize hand-authored bool-dtype predicates during nested prediction to
+  match `.cart` export, and reject switch cases with duplicate canonical keys.
+- Evaluate switch nodes in nested trees.
+- Reject multiclass XGBoost `.cart` models whose tree count is not a multiple of
+  the class count instead of ignoring the remainder trees.
+
+### Development
+
+- Ruff is a floor (`>=0.16.7`) in the development extra and `required-version`,
+  so newer Ruff releases run the checks.
 
 ## 0.6.0 — 2026-09-13
 

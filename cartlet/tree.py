@@ -529,7 +529,8 @@ class DecisionTree(BaseModel):
             missing: Whether a tested missing value raises or follows the right
                 or default branch. At numeric nodes, any value whose float
                 conversion is NaN is missing; at equality and switch nodes,
-                non-string self-unequal scalar values are missing.
+                non-string self-unequal scalar values are missing. Unlike
+                0.6.0, such a NaN does not match a stored ``"nan"`` category.
 
         Returns:
             Classification: category (str) or distribution (dict)

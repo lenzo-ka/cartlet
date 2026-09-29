@@ -386,9 +386,11 @@ The runner produces **identical predictions** to sklearn-trained models
 when an evaluated path tests a missing value. Numeric nodes treat any
 float-convertible NaN, including `"nan"`, as missing; categorical nodes treat
 non-string self-unequal scalar NaNs as missing. Use `missing="right"` for the
-0.6.0 right/default routing behavior. Strict tree and forest prediction still
-validates every present value but skips missing values, leaving them to this
-same traversal policy.
+0.6.0 right/default routing behavior under this new missing definition. Unlike
+0.6.0, a non-string NaN at an equality or switch decision keyed `"nan"` is
+missing and goes right or to the default, rather than matching that category.
+Strict tree and forest prediction still validates every present value but skips
+missing values, leaving them to this same traversal policy.
 
 ```python
 from predict import Predictor

@@ -180,11 +180,15 @@ establish missingness. The value continues through ordinary comparison or bool
 normalization, which may then reject it. Strings never use this test, so a
 literal `"nan"` remains an ordinary category at equality and switch nodes.
 
-For compatibility with 0.6.0, `missing="right"` makes numeric and categorical
-comparisons take the right branch and switch nodes take their default branch.
-CLI callers use `--missing {error,right}`. Empty delimited fields are parsed as
-`None`; absent named fields are also missing. Non-numeric strings at numeric
-nodes retain their established right-branch behavior.
+For compatibility with 0.6.0, `missing="right"` makes values that are missing
+under the new definition take the right branch at comparisons and the default
+branch at switches. This is not exact 0.6.0 behavior for a non-string NaN at an
+equality or switch decision keyed `"nan"`: 0.6.0 converted that value to the
+string `"nan"` and could take the left/case branch, while it is now missing and
+takes the right/default branch. CLI callers use `--missing {error,right}`.
+Empty delimited fields are parsed as `None`; absent named fields are also
+missing. Non-numeric strings at numeric nodes retain their established
+right-branch behavior.
 
 `XGBoostTree.predict` uses the native Booster and its learned missing direction.
 Its `.cart` exports use the explicit runner policy because the binary format

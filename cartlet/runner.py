@@ -489,7 +489,8 @@ def predict(
         missing: ``"error"`` (default) raises when a tested value is absent,
             ``None``, float-convertible to NaN at a numeric node, or a
             non-string self-unequal scalar at equality/switch nodes. ``"right"``
-            routes it right (or to a switch default).
+            routes it right (or to a switch default). Unlike 0.6.0, a
+            non-string NaN does not match an equality or switch key ``"nan"``.
 
     Returns:
         Prediction value (class label, regression value, or distribution dict)
@@ -607,6 +608,9 @@ def _predict_tree_recursive(
             if not is_missing:
                 try:
                     numeric_value = float(feat_val)
+                except OverflowError:
+                    if not bool_features[feat]:
+                        raise
                 except (TypeError, ValueError):
                     pass
                 else:
@@ -714,8 +718,8 @@ def _predict_tree_path_recursive(
 
         # A feature index past the input is missing. Numeric nodes also treat a
         # successful float conversion to NaN as missing; categorical nodes use
-        # conservative scalar self-inequality. The compatibility policy routes
-        # missing comparisons right and switches to their default child.
+        # conservative scalar self-inequality. The "right" policy routes missing
+        # comparisons right and switches to their default child.
         # Keep caller indexing outside conversion/comparison handlers: exceptions
         # raised by a lazy vector must propagate unchanged.
         feat_val = None if feat >= n_input_features else vector[feat]
@@ -725,6 +729,9 @@ def _predict_tree_path_recursive(
             if not is_missing:
                 try:
                     numeric_value = float(feat_val)
+                except OverflowError:
+                    if not bool_features[feat]:
+                        raise
                 except (TypeError, ValueError):
                     pass
                 else:

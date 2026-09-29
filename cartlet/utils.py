@@ -93,6 +93,10 @@ def is_missing_for_feature(value: Any, spec: Any) -> bool:
     if getattr(spec, "type", None) == "num":
         try:
             numeric = float(value)
+        except OverflowError:
+            if getattr(spec, "dtype", None) != "bool":
+                raise
+            return False
         except (TypeError, ValueError):
             return False
         return math.isnan(numeric)
@@ -337,27 +341,31 @@ def _eval_tree(
 
         # Deliberately outside every conversion/comparison handler.
         feat_val = vector[col] if col < len(vector) else None
+        spec = None
+        if feature_specs and col < len(feature_specs):
+            spec = feature_specs[col]
+        is_bool_feature = getattr(spec, "dtype", None) == "bool"
         numeric_value = None
         if op in ("<=", "<"):
             is_missing = feat_val is None
             if not is_missing:
                 try:
                     numeric_value = float(feat_val)
+                except OverflowError:
+                    if not is_bool_feature:
+                        raise
                 except (TypeError, ValueError):
                     pass
                 else:
                     is_missing = math.isnan(numeric_value)
         else:
             is_missing = feat_val is None or _is_self_unequal(feat_val)
-        spec = None
-        if feature_specs and col < len(feature_specs):
-            spec = feature_specs[col]
-            if getattr(spec, "dtype", None) == "bool" and not is_missing:
-                from .types import normalize_bool
+        if is_bool_feature and not is_missing:
+            from .types import normalize_bool
 
-                feat_val = normalize_bool(feat_val)
-                if op in ("<=", "<"):
-                    numeric_value = float(feat_val)
+            feat_val = normalize_bool(feat_val)
+            if op in ("<=", "<"):
+                numeric_value = float(feat_val)
 
         decision_id = indices[0][address] if indices else -1
         if is_missing and missing == "error":

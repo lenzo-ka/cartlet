@@ -49,10 +49,13 @@ numeric-node value is missing when `float(value)` is NaN, so the string `"nan"`
 is missing there. At categorical equality and switch decisions, a non-string
 scalar whose self-inequality returns a trusted Boolean true is missing; a string
 `"nan"` remains a category. Training rejects nonfinite values, so no model
-learns a NaN. The
-compatibility policy `missing="right"` routes those values right, or to a
-switch default. Native XGBoost in-process prediction continues to use the
-Booster's learned missing directions; use a `.cart` runner for path attribution.
+learns a NaN. The compatibility policy `missing="right"` routes those values
+right, or to a switch default, under this new missing definition. It differs
+from 0.6.0 when a non-string NaN reaches an equality or switch decision keyed
+`"nan"`: 0.6.0 could match the string conversion and take the left/case branch;
+the new policy takes the right/default branch. Native XGBoost in-process
+prediction continues to use the Booster's learned missing directions; use a
+`.cart` runner for path attribution.
 Bool-dtype inputs are checked for missingness and then normalized only when
 their feature is tested, with the
 same accepted values in nested prediction and both `.cart` runners.
