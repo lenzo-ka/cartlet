@@ -420,8 +420,11 @@ def _build_feature_vectors(
                     and feature_pos < len(model_features)
                     and model_features[feature_pos].get("type") == "num"
                 ):
-                    with contextlib.suppress(ValueError):
-                        val = float(val) if "." in val else int(val)
+                    try:
+                        val = int(val)
+                    except ValueError:
+                        with contextlib.suppress(ValueError):
+                            val = float(val)
                 features.append(val)
             else:
                 features.append(None)

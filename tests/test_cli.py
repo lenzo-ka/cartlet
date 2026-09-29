@@ -332,8 +332,8 @@ class TestPredictCommand:
         numeric_tree.load_data([[1], [2]], ["one", "two"])
         numeric_tree.train(validation_split=0)
         numeric_tree.export(str(numeric_model))
-        numeric_data.write_text("amount\n01\n1\n2\n", encoding="utf-8")
-        numeric_rows = [[1], [1], [2]]
+        numeric_data.write_text("amount\n01\n1\n2\n2e0\n", encoding="utf-8")
+        numeric_rows = [[1], [1], [2], [2.0]]
         numeric_expected = [numeric_tree.predict(row) for row in numeric_rows]
 
         observed_vectors.clear()
