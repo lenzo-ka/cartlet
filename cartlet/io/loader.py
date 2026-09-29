@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import csv
 import logging
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from itertools import chain
 from typing import Any, TextIO
 
@@ -139,6 +139,7 @@ def load_training_data(
     has_header: bool = True,
     target_col: str | int | None = None,
     column_names: list[str] | None = None,
+    feature_types: Mapping[str, str] | None = None,
 ) -> tuple[list[list[Any]], list[Any], list[str], str]:
     """
     Load training data from CSV/TSV/SSV/JSONL file.
@@ -146,7 +147,7 @@ def load_training_data(
     This is the high-level loader for training data. It:
     - Auto-detects format and delimiter
     - Handles column name overrides
-    - Converts numeric strings to int/float
+    - Converts numeric strings to int/float unless a feature is declared categorical
     - Separates features from target
 
     Args:
@@ -155,6 +156,8 @@ def load_training_data(
         has_header: Whether first row is header (CSV/TSV/SSV only)
         target_col: Target column name or index (default: last column)
         column_names: Explicit column names (overrides header/auto-generated)
+        feature_types: Declared split types by feature name. Categorical fields
+            retain their values; numeric and undeclared fields use numeric inference.
 
     Returns:
         Tuple of (X, y, feature_names, target_name)
@@ -165,7 +168,7 @@ def load_training_data(
     # Check for JSONL format
     file_format = detect_format(path)
     if file_format == "jsonl":
-        return _load_jsonl_training_data(path, target_col)
+        return _load_jsonl_training_data(path, target_col, feature_types)
 
     if delimiter is None:
         delimiter = detect_delimiter(path)
@@ -179,7 +182,14 @@ def load_training_data(
         y: list[Any] = []
         for row in rows:
             X.append(
-                [try_numeric(value) for i, value in enumerate(row) if i != target_idx]
+                [
+                    value
+                    if feature_types is not None
+                    and feature_types.get(header[i]) == "cat"
+                    else try_numeric(value)
+                    for i, value in enumerate(row)
+                    if i != target_idx
+                ]
             )
             y.append(try_numeric(row[target_idx]))
     return X, y, feature_names, target_name
@@ -188,6 +198,7 @@ def load_training_data(
 def _load_jsonl_training_data(
     path: str,
     target_col: str | int | None = None,
+    feature_types: Mapping[str, str] | None = None,
 ) -> tuple[list[list[Any]], list[Any], list[str], str]:
     """Load training data from JSONL file."""
     with open(path, encoding="utf-8") as source:
@@ -202,7 +213,12 @@ def _load_jsonl_training_data(
         X, y = [], []
         for line_number, record in chain([(first_line, first)], records):
             X.append(
-                [try_numeric(normalize_value(record.get(k))) for k in feature_names]
+                [
+                    normalize_value(record.get(k))
+                    if feature_types is not None and feature_types.get(k) == "cat"
+                    else try_numeric(normalize_value(record.get(k)))
+                    for k in feature_names
+                ]
             )
             y.append(
                 try_numeric(

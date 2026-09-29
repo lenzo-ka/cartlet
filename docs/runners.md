@@ -239,19 +239,22 @@ and numeric `1` and `0` are also accepted.
 
 Those spellings describe values as the prediction library receives them, after
 any CLI field parsing. The package `cartlet predict` command leaves JSONL value
-types intact. For delimited CSV, TSV, and SSV input, it maps an empty field to
-`None`; for every other field, regardless of the model feature type, it tries
-`float(field)` when the text contains a period and `int(field)` otherwise,
-leaving the field as a string if conversion fails. Thus a delimited field such
-as `01` reaches bool normalization as the integer `1` and is accepted even
-though the library rejects the literal string `"01"`.
+types intact. For delimited CSV, TSV, and SSV input, it uses the model feature
+table: an empty field becomes `None`, numeric features parse as numbers, and
+categorical fields, including bool-dtype categorical fields, stay strings.
+Thus a categorical field such as `01` reaches prediction as the literal string
+`"01"`, matching the library API.
 
-The bundled CLI uses the model split type instead: for file input and positional
-arguments it converts fields for numerical features with `float()` and leaves
-categorical fields, including bool-dtype categorical fields, as strings. In
-file input only, an empty field becomes `None`; a positional empty string stays
-an empty string. These CLI conversions do not change the library APIs or their
-accepted bool values.
+The bundled CLI follows the same feature-type rule for file input and
+positional arguments, converting numerical features with `float()` and leaving
+categorical fields as strings. In file input only, an empty field becomes
+`None`; a positional empty string stays an empty string. These CLI conversions
+do not change the library APIs or their accepted bool values.
+
+The package training CLI uses declared feature types by the same rule:
+delimited categorical fields retain their exact text and numeric fields are
+converted. Numeric inference applies only to training columns without a
+declaration.
 
 ---
 

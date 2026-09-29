@@ -28,6 +28,23 @@ def test_constructor_and_workflow_reject_same_tree_parameters(model_type, settin
         replace(TrainingSettings(), **settings).validate()
 
 
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"min_confidence": -0.1},
+        {"min_confidence": 1.1},
+        {"min_confidence": float("nan")},
+        {"min_dist_entropy": -0.1},
+        {"min_dist_entropy": float("inf")},
+    ],
+)
+def test_distribution_collapse_bounds_are_shared(settings):
+    with pytest.raises(ValueError):
+        DecisionTree(**settings)
+    with pytest.raises(ValueError):
+        replace(TrainingSettings(), **settings).validate()
+
+
 @pytest.mark.parametrize("value", [0, -1, 0.5, True, None])
 def test_forest_count_is_positive_integer(value):
     with pytest.raises(ValueError, match="n_estimators"):

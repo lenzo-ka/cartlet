@@ -1,5 +1,10 @@
 # Training semantics
 
+Delimited file training applies declared feature types before conversion:
+categorical fields retain their exact text, numeric fields parse as numbers,
+and only undeclared columns use numeric inference. Thus categorical values such
+as `01`, `1`, `001`, and `09` remain four different values.
+
 Cartlet's native and sklearn decision-tree trainers use the same meaning for
 minimum-sample limits: min_samples_split and min_samples_leaf count training
 rows with positive weight. Instance weights still control class probabilities,

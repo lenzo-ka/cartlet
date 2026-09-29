@@ -16,11 +16,13 @@ from .io import load_training_data, read_vectors
 from .isolation import IsolationForest
 from .tree import DecisionTree
 from .types import (
+    DEFAULT_MIN_DIST_ENTROPY,
     DEFAULT_MIN_SAMPLES_LEAF,
     DEFAULT_MIN_SAMPLES_SPLIT,
     DEFAULT_N_ESTIMATORS,
     DEFAULT_TEST_SPLIT,
     DEFAULT_VALIDATION_SPLIT,
+    PROB_HIGH_CONFIDENCE,
     TASK_AUTO,
     TASK_CLASSIFICATION,
     TASK_REGRESSION,
@@ -59,6 +61,8 @@ class TrainingSettings:
     random_state: int | None = None
     n_jobs: int | None = None
     store_distributions: bool = True
+    min_confidence: float = PROB_HIGH_CONFIDENCE
+    min_dist_entropy: float = DEFAULT_MIN_DIST_ENTROPY
 
     def validate(self) -> None:
         """Reject unsupported settings before model construction or writing."""
@@ -83,6 +87,8 @@ class TrainingSettings:
             criterion=self.criterion,
             categorical_split=self.categorical_split,
             store_distributions=self.store_distributions,
+            min_confidence=self.min_confidence,
+            min_dist_entropy=self.min_dist_entropy,
             prune=self.prune,
             extra_trees=self.extra_trees,
         )
@@ -131,15 +137,27 @@ class TrainingResult:
         }
 
 
-def resolve_feature_specs(
-    specs: str | Mapping[str, Any] | Sequence[Any], names: list[str]
-) -> list[dict[str, Any]]:
-    """Resolve explicit Python specs or a JSON path/string into named specs."""
+def _decode_feature_specs(
+    specs: str | Mapping[str, Any] | Sequence[Any],
+) -> Mapping[str, Any] | Sequence[Any]:
+    """Decode a JSON path/string while leaving Python specifications intact."""
     if isinstance(specs, str):
         if not specs.lstrip().startswith(("{", "[")) and Path(specs).is_file():
             specs = json.loads(Path(specs).read_text(encoding="utf-8"))
         else:
             specs = json.loads(specs)
+    if not isinstance(specs, Mapping) and not (
+        isinstance(specs, Sequence) and not isinstance(specs, (str, bytes))
+    ):
+        raise ValueError("feature specifications must be an object or sequence")
+    return specs
+
+
+def resolve_feature_specs(
+    specs: str | Mapping[str, Any] | Sequence[Any], names: list[str]
+) -> list[dict[str, Any]]:
+    """Resolve explicit Python specs or a JSON path/string into named specs."""
+    specs = _decode_feature_specs(specs)
     if isinstance(specs, Mapping):
         unknown = set(specs) - set(names)
         if unknown:
@@ -155,9 +173,20 @@ def resolve_feature_specs(
             raise ValueError(
                 "feature specifications must match input column names and order"
             )
-    else:
-        raise ValueError("feature specifications must be an object or sequence")
     return [{"name": s.name, "dtype": s.dtype, "type": s.type} for s in resolved]
+
+
+def _declared_feature_types(
+    specs: Mapping[str, Any] | Sequence[Any],
+) -> dict[str, str]:
+    """Return only explicitly declared names and their resolved split types."""
+    if isinstance(specs, Mapping):
+        return {
+            name: normalize_feature_spec(spec, name=name).type
+            for name, spec in specs.items()
+        }
+    declared = [normalize_feature_spec(item) for item in specs]
+    return {spec.name: spec.type for spec in declared}
 
 
 def train_model(
@@ -305,7 +334,10 @@ def train_model(
             stats = {"n_trees": len(model.trees)}
         else:
             model = DecisionTree(
-                store_distributions=config.store_distributions, **kwargs
+                store_distributions=config.store_distributions,
+                min_confidence=config.min_confidence,
+                min_dist_entropy=config.min_dist_entropy,
+                **kwargs,
             )
             model.load_data(rows, targets, weights)
             val = active_val
@@ -379,6 +411,12 @@ def train_file(
     ):
         inputs.append(features)
     require_distinct_paths(inputs, [output] if output is not None else [])
+    decoded_features = _decode_feature_specs(features) if features is not None else None
+    feature_types = (
+        _declared_feature_types(decoded_features)
+        if decoded_features is not None
+        else None
+    )
     if config.model_type == "isolation" and target is None:
         X, y, names, _ = read_vectors(
             str(data), delimiter=delimiter, has_header=has_header, labeled=False
@@ -394,6 +432,7 @@ def train_file(
             has_header=has_header,
             target_col=target,
             column_names=column_names,
+            feature_types=feature_types,
         )
     if config.model_type == "isolation":
         y = None  # An explicitly selected label column is excluded, not trained.
@@ -405,11 +444,16 @@ def train_file(
             has_header=has_header,
             target_col=target,
             column_names=column_names,
+            feature_types=feature_types,
         )
         if has_header or str(test_file).endswith(".jsonl"):
             test_X = align_features(test_X, test_names, names)
         test_data = test_X, test_y
-    specs = resolve_feature_specs(features, names) if features is not None else None
+    specs = (
+        resolve_feature_specs(decoded_features, names)
+        if decoded_features is not None
+        else None
+    )
     return train_model(
         X,
         y,
