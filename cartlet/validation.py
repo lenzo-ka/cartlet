@@ -115,10 +115,10 @@ def validate_dataset(
         raise ValueError("counts and X must have same length")
     if any(not isinstance(row, Sequence) or isinstance(row, (str, bytes)) for row in X):
         raise ValueError("training rows must be sequences of feature values")
-    width = len(X[0])
-    if width == 0 or any(len(row) != width for row in X):
-        raise ValueError("training rows must be rectangular with at least one feature")
     rows = [list(row) for row in X]
+    width = len(rows[0])
+    if width == 0 or any(len(row) != width for row in rows):
+        raise ValueError("training rows must be rectangular with at least one feature")
     targets = list(y) if y is not None else None
     for value in chain(chain.from_iterable(rows), targets or []):
         if not isinstance(value, (str, int, float, bool)) or (

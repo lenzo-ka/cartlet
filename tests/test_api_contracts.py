@@ -40,6 +40,9 @@ def test_training_data_is_detached_from_caller(model_class):
     X[0][0] = "b"
     y[0] = "B"
     weights[0] = 100.0
+    assert model.X[0] == ["a"]
+    assert model.X[0] is not X[0]
+    assert model.y[0] == "A"
     model.train(trainer="native", random_state=7)
 
     assert model.predict(["a"]) == "A"
