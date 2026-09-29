@@ -16,17 +16,24 @@ from typing import Any
 
 # Magic bytes
 MAGIC = b"CART"
-VERSION = 2
+VERSION = 3
 
 # Decision node encoding:
 # - feat_op: 1 byte (bits 0-5 = feature index, bits 6-7 = op)
+# - flags: 1 byte (learned missing direction)
 # - val: 2 bytes (index into floats, cat_vals, or case_tables)
-# - left: varint (1-5 bytes) - only for OP_LE/OP_EQ
-# - right: varint (1-5 bytes) - only for OP_LE/OP_EQ
+# - left: varint (1-5 bytes) - only for OP_LE/OP_LT/OP_EQ
+# - right: varint (1-5 bytes) - only for OP_LE/OP_LT/OP_EQ
 # Note: OP_SWITCH nodes have children in the case table instead
 OP_SHIFT = 6  # Op is in bits 6-7
 OP_MASK = 0xC0  # Upper 2 bits for op
 FEAT_MASK = 0x3F  # Lower 6 bits for feature index (max 63 features inline)
+
+# Per-decision flags byte. Native CART nodes use MISSING_NONE.
+MISSING_NONE = 0
+MISSING_LEFT = 1
+MISSING_RIGHT = 2
+MISSING_MASK = 0x03
 
 # Operation types
 OP_LE = 0  # Numerical less-than-or-equal (<=) comparison; left branch = "yes"
@@ -120,7 +127,7 @@ SIZE_F64 = 8  # Float64 preserves native thresholds and regression outputs
 SIZE_LEAF = 3  # type(1) + val(2) - no padding
 SIZE_DIST_ENTRY = 10  # class_idx(u16) + prob(f64)
 SIZE_FEAT_HEADER = 4  # name_idx(u16) + type_flags(u8) + n_cat(u8)
-SIZE_DECISION_HEADER = 3  # packed feat_op(1) + val(2); left/right follow as varints
+SIZE_DECISION_HEADER = 4  # feat_op(1) + flags(1) + val(2); then child varints
 
 # Header struct groups parsed after the 4-byte magic (see the breakdown above).
 HEADER_FMT_COUNTS1 = "<HHHHH"  # version, flags, n_features, n_classes, n_trees
@@ -209,27 +216,37 @@ def rebuild_tree_from_cart(
         feature_name = feature_names[feat] if feat < len(feature_names) else str(feat)
 
         if op in (OP_LE, OP_LT):
-            _, _, val, left, right = node
+            _, _, missing_flags, val, left, right = node
             value = floats[val]
             left_tree = rebuild(left)
             right_tree = rebuild(right)
+            feature: Any = feature_name
+            if missing_flags == MISSING_LEFT:
+                feature = {"feature": feature_name, "missing": "left"}
+            elif missing_flags == MISSING_RIGHT:
+                feature = {"feature": feature_name, "missing": "right"}
             return [
-                feature_name,
+                feature,
                 "<" if op == OP_LT else "<=",
                 value,
                 left_tree,
                 right_tree,
             ]
         elif op == OP_EQ:
-            _, _, val, left, right = node
+            _, _, missing_flags, val, left, right = node
             value = strings[cat_vals[val]]
             left_tree = rebuild(left)
             right_tree = rebuild(right)
-            return [feature_name, "=", value, left_tree, right_tree]
+            feature = feature_name
+            if missing_flags == MISSING_LEFT:
+                feature = {"feature": feature_name, "missing": "left"}
+            elif missing_flags == MISSING_RIGHT:
+                feature = {"feature": feature_name, "missing": "right"}
+            return [feature, "=", value, left_tree, right_tree]
         elif op == OP_SWITCH:
-            # Switch nodes are stored as (feat, op, table_idx, 0, 0); the two
-            # trailing placeholders exist so every decision node is a 5-tuple.
-            table_idx = node[2]
+            # Switch nodes retain placeholders for their unused child fields.
+            missing_flags = node[2]
+            table_idx = node[3]
             case_tables = model_data.get("case_tables", [])
             table = case_tables[table_idx]
             # Rebuild case table as dict: {value: subtree, ...}
@@ -238,7 +255,12 @@ def rebuild_tree_from_cart(
                 cat_val = strings[cat_vals[cat_val_idx]]
                 cases[cat_val] = rebuild(child_idx)
             default_tree = rebuild(table["default"])
-            return [feature_name, "switch", cases, default_tree]
+            feature = feature_name
+            if missing_flags == MISSING_LEFT:
+                feature = {"feature": feature_name, "missing": "left"}
+            elif missing_flags == MISSING_RIGHT:
+                feature = {"feature": feature_name, "missing": "right"}
+            return [feature, "switch", cases, default_tree]
         else:
             raise ValueError(f"Unknown op type: {op}")
 

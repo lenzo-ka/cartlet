@@ -16,6 +16,7 @@ import tempfile
 from typing import Any
 
 from ..types import normalize_bool
+from ..utils import split_feature_and_missing
 from .cart_format import (
     DTYPE_MAP,
     FEAT_MASK,
@@ -28,6 +29,9 @@ from .cart_format import (
     LEAF_FLAG,
     LEAF_FLOAT,
     MAGIC,
+    MISSING_LEFT,
+    MISSING_NONE,
+    MISSING_RIGHT,
     OP_EQ,
     OP_LE,
     OP_LT,
@@ -89,9 +93,9 @@ class ByteWriter:
         # Case tables: list of (default_child, [(cat_val_idx, child_idx), ...])
         self.case_tables: list[tuple[int, list[tuple[int, int]]]] = []
         # Separate arrays for decisions and leaves
-        # For OP_LE/OP_EQ: (feat, op, val, left, right)
-        # For OP_SWITCH: (feat, op, table_idx, 0, 0) - left/right unused
-        self.decisions: list[tuple[int, int, int, int, int]] = []
+        # For comparisons: (feat, op, missing_flags, val, left, right)
+        # For OP_SWITCH: (feat, op, missing_flags, table_idx, 0, 0)
+        self.decisions: list[tuple[int, int, int, int, int, int]] = []
         self.leaves: list[tuple[int, int]] = []  # type, val
         self.tree_offsets: list[int] = []  # index into decisions array
 
@@ -205,6 +209,12 @@ class ByteWriter:
         # Decision node: [feature, op, value, left, right]
         if isinstance(node, list) and len(node) == 5:
             feature, op, value, left_node, right_node = node
+            feature, missing_direction = split_feature_and_missing(feature)
+            missing_flags = {
+                None: MISSING_NONE,
+                "left": MISSING_LEFT,
+                "right": MISSING_RIGHT,
+            }[missing_direction]
             feat_idx = self._resolve_feat_idx(feature, name_to_col)
 
             if op in ("<=", "<"):
@@ -229,20 +239,33 @@ class ByteWriter:
 
             # Reserve decision slot
             dec_idx = len(self.decisions)
-            self.decisions.append((0, 0, 0, 0, 0))  # placeholder
+            self.decisions.append((0, 0, 0, 0, 0, 0))  # placeholder
 
             # Recursively process children
             left_idx = self._flatten_node(left_node, name_to_col)
             right_idx = self._flatten_node(right_node, name_to_col)
 
             # Fill in the decision node
-            self.decisions[dec_idx] = (feat_idx, op_type, val_idx, left_idx, right_idx)
+            self.decisions[dec_idx] = (
+                feat_idx,
+                op_type,
+                missing_flags,
+                val_idx,
+                left_idx,
+                right_idx,
+            )
             return dec_idx
 
         # Switch node: [feature, "switch", cases_dict, default_node]
         # cases_dict = {value: subtree, ...} or [(value, subtree), ...]
         if isinstance(node, list) and len(node) == 4 and node[1] == "switch":
             feature, _, cases, default_node = node
+            feature, missing_direction = split_feature_and_missing(feature)
+            missing_flags = {
+                None: MISSING_NONE,
+                "left": MISSING_LEFT,
+                "right": MISSING_RIGHT,
+            }[missing_direction]
             feat_idx = self._resolve_feat_idx(feature, name_to_col)
 
             cases_items = list(cases.items()) if isinstance(cases, dict) else cases
@@ -262,7 +285,7 @@ class ByteWriter:
 
             # Reserve decision slot
             dec_idx = len(self.decisions)
-            self.decisions.append((0, 0, 0, 0, 0))  # placeholder
+            self.decisions.append((0, 0, 0, 0, 0, 0))  # placeholder
 
             # Process default first
             default_idx = self._flatten_node(default_node, name_to_col)
@@ -277,7 +300,14 @@ class ByteWriter:
             table_idx = self._add_case_table(default_idx, case_list)
 
             # Fill in the switch decision node
-            self.decisions[dec_idx] = (feat_idx, OP_SWITCH, table_idx, 0, 0)
+            self.decisions[dec_idx] = (
+                feat_idx,
+                OP_SWITCH,
+                missing_flags,
+                table_idx,
+                0,
+                0,
+            )
             return dec_idx
 
         raise ValueError(f"Unknown node type: {type(node)}")
@@ -326,7 +356,7 @@ class ByteWriter:
             _check(n_cat, self._MAX_U8, "categorical values for a single feature")
 
         # Decision-node feature index is a packed 6-bit field; val is a u16.
-        for feat, _op, val, _left, _right in self.decisions:
+        for feat, _op, _missing, val, _left, _right in self.decisions:
             _check(feat, self._MAX_FEAT_IDX, "feature index")
             _check(val, self._MAX_U16, "decision-node value index")
 
@@ -452,11 +482,11 @@ class ByteWriter:
                 f.write(encode_varint(off))
 
             # Decision nodes (variable size)
-            # OP_LE/OP_EQ: feat_op(1) + val(2) + left(varint) + right(varint)
-            # OP_SWITCH: feat_op(1) + table_idx(2) (no left/right)
-            for feat, op, val, left, right in self.decisions:
+            # Comparisons: feat_op(1) + flags(1) + val(2) + child varints
+            # OP_SWITCH: feat_op(1) + flags(1) + table_idx(2)
+            for feat, op, missing_flags, val, left, right in self.decisions:
                 feat_op = (feat & FEAT_MASK) | (op << OP_SHIFT)
-                f.write(struct.pack("<BH", feat_op, val))
+                f.write(struct.pack("<BBH", feat_op, missing_flags, val))
                 if op != OP_SWITCH:
                     f.write(encode_varint(left))
                     f.write(encode_varint(right))

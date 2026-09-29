@@ -95,7 +95,8 @@ class ModelData(TypedDict):
     cat_vals: list[int]  # indices into strings
 
     # Tree structure
-    decisions: list[tuple[int, int, int, int, int]]  # (feat, op, val, left, right)
+    # (feat, op, missing_flags, val, left, right)
+    decisions: list[tuple[int, int, int, int, int, int]]
     leaves: list[tuple[int, int]]  # (type, val)
     tree_offsets: list[int]
 

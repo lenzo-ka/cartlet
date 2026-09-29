@@ -36,6 +36,10 @@ from .io.cart_format import (
     LEAF_CLASS_DIST,
     LEAF_FLAG,
     MAGIC,
+    MISSING_LEFT,
+    MISSING_MASK,
+    MISSING_NONE,
+    MISSING_RIGHT,
     OP_EQ,
     OP_LE,
     OP_LT,
@@ -199,6 +203,11 @@ def _load_cart_from_bytes(data: bytes) -> dict[str, Any]:
         )
         pos += SIZE_HEADER_COUNTS1
 
+        if version == 2:
+            raise ValueError(
+                "Unsupported format version 2: format 2 was written by Cartlet "
+                "0.6.0; re-export from the training model or retrain"
+            )
         if version != VERSION:
             raise ValueError(
                 f"Unsupported format version {version} (expected {VERSION})"
@@ -392,16 +401,22 @@ def _parse_decision_nodes(
     """Parse decision nodes (variable size)."""
     decisions = []
     for _ in range(n_decisions):
-        feat_op, val = struct.unpack_from("<BH", data, pos)
+        feat_op, missing_flags, val = struct.unpack_from("<BBH", data, pos)
         pos += SIZE_DECISION_HEADER
         feat = feat_op & FEAT_MASK
         op = (feat_op & OP_MASK) >> OP_SHIFT
+        if missing_flags & ~MISSING_MASK or missing_flags not in (
+            MISSING_NONE,
+            MISSING_LEFT,
+            MISSING_RIGHT,
+        ):
+            raise ValueError(f"Invalid decision flags: {missing_flags}")
         if op == OP_SWITCH:
-            decisions.append((feat, op, val, 0, 0))
+            decisions.append((feat, op, missing_flags, val, 0, 0))
         else:
             left, pos = decode_varint(data, pos)
             right, pos = decode_varint(data, pos)
-            decisions.append((feat, op, val, left, right))
+            decisions.append((feat, op, missing_flags, val, left, right))
     return decisions, pos
 
 
@@ -538,7 +553,7 @@ def _predict_tree(
 def _predict_tree_recursive(
     idx: int,
     vector: list[Any],
-    decisions: list[tuple[int, int, int, int, int]],
+    decisions: list[tuple[int, int, int, int, int, int]],
     leaves: list[tuple[int, int]],
     floats: list[float],
     cat_vals: list[int],
@@ -601,7 +616,7 @@ def _predict_tree_recursive(
 
         if idx >= len(decisions):
             raise RuntimeError(f"Invalid decision index: {idx}")
-        feat, op, val, left, right = decisions[idx]
+        feat, op, missing_flags, val, left, right = decisions[idx]
         feat_val = None if feat >= n_input_features else vector[feat]
         numeric_value = None
         if op in (OP_LE, OP_LT):
@@ -618,7 +633,8 @@ def _predict_tree_recursive(
                     is_missing = math.isnan(numeric_value)
         else:
             is_missing = _is_categorical_missing(feat_val)
-        if is_missing and missing == "error":
+        learned_missing = is_missing and missing_flags != MISSING_NONE
+        if is_missing and not learned_missing and missing == "error":
             feature_name = features[feat].get("name", str(feat))
             raise MissingFeatureError(
                 f"feature {feat} ({feature_name!r}) is missing at "
@@ -633,7 +649,7 @@ def _predict_tree_recursive(
             if val >= len(floats):
                 raise RuntimeError(f"Invalid float index in decision: {val}")
             threshold = floats[val]
-            go_left = False
+            go_left = learned_missing and missing_flags == MISSING_LEFT
             if not is_missing and numeric_value is not None:
                 go_left = (
                     numeric_value < threshold
@@ -647,25 +663,29 @@ def _predict_tree_recursive(
             cat_idx = cat_vals[val]
             if cat_idx >= len(strings):
                 raise RuntimeError(f"Invalid string index in cat_vals: {cat_idx}")
-            idx = (
-                left if not is_missing and str(feat_val) == strings[cat_idx] else right
+            go_left = (
+                missing_flags == MISSING_LEFT
+                if learned_missing
+                else not is_missing and str(feat_val) == strings[cat_idx]
             )
+            idx = left if go_left else right
         elif op == OP_SWITCH:
             if val >= len(case_tables):
                 raise RuntimeError(f"Invalid case_table index in decision: {val}")
             table = case_tables[val]
-            idx = (
-                table["default"]
-                if is_missing
-                else table["lookup"].get(str(feat_val), table["default"])
-            )
+            if learned_missing and missing_flags == MISSING_LEFT:
+                idx = table["cases"][0][1]
+            elif is_missing:
+                idx = table["default"]
+            else:
+                idx = table["lookup"].get(str(feat_val), table["default"])
     raise RuntimeError("Max tree depth exceeded (possible corrupted model)")
 
 
 def _predict_tree_path_recursive(
     idx: int,
     vector: list[Any],
-    decisions: list[tuple[int, int, int, int, int]],
+    decisions: list[tuple[int, int, int, int, int, int]],
     leaves: list[tuple[int, int]],
     floats: list[float],
     cat_vals: list[int],
@@ -716,7 +736,7 @@ def _predict_tree_path_recursive(
         # Decision node
         if idx >= len(decisions):
             raise RuntimeError(f"Invalid decision index: {idx}")
-        feat, op, val, left, right = decisions[idx]
+        feat, op, missing_flags, val, left, right = decisions[idx]
 
         # A feature index past the input is missing. Numeric nodes also treat a
         # successful float conversion to NaN as missing; categorical nodes use
@@ -740,7 +760,8 @@ def _predict_tree_path_recursive(
                     is_missing = math.isnan(numeric_value)
         else:
             is_missing = _is_categorical_missing(feat_val)
-        if is_missing and missing == "error":
+        learned_missing = is_missing and missing_flags != MISSING_NONE
+        if is_missing and not learned_missing and missing == "error":
             feature_name = features[feat].get("name", str(feat))
             raise MissingFeatureError(
                 f"feature {feat} ({feature_name!r}) is missing at "
@@ -774,7 +795,7 @@ def _predict_tree_path_recursive(
             if val >= len(floats):
                 raise RuntimeError(f"Invalid float index in decision: {val}")
             threshold = floats[val]
-            go_left = False
+            go_left = learned_missing and missing_flags == MISSING_LEFT
             if not is_missing and numeric_value is not None:
                 go_left = (
                     (numeric_value < threshold)
@@ -783,16 +804,17 @@ def _predict_tree_path_recursive(
                 )
             branch = "left" if go_left else "right"
             if path is not None:
-                path.append(
-                    {
-                        "node": idx,
-                        "feature": feat,
-                        "name": features[feat].get("name", str(feat)),
-                        "op": "<" if op == OP_LT else "<=",
-                        "value": threshold,
-                        "branch": branch,
-                    }
-                )
+                step = {
+                    "node": idx,
+                    "feature": feat,
+                    "name": features[feat].get("name", str(feat)),
+                    "op": "<" if op == OP_LT else "<=",
+                    "value": threshold,
+                    "branch": branch,
+                }
+                if learned_missing:
+                    step["missing"] = True
+                path.append(step)
             idx = left if go_left else right
         elif op == OP_EQ:
             # Categorical comparison
@@ -802,19 +824,24 @@ def _predict_tree_path_recursive(
             if cat_idx >= len(strings):
                 raise RuntimeError(f"Invalid string index in cat_vals: {cat_idx}")
             cat_str = strings[cat_idx]
-            go_left = not is_missing and str(feat_val) == cat_str
+            go_left = (
+                missing_flags == MISSING_LEFT
+                if learned_missing
+                else not is_missing and str(feat_val) == cat_str
+            )
             branch = "left" if go_left else "right"
             if path is not None:
-                path.append(
-                    {
-                        "node": idx,
-                        "feature": feat,
-                        "name": features[feat].get("name", str(feat)),
-                        "op": "=",
-                        "value": cat_str,
-                        "branch": branch,
-                    }
-                )
+                step = {
+                    "node": idx,
+                    "feature": feat,
+                    "name": features[feat].get("name", str(feat)),
+                    "op": "=",
+                    "value": cat_str,
+                    "branch": branch,
+                }
+                if learned_missing:
+                    step["missing"] = True
+                path.append(step)
             idx = left if go_left else right
         elif op == OP_SWITCH:
             # Case table lookup
@@ -823,22 +850,26 @@ def _predict_tree_path_recursive(
             table = case_tables[val]
             next_idx = table["default"]
             branch = "default"
-            if not is_missing:
+            if learned_missing and missing_flags == MISSING_LEFT:
+                next_idx = table["cases"][0][1]
+                branch = "case"
+            elif not is_missing:
                 key = str(feat_val)
                 if key in table["lookup"]:
                     next_idx = table["lookup"][key]
                     branch = "case"
             if path is not None:
-                path.append(
-                    {
-                        "node": idx,
-                        "feature": feat,
-                        "name": features[feat].get("name", str(feat)),
-                        "op": "switch",
-                        "value": None,
-                        "branch": branch,
-                    }
-                )
+                step = {
+                    "node": idx,
+                    "feature": feat,
+                    "name": features[feat].get("name", str(feat)),
+                    "op": "switch",
+                    "value": None,
+                    "branch": branch,
+                }
+                if learned_missing:
+                    step["missing"] = True
+                path.append(step)
             idx = next_idx
 
     raise RuntimeError("Max tree depth exceeded (possible corrupted model)")

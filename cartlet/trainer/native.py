@@ -20,7 +20,7 @@ from time import time
 from typing import TYPE_CHECKING, Any
 
 from ..types import TYPE_NUM
-from ..utils import is_leaf
+from ..utils import is_leaf, split_feature_and_missing
 from .base import Trainer, make_classification_distribution, normalize_importances
 
 _PROGRESS_INTERVAL_SEC = 30
@@ -394,16 +394,17 @@ class Native(Trainer):
             return node, _count_leaf_correct(node, tree, val_rows)
 
         feature, op, value, left, right = node
+        feature_ref, _learned_missing = split_feature_and_missing(feature)
 
-        if isinstance(feature, str):
-            if feature not in tree.name_to_col:
+        if isinstance(feature_ref, str):
+            if feature_ref not in tree.name_to_col:
                 raise KeyError(
-                    f"Decision references unknown feature {feature!r}; "
+                    f"Decision references unknown feature {feature_ref!r}; "
                     f"known features: {sorted(tree.name_to_col)}"
                 )
-            col = tree.name_to_col[feature]
+            col = tree.name_to_col[feature_ref]
         else:
-            col = int(feature)
+            col = int(feature_ref)
 
         left_train, right_train = _partition_val_rows(
             train_rows, tree.X, col, op, value

@@ -17,6 +17,28 @@ from cartlet.types import FeatureSpec
 from cartlet.utils import eval_tree
 
 
+def test_format_2_is_refused_with_migration_message(tmp_path):
+    import struct
+
+    current = tmp_path / "current.cart"
+    old = tmp_path / "format-2.cart"
+    tree = DecisionTree(feature_names=["x"])
+    tree.model = ["x", "=", "a", "A", "B"]
+    tree.export(str(current))
+    data = bytearray(current.read_bytes())
+    data[4:6] = struct.pack("<H", 2)
+    old.write_bytes(data)
+
+    message = (
+        "Unsupported format version 2: format 2 was written by Cartlet 0.6.0; "
+        "re-export from the training model or retrain"
+    )
+    for loader in (load_model, load_cart):
+        with pytest.raises(ValueError) as exc_info:
+            loader(str(old))
+        assert str(exc_info.value) == message
+
+
 def test_default_training_preserves_97_3_leaf_distribution(tmp_path):
     rows = [["same"]] * 100
     labels = ["A"] * 97 + ["B"] * 3
@@ -320,7 +342,7 @@ def test_bundle_rejected_schema_preserves_existing_output(tmp_path):
     source = tmp_path / "bad.json"
     output = tmp_path / "existing.py"
     source.write_text(
-        '{"schema_version":2,"model":[99,"=","a","A","B"],"feature_names":["x"]}'
+        '{"schema_version":3,"model":[99,"=","a","A","B"],"feature_names":["x"]}'
     )
     output.write_bytes(b"KEEP")
     before = source.read_bytes()
