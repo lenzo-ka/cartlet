@@ -580,3 +580,26 @@ def test_writer_rejects_duplicate_canonical_bool_switch_keys(tmp_path):
             ["first", "second", "default"],
             False,
         )
+
+
+def test_missing_policy_is_validated_before_any_row(tmp_path):
+    from cartlet import runner
+
+    model = DecisionTree(features=[{"name": "x", "dtype": "float", "type": "num"}])
+    model.load_data([[0.0], [1.0]], ["left", "right"])
+    model.train(validation_split=0)
+    path = tmp_path / "policy.cart"
+    model.export(str(path))
+    bundled = _bundled()
+    package_model = runner.load_model(str(path))
+    bundled_model = bundled.load_cart(str(path))
+    calls = [
+        lambda: runner.predict_batch(package_model, [], missing="typo"),
+        lambda: Predictor(str(path)).predict_batch([], missing="typo"),
+        lambda: bundled.Predictor(str(path)).predict_batch([], missing="typo"),
+        lambda: bundled.predict_tree(bundled_model, [None], missing="typo"),
+        lambda: model.predict_batch([], missing="typo"),
+    ]
+    for call in calls:
+        with pytest.raises(ValueError, match="missing must be"):
+            call()

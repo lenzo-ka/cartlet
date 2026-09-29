@@ -1098,6 +1098,7 @@ def predict_batch(
     Returns:
         List of predictions
     """
+    _check_missing_policy(missing)
     return [
         predict(model, v, return_dist=return_dist, missing=missing) for v in vectors
     ]

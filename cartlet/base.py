@@ -179,6 +179,10 @@ class BaseModel(ABC):
         **kwargs,
     ) -> list[Any]:
         """Predict for multiple feature vectors."""
+        if "missing" in kwargs:
+            from .runner import _check_missing_policy
+
+            _check_missing_policy(kwargs["missing"])
         return [self.predict(v, **kwargs) for v in vectors]
 
     # =========================================================================

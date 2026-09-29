@@ -228,6 +228,7 @@ class Predictor:
         Returns:
             List of predictions
         """
+        _check_missing_policy(missing)
         return [
             self.predict(row, return_dist=return_dist, missing=missing)
             for row in feature_rows
@@ -612,6 +613,7 @@ def load_embedded():
 
 def predict_tree(model, row, tree_idx=0, return_dist=False, *, missing="error"):
     """Predict using a single tree."""
+    _check_missing_policy(missing)
     return _predict_tree_recursive(
         model["tree_offsets"][tree_idx],
         row,
@@ -1142,6 +1144,7 @@ def predict_xgboost(model, row, return_dist=False, *, missing="error"):
       raw_scores[k] starts at its base score and adds each round in tree order
       probabilities = softmax(raw_scores)
     """
+    _check_missing_policy(missing)
     n_trees = model.get("n_trees", len(model["tree_offsets"]))
     decisions = model["decisions"]
     leaves = model["leaves"]
