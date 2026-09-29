@@ -37,6 +37,12 @@ requires it.
   `predict(..., return_dist=True)` reaches a classification leaf without a
   stored distribution, matching in-process prediction. Migration: callers that
   handled a string result from `return_dist=True` receive a dict in every case.
+- CLI prediction and CLI training now decide field parsing from declared feature
+  types. Categorical values keep their exact text, while declared numeric values
+  are parsed as numbers; numeric inference applies only to undeclared training
+  columns. A categorical model trained through the 0.6.0 CLI may store a
+  canonicalized value such as `"1"` for input `"01"`; retrain that model, or pass
+  the stored spelling.
 
 ### Added
 
@@ -44,6 +50,10 @@ requires it.
   runners, with stable model-global decision and leaf IDs.
 - Guarantee lazy feature reads during non-strict prediction: only features
   tested along evaluated paths are indexed, once per decision test.
+- Add CLI `train` options `--min-confidence` and `--min-dist-entropy` for
+  classification-tree distribution collapse (defaults 1.0 and 0.0);
+  `--min-confidence 0.95 --min-dist-entropy 0.1` reproduces 0.6.0's collapsed
+  leaves.
 
 ### Fixed
 

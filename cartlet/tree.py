@@ -160,6 +160,8 @@ class DecisionTree(BaseModel):
             criterion=criterion,
             categorical_split=categorical_split,
             store_distributions=store_distributions,
+            min_confidence=min_confidence,
+            min_dist_entropy=min_dist_entropy,
         )
         super().__init__(
             features=features,
@@ -371,6 +373,8 @@ class DecisionTree(BaseModel):
             criterion=self.criterion,
             categorical_split=self.categorical_split,
             store_distributions=self.store_distributions,
+            min_confidence=self.min_confidence,
+            min_dist_entropy=self.min_dist_entropy,
             prune=prune,
             random_state=random_state,
             trainer=trainer if isinstance(trainer, str) else None,

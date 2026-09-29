@@ -4,6 +4,8 @@ import json
 
 import pytest
 
+import cartlet.cli as cli_module
+from cartlet import DecisionTree
 from cartlet.cli import main
 from cartlet.io import (
     detect_delimiter,
@@ -179,6 +181,83 @@ class TestTrainCommand:
         result = main(["train", csv_data, "-o", str(out), "-S", "0.5"])
         assert result == 0
 
+    def test_distribution_collapse_options_and_defaults(self, tmp_path, capsys):
+        from cartlet.runner import load_model, predict
+
+        data = tmp_path / "train.csv"
+        data.write_text(
+            "x,label\n" + "same,A\n" * 97 + "same,B\n" * 3,
+            encoding="utf-8",
+        )
+        default_model = tmp_path / "default.cart"
+        collapsed_model = tmp_path / "collapsed.cart"
+
+        assert (
+            main(
+                [
+                    "train",
+                    str(data),
+                    "-D",
+                    "0",
+                    "-S",
+                    "0",
+                    "--json",
+                    "-o",
+                    str(default_model),
+                ]
+            )
+            == 0
+        )
+        default_report = json.loads(capsys.readouterr().out)
+        assert default_report["settings"]["min_confidence"] == 1.0
+        assert default_report["settings"]["min_dist_entropy"] == 0.0
+        assert predict(
+            load_model(str(default_model)), ["same"], return_dist=True
+        ) == pytest.approx({"A": 0.97, "B": 0.03})
+
+        assert (
+            main(
+                [
+                    "train",
+                    str(data),
+                    "-D",
+                    "0",
+                    "-S",
+                    "0",
+                    "--min-confidence",
+                    "0.95",
+                    "--min-dist-entropy",
+                    "0.1",
+                    "--json",
+                    "-o",
+                    str(collapsed_model),
+                ]
+            )
+            == 0
+        )
+        collapsed_report = json.loads(capsys.readouterr().out)
+        assert collapsed_report["settings"]["min_confidence"] == 0.95
+        assert collapsed_report["settings"]["min_dist_entropy"] == 0.1
+        assert predict(
+            load_model(str(collapsed_model)), ["same"], return_dist=True
+        ) == {"A": 1.0}
+
+    @pytest.mark.parametrize(
+        "option,value",
+        [
+            ("--min-confidence", "-0.1"),
+            ("--min-confidence", "1.1"),
+            ("--min-confidence", "nan"),
+            ("--min-dist-entropy", "-0.1"),
+            ("--min-dist-entropy", "inf"),
+        ],
+    )
+    def test_invalid_distribution_collapse_options(
+        self, csv_data, option, value, capsys
+    ):
+        assert main(["train", csv_data, option, value]) == 1
+        assert "Error:" in capsys.readouterr().err
+
 
 class TestPredictCommand:
     """Test predict command."""
@@ -210,6 +289,98 @@ class TestPredictCommand:
         assert len(lines) == 2
         assert "apple" in lines[0]
         assert "blueberry" in lines[1]
+
+    def test_predict_preserves_categorical_strings_and_parses_numeric_features(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        categorical_model = tmp_path / "codes.cart"
+        categorical_data = tmp_path / "codes.csv"
+        tree = DecisionTree(
+            features=[{"name": "code", "dtype": "str", "type": "cat"}],
+            task="classification",
+        )
+        categories = ["01", "1", "001", "09"]
+        labels = ["A", "B", "C", "D"]
+        categorical_rows = [[value] for value in categories]
+        tree.load_data(categorical_rows, labels)
+        tree.train(validation_split=0)
+        tree.export(str(categorical_model))
+        categorical_data.write_text(
+            "code\n" + "\n".join(categories) + "\n", encoding="utf-8"
+        )
+        expected = [tree.predict(row) for row in categorical_rows]
+        assert expected == labels
+
+        observed_vectors = []
+        original_predict_batch = cli_module.predict_batch
+
+        def recording_predict_batch(model_data, vectors, **kwargs):
+            observed_vectors.extend(vectors)
+            return original_predict_batch(model_data, vectors, **kwargs)
+
+        monkeypatch.setattr(cli_module, "predict_batch", recording_predict_batch)
+        assert main(["predict", str(categorical_model), str(categorical_data)]) == 0
+        assert capsys.readouterr().out.splitlines() == expected
+        assert observed_vectors == categorical_rows
+
+        numeric_model = tmp_path / "numbers.cart"
+        numeric_data = tmp_path / "numbers.csv"
+        numeric_tree = DecisionTree(
+            features=[{"name": "amount", "dtype": "float", "type": "num"}],
+            task="classification",
+        )
+        numeric_tree.load_data([[1], [2]], ["one", "two"])
+        numeric_tree.train(validation_split=0)
+        numeric_tree.export(str(numeric_model))
+        numeric_data.write_text("amount\n01\n1\n2\n", encoding="utf-8")
+        numeric_rows = [[1], [1], [2]]
+        numeric_expected = [numeric_tree.predict(row) for row in numeric_rows]
+
+        observed_vectors.clear()
+        assert main(["predict", str(numeric_model), str(numeric_data)]) == 0
+        assert capsys.readouterr().out.splitlines() == numeric_expected
+        assert observed_vectors == numeric_rows
+
+    def test_train_preserves_declared_categorical_strings(self, tmp_path, capsys):
+        from cartlet.runner import get_vocabulary, load_model, predict
+
+        source = tmp_path / "codes.csv"
+        model_path = tmp_path / "codes.cart"
+        categories = ["01", "1", "001", "09"]
+        labels = ["A", "B", "C", "D"]
+        source.write_text(
+            "code,label\n"
+            + "".join(
+                f"{category},{label}\n"
+                for category, label in zip(categories, labels, strict=True)
+            ),
+            encoding="utf-8",
+        )
+
+        assert (
+            main(
+                [
+                    "train",
+                    str(source),
+                    "--features",
+                    json.dumps({"code": "cat"}),
+                    "--validation-split",
+                    "0",
+                    "--test-split",
+                    "0",
+                    "-o",
+                    str(model_path),
+                ]
+            )
+            == 0
+        )
+        capsys.readouterr()
+        model = load_model(str(model_path))
+        assert get_vocabulary(model, "code") == set(categories)
+        assert [predict(model, [category]) for category in categories] == labels
+
+        assert main(["predict", str(model_path), str(source)]) == 0
+        assert capsys.readouterr().out.splitlines() == labels
 
     def test_predict_append_mode(self, model_and_data, capsys):
         model_path, test_path = model_and_data

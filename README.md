@@ -634,6 +634,12 @@ JSON/YAML configuration files use CLI option names; explicit flags override
 configuration values. Invalid or unknown settings are errors. `--json` returns
 the same structured report as the Python training workflow.
 
+Classification-tree training accepts `--min-confidence` (default `1.0`) and
+`--min-dist-entropy` (default `0.0`) as lossy distribution-collapse controls.
+Use `--min-confidence 0.95 --min-dist-entropy 0.1` to reproduce 0.6.0's
+collapsed leaves. They are applied only to `DecisionTree`; `RandomForest` has
+no corresponding parameters.
+
 ### predict
 
 ```bash
@@ -645,13 +651,12 @@ cartlet predict model.cart input.tsv --output-format tsv -o predictions.tsv
 Prediction uses `.cart` models. Named input columns are aligned to the model;
 headerless data is positional. Output defaults to stdout. Modes return values,
 append a prediction column, or replace the target column in the output data.
-Delimited fields are parsed before prediction: empty fields become `None`, and
-other fields are converted with `float()` when they contain a period or with
-`int()` otherwise when conversion succeeds, regardless of model feature type.
-JSONL values retain their JSON types. Consequently, documented bool spellings
-apply to the value after this parsing step; for example, CSV text `01` reaches
-the library as integer `1`, not string `"01"`. The bundled standalone CLI has a
-different input parser, documented in [Standalone deployment](docs/runners.md).
+Delimited fields are parsed according to the model feature table: empty fields
+become `None`, categorical fields stay strings, and numeric features parse as
+numbers. JSONL values retain their JSON types. The package CLI and bundled
+standalone CLI therefore preserve numeric-looking categorical values such as
+`01` as the literal string `"01"`. See
+[Standalone deployment](docs/runners.md) for the runner contract.
 
 ### evaluate
 
@@ -736,6 +741,11 @@ cartlet train data.csv -X '[{"name": "age", "dtype": "int", "type": "num"}]'
 # From JSON file
 cartlet train data.csv -X features.json
 ```
+
+For delimited training data, declared categorical columns retain their exact
+text (`01`, `1`, `001`, and `09` are distinct), while declared numeric columns
+are parsed as numbers. Numeric inference continues only for columns omitted
+from a feature mapping or when no feature specifications are supplied.
 
 **features.json** supports three equivalent shapes:
 

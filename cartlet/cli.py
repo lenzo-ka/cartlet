@@ -40,11 +40,13 @@ from .io.cart_format import VERSION
 from .runner import load_model, predict_batch
 from .training import TrainingSettings, train_file
 from .types import (
+    DEFAULT_MIN_DIST_ENTROPY,
     DEFAULT_MIN_SAMPLES_LEAF,
     DEFAULT_MIN_SAMPLES_SPLIT,
     DEFAULT_N_ESTIMATORS,
     DEFAULT_TEST_SPLIT,
     DEFAULT_VALIDATION_SPLIT,
+    PROB_HIGH_CONFIDENCE,
     TASK_AUTO,
     TASK_CLASSIFICATION,
     TASK_REGRESSION,
@@ -138,6 +140,8 @@ _BUILTIN_CONFIGS: dict[str, dict[str, Any]] = {
         "prune": False,
         "validation_split": DEFAULT_VALIDATION_SPLIT,
         "test_split": DEFAULT_TEST_SPLIT,
+        "min_confidence": PROB_HIGH_CONFIDENCE,
+        "min_dist_entropy": DEFAULT_MIN_DIST_ENTROPY,
     },
     "fast": {
         # Quick training for testing/iteration
@@ -303,6 +307,8 @@ def cmd_train(args: argparse.Namespace) -> int:
         random_state=args.random_seed,
         n_jobs=args.n_jobs,
         store_distributions=not args.no_distributions,
+        min_confidence=args.min_confidence,
+        min_dist_entropy=args.min_dist_entropy,
     )
     result = train_file(
         args.data,
@@ -404,12 +410,16 @@ def _build_feature_vectors(
     vectors = []
     for row in raw_rows:
         features = []
-        for idx in feature_indices:
+        for feature_pos, idx in enumerate(feature_indices):
             if idx is not None and idx < len(row):
                 val = row[idx]
                 if val == "":
                     val = None
-                if isinstance(val, str):
+                if (
+                    isinstance(val, str)
+                    and feature_pos < len(model_features)
+                    and model_features[feature_pos].get("type") == "num"
+                ):
                     with contextlib.suppress(ValueError):
                         val = float(val) if "." in val else int(val)
                 features.append(val)
@@ -1202,6 +1212,20 @@ Examples:
         "--no-distributions",
         action="store_true",
         help="Omit distributions in .cart output (smaller file, no nbest)",
+    )
+    train_parser.add_argument(
+        "--min-confidence",
+        type=float,
+        default=PROB_HIGH_CONFIDENCE,
+        metavar="FRAC",
+        help="Collapse leaves above this confidence (default: 1.0, disabled)",
+    )
+    train_parser.add_argument(
+        "--min-dist-entropy",
+        type=float,
+        default=DEFAULT_MIN_DIST_ENTROPY,
+        metavar="BITS",
+        help="Collapse leaves below this entropy (default: 0.0, disabled)",
     )
     train_parser.add_argument(
         "-v", "--verbose", action="store_true", help="Verbose output"

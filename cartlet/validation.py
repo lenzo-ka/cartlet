@@ -24,6 +24,8 @@ def validate_training_parameters(
     criterion: str = "entropy",
     categorical_split: str = "exact",
     store_distributions: bool = True,
+    min_confidence: float = 1.0,
+    min_dist_entropy: float = 0.0,
     prune: bool = False,
     extra_trees: bool = False,
     bootstrap: bool = True,
@@ -57,6 +59,20 @@ def validate_training_parameters(
             raise ValueError(f"{name} must be an integer or None")
     if n_jobs == 0:
         raise ValueError("n_jobs must be nonzero")
+    if (
+        isinstance(min_confidence, bool)
+        or not isinstance(min_confidence, (int, float))
+        or not math.isfinite(min_confidence)
+        or not 0 <= min_confidence <= 1
+    ):
+        raise ValueError("min_confidence must be finite and in [0, 1]")
+    if (
+        isinstance(min_dist_entropy, bool)
+        or not isinstance(min_dist_entropy, (int, float))
+        or not math.isfinite(min_dist_entropy)
+        or min_dist_entropy < 0
+    ):
+        raise ValueError("min_dist_entropy must be finite and nonnegative")
     for name, value in (
         ("store_distributions", store_distributions),
         ("prune", prune),

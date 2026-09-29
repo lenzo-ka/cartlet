@@ -46,10 +46,19 @@ symlinks, are rejected before writing.
 
 ```sh
 cartlet train data.csv --target label --random-seed 7 --json -o model.cart
+cartlet train data.csv --min-confidence 0.95 --min-dist-entropy 0.1 -o compact.cart
 ```
 
 `--json` prints one structured report. Without it, the CLI prints a concise
 summary and evaluation metrics; `--verbose` also prints model statistics.
+The two distribution-collapse options apply to classification trees; the
+shown `0.95`/`0.1` thresholds reproduce 0.6.0's collapsed leaves. Their 0.7.0
+defaults, `1.0`/`0.0`, retain distributions.
+
+When `train_file` or `cartlet train` receives feature specifications, declared
+categorical columns preserve their source values exactly and declared numeric
+columns parse numeric text. Numeric inference is limited to undeclared columns;
+without feature specifications, loading retains the existing inference behavior.
 
 `convert` similarly returns `ConversionResult` with `to_dict()`. It decodes the
 input once, preserves available distributions, and rejects isolation and
