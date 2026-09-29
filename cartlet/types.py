@@ -146,8 +146,8 @@ _MAX_RANDOM_SEED = 2**31
 # Probability thresholds (for leaf distributions)
 # =============================================================================
 
-# If best class probability exceeds this, store only the class (not full distribution)
-PROB_HIGH_CONFIDENCE = 0.95
+# Default keeps distributions: confidence-based distribution collapse is opt-in.
+PROB_HIGH_CONFIDENCE = 1.0
 
 # Minimum probability to include in distribution (filter out noise)
 # Note: Keep very small to preserve rare alignments in G2P models
@@ -176,7 +176,8 @@ TASK_INFER_UNIQUE_RATIO = 0.5
 DEFAULT_N_ESTIMATORS = 100
 DEFAULT_VALIDATION_SPLIT = 0.05
 DEFAULT_TEST_SPLIT = 0.05
-DEFAULT_MIN_DIST_ENTROPY = 0.1
+# Default keeps distributions: entropy-based distribution collapse is opt-in.
+DEFAULT_MIN_DIST_ENTROPY = 0.0
 DEFAULT_MIN_SAMPLES_SPLIT = 2
 DEFAULT_MIN_SAMPLES_LEAF = 1
 

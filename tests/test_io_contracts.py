@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from cartlet import DecisionTree
 from cartlet.bundled.predict import load_cart
 from cartlet.bundled.predict import predict as bundled_predict
 from cartlet.io.bytes import write_tree_bytes
@@ -14,6 +15,53 @@ from cartlet.io.writer import write_vectors
 from cartlet.runner import load_model, predict
 from cartlet.types import FeatureSpec
 from cartlet.utils import eval_tree
+
+
+def test_default_training_preserves_97_3_leaf_distribution(tmp_path):
+    rows = [["same"]] * 100
+    labels = ["A"] * 97 + ["B"] * 3
+    tree = DecisionTree(feature_names=["x"], max_depth=0)
+    tree.load_data(rows, labels)
+    tree.train(validation_split=0)
+
+    json_path = str(tmp_path / "model.json")
+    cart_path = str(tmp_path / "model.cart")
+    tree.export(json_path)
+    tree.export(cart_path)
+    json_tree = DecisionTree()
+    json_tree.load_model(json_path)
+
+    expected = {"A": 0.97, "B": 0.03}
+    assert tree.predict(["same"], return_dist=True) == pytest.approx(expected)
+    assert json_tree.predict(["same"], return_dist=True) == pytest.approx(expected)
+    assert predict(load_model(cart_path), ["same"], return_dist=True) == pytest.approx(
+        expected
+    )
+    assert bundled_predict(
+        load_cart(cart_path), ["same"], return_dist=True
+    ) == pytest.approx(expected)
+
+
+def test_explicit_min_confidence_still_collapses_97_3_leaf():
+    tree = DecisionTree(feature_names=["x"], max_depth=0, min_confidence=0.95)
+    tree.load_data([["same"]] * 100, ["A"] * 97 + ["B"] * 3)
+    tree.train(validation_split=0)
+
+    assert tree.model == "A"
+    assert tree.predict(["same"], return_dist=True) == {"A": 1.0}
+
+
+def test_runners_return_distribution_for_bare_class_leaf(tmp_path):
+    tree = DecisionTree(feature_names=["x"], max_depth=0)
+    tree.load_data([["same"]] * 3, ["only"] * 3)
+    tree.train(validation_split=0)
+    cart_path = str(tmp_path / "single.cart")
+    tree.export(cart_path)
+
+    expected = tree.predict(["same"], return_dist=True)
+    assert expected == {"only": 1.0}
+    assert predict(load_model(cart_path), ["same"], return_dist=True) == expected
+    assert bundled_predict(load_cart(cart_path), ["same"], return_dist=True) == expected
 
 
 def test_nonfinite_export_preserves_existing_output(tmp_path):

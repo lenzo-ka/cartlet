@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
-from ..types import PROB_HIGH_CONFIDENCE, TYPE_CAT
+from ..types import DEFAULT_MIN_DIST_ENTROPY, PROB_HIGH_CONFIDENCE, TYPE_CAT
 from .base import (
     Trainer,
     _IndexedSequence,
@@ -157,7 +157,7 @@ def convert_sklearn_tree(
     is_regression: bool = False,
     store_distributions: bool = True,
     min_confidence: float = PROB_HIGH_CONFIDENCE,
-    min_dist_entropy: float = 0.0,
+    min_dist_entropy: float = DEFAULT_MIN_DIST_ENTROPY,
 ) -> Any:
     """
     Convert sklearn tree structure to our nested list format.
@@ -174,7 +174,10 @@ def convert_sklearn_tree(
         classes: Class labels (for classification)
         is_regression: Whether this is a regression tree
         store_distributions: Whether to store probability distributions
-        min_confidence: Collapse distributions above this probability
+        min_confidence: Lossily collapse distributions above this probability;
+            the retained class reports probability 1.0
+        min_dist_entropy: Lossily collapse distributions below this entropy;
+            the retained class reports probability 1.0
 
     Returns:
         Tree in our nested list format
@@ -409,7 +412,8 @@ class Sklearn(Trainer):
             feature_names: Names for each feature
             task: "classification", "regression", or "auto"
             store_distributions: Whether to store distributions at leaves
-            min_confidence: Collapse distributions above this probability
+            min_confidence: Lossily collapse distributions above this probability;
+                the retained class reports probability 1.0
 
         Returns:
             Tuple of (model, config_dict) for use with DecisionTree

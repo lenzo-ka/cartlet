@@ -683,7 +683,8 @@ def _predict_tree_recursive(
             if leaf_type == LEAF_CLASS:
                 if val >= len(strings):
                     raise RuntimeError(f"Invalid string index in leaf: {val}")
-                return strings[val]
+                label = strings[val]
+                return {label: 1.0} if return_dist else label
             if leaf_type == LEAF_CLASS_DIST:
                 if val >= len(distributions):
                     raise RuntimeError(f"Invalid distribution index in leaf: {val}")
@@ -790,7 +791,8 @@ def _predict_tree_path_recursive(
             if leaf_type == LEAF_CLASS:
                 if val >= len(strings):
                     raise RuntimeError(f"Invalid string index in leaf: {val}")
-                result = strings[val]
+                label = strings[val]
+                result = {label: 1.0} if return_dist else label
                 return (result, leaf_idx) if path is not None else result
             elif leaf_type == LEAF_CLASS_DIST:
                 if val >= len(distributions):

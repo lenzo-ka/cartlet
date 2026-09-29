@@ -240,8 +240,8 @@ dt = DecisionTree(
     min_samples_leaf=1,  # Min samples in leaf
     criterion="entropy",  # "entropy" or "gini"
     store_distributions=True,  # Keep full probability distributions at leaves
-    min_dist_entropy=DEFAULT_MIN_DIST_ENTROPY,  # Below this, collapse to best class
-    min_confidence=PROB_HIGH_CONFIDENCE,  # Above this best-prob, collapse too
+    min_dist_entropy=DEFAULT_MIN_DIST_ENTROPY,  # Default 0.0: no entropy collapse
+    min_confidence=PROB_HIGH_CONFIDENCE,  # Default 1.0: no confidence collapse
 )
 
 dt.load_data(X, y, counts=None)  # Load training data (optional weights)
@@ -261,16 +261,19 @@ should be categorical. Numeric dtype and numeric split behavior are separate:
 set `type="num"` for ordered threshold splits.
 
 Distribution storage knobs (`store_distributions`, `min_dist_entropy`,
-`min_confidence`) only apply to classification trees. They trade `.cart` file
-size against `predict_nbest` fidelity. Training-time collapse cannot be undone
-by asking an exporter to retain distributions later:
+`min_confidence`) only apply to classification trees. The defaults retain every
+non-negligible class probability. Opting into collapse trades `.cart` file size
+against probability and `predict_nbest` fidelity: a collapsed leaf reports its
+best class with probability 1.0. Training-time collapse cannot be undone by
+asking an exporter to retain distributions later:
 
 | Setting | Effect |
 |---------|--------|
 | `store_distributions=False` | Leaves store only the best class; `predict_nbest` will return 1 result. |
-| `store_distributions=True`, lower `min_confidence` | More leaves collapse to their best class. |
-| `store_distributions=True`, `min_confidence=1.0` | Disable confidence-based collapse; entropy and negligible-probability filtering still apply. |
-| `min_dist_entropy=0.0` | Never use entropy as a collapse trigger. |
+| `store_distributions=True`, `min_confidence < 1.0` | Lossily collapse leaves above the threshold to their best class. |
+| `store_distributions=True`, `min_confidence=1.0` (default) | Disable confidence-based collapse; entropy and negligible-probability filtering still apply. |
+| `min_dist_entropy > 0.0` | Lossily collapse leaves below the entropy threshold to their best class. |
+| `min_dist_entropy=0.0` (default) | Never use entropy as a collapse trigger. |
 
 ### RandomForest
 

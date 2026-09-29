@@ -9,6 +9,11 @@ requires it.
 
 ### Breaking changes
 
+- Classification leaves keep their class distribution by default:
+  `min_confidence=1.0` and `min_dist_entropy=0.0`. Only class probabilities
+  below `PROB_MIN_THRESHOLD` (1e-8) are dropped. Explicit lower confidence or
+  higher entropy thresholds remain lossy compression controls. Default-trained
+  `.cart` files may be larger.
 - Prediction now raises `MissingFeatureError` by default when an evaluated
   decision tests a missing value: `None`, an index past the vector, a value
   whose float conversion is NaN at a numeric decision, or a non-string NaN at an
@@ -27,6 +32,8 @@ requires it.
 
 ### Fixed
 
+- Return `{label: 1.0}` from both `.cart` runners when `return_dist=True`
+  reaches a bare classification leaf, matching in-process prediction.
 - Reduce training memory: build the sklearn categorical CSR in preallocated
   arrays instead of per-value Python lists, and train through indexed views of
   the loaded rows instead of further row copies. Trained models are unchanged;

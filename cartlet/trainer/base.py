@@ -9,7 +9,11 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
-from ..types import PROB_HIGH_CONFIDENCE, PROB_MIN_THRESHOLD
+from ..types import (
+    DEFAULT_MIN_DIST_ENTROPY,
+    PROB_HIGH_CONFIDENCE,
+    PROB_MIN_THRESHOLD,
+)
 
 if TYPE_CHECKING:
     from ..tree import DecisionTree
@@ -35,7 +39,7 @@ def make_classification_distribution(
     class_probs: list[tuple[Any, float]],
     store_distributions: bool = True,
     min_confidence: float = PROB_HIGH_CONFIDENCE,
-    min_dist_entropy: float = 0.0,
+    min_dist_entropy: float = DEFAULT_MIN_DIST_ENTROPY,
 ) -> Any:
     """
     Build a classification leaf value from class probabilities.
@@ -43,12 +47,13 @@ def make_classification_distribution(
     Args:
         class_probs: List of (class_label, probability) tuples, sorted by prob desc
         store_distributions: Whether to store full distributions
-        min_confidence: If best-class probability exceeds this, store only the
-            class label instead of the full distribution. Set to 1.0 to disable
-            this confidence gate; entropy and tiny-probability gates still apply.
+        min_confidence: If best-class probability exceeds this, lossily store
+            only the class label. The collapsed leaf reports probability 1.0.
+            The default 1.0 disables this confidence gate.
         min_dist_entropy: If the distribution's entropy (bits) is below this,
-            collapse to the best class. Applied consistently across backends so
-            native and sklearn leaves agree (0.0 disables the gate).
+            lossily collapse to the best class, which reports probability 1.0.
+            Applied consistently across backends so native and sklearn leaves
+            agree. The default 0.0 disables the gate.
 
     Returns:
         Best class label (str) or distribution dict
