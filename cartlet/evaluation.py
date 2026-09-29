@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import random
 import statistics
+from collections.abc import Sequence
 from typing import Any
 
 from .types import TASK_CLASSIFICATION, TASK_REGRESSION
@@ -95,7 +96,7 @@ def regression_metrics(
 
 def evaluate_tree(
     tree_model: Any,
-    X_test: list[list[Any]],
+    X_test: Sequence[Sequence[Any]],
     y_test: list[Any],
 ) -> dict[str, Any]:
     """

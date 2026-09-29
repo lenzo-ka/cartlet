@@ -27,6 +27,10 @@ requires it.
 
 ### Fixed
 
+- Reduce training memory: build the sklearn categorical CSR in preallocated
+  arrays instead of per-value Python lists, and train through indexed views of
+  the loaded rows instead of further row copies. Trained models are unchanged;
+  on a large categorical sklearn fit, peak memory roughly halves.
 - Normalize bool-dtype features when evaluated by both `.cart` runners, keeping
   raw bool and accepted string inputs aligned with in-process prediction.
 - Canonicalize hand-authored bool-dtype predicates during nested prediction to

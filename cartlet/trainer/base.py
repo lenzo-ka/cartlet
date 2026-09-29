@@ -6,12 +6,29 @@ from __future__ import annotations
 
 import math
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from ..types import PROB_HIGH_CONFIDENCE, PROB_MIN_THRESHOLD
 
 if TYPE_CHECKING:
     from ..tree import DecisionTree
+
+
+class _IndexedSequence(Sequence[Any]):
+    """Read-only indexed view over a sequence without copying its values."""
+
+    def __init__(self, values: Sequence[Any], indices: Sequence[int]):
+        self._values = values
+        self._indices = indices
+
+    def __len__(self) -> int:
+        return len(self._indices)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self._values[i] for i in self._indices[index]]
+        return self._values[self._indices[index]]
 
 
 def make_classification_distribution(
@@ -79,7 +96,7 @@ class Trainer(ABC):
     def train(
         self,
         tree: DecisionTree,
-        train_rows: list[int],
+        train_rows: Sequence[int],
         val_rows: list[int] | None = None,
     ) -> Any:
         """

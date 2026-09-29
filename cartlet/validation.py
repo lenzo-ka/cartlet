@@ -125,7 +125,7 @@ def validate_dataset(
             isinstance(value, (int, float)) and not math.isfinite(value)
         ):
             raise ValueError("training values must be finite scalar strings or numbers")
-    weights = list(counts) if counts is not None else [1] * len(rows)
+    weights = list(counts) if counts is not None else [1] * len(X)
     if any(
         not isinstance(weight, (int, float))
         or isinstance(weight, bool)
@@ -142,11 +142,20 @@ def validate_dataset(
         raise ValueError("total training weight must be finite") from exc
     if not math.isfinite(total):
         raise ValueError("total training weight must be finite")
-    active = [i for i, weight in enumerate(weights) if weight > 0]
+    if all(weight > 0 for weight in weights):
+        return rows, targets, weights
     return (
-        [rows[i] for i in active],
-        [targets[i] for i in active] if targets is not None else None,
-        [weights[i] for i in active],
+        [row for row, weight in zip(rows, weights, strict=True) if weight > 0],
+        (
+            [
+                target
+                for target, weight in zip(targets, weights, strict=True)
+                if weight > 0
+            ]
+            if targets is not None
+            else None
+        ),
+        [weight for weight in weights if weight > 0],
     )
 
 
