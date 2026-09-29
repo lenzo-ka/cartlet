@@ -45,7 +45,6 @@ from .types import (
     normalize_bool,
 )
 from .utils import (
-    build_tree_indices,
     collapse_distributions,
     count_nodes,
     eval_tree,
@@ -581,14 +580,12 @@ class DecisionTree(BaseModel):
         """Predict and return the decisions and model-global leaf ID."""
         if self.model is None:
             raise ValueError("Model not trained. Call train() first.")
-        indices = build_tree_indices([self.model])[0]
         prediction, leaf, path = eval_tree_path(
             self.model,
             vector,
             self.name_to_col,
             missing=missing,
             feature_specs=self.feature_specs,
-            indices=indices,
         )
         return {
             "prediction": prediction,

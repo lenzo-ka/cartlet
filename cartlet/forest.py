@@ -30,7 +30,7 @@ from .types import (
     TASK_REGRESSION,
     TYPE_NUM,
 )
-from .utils import build_tree_indices, collapse_distributions, eval_tree, eval_tree_path
+from .utils import collapse_distributions, eval_tree, eval_tree_path, tree_array_size
 from .validation import (
     MODEL_SCHEMA_VERSION,
     validate_model_data,
@@ -533,12 +533,11 @@ class RandomForest(BaseModel):
         """Predict and return each tree's decisions and model-global leaf ID."""
         if not self.trees:
             raise ValueError("Forest not trained. Call train() first.")
-        indices_by_tree = build_tree_indices([tree.model for tree in self.trees])
         values = []
         paths = []
-        for tree_idx, (tree, indices) in enumerate(
-            zip(self.trees, indices_by_tree, strict=True)
-        ):
+        decision_offset = 0
+        leaf_offset = 0
+        for tree_idx, tree in enumerate(self.trees):
             prediction, leaf, path = eval_tree_path(
                 tree.model,
                 vector,
@@ -546,10 +545,15 @@ class RandomForest(BaseModel):
                 missing=missing,
                 tree_idx=tree_idx,
                 feature_specs=tree.feature_specs,
-                indices=indices,
+                decision_offset=decision_offset,
+                leaf_offset=leaf_offset,
             )
             values.append(prediction)
             paths.append({"tree": tree_idx, "leaf": leaf, "path": path})
+            if tree_idx + 1 < len(self.trees):
+                decisions, leaves = tree_array_size(tree.model)
+                decision_offset += decisions
+                leaf_offset += leaves
         prediction = self._aggregate_predictions(values)
         return {"prediction": prediction, "trees": paths}
 

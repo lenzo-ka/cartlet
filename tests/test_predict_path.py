@@ -1,6 +1,8 @@
 """Decision-path parity across nested models and both .cart runners."""
 
 import importlib.util
+import math
+import struct
 from pathlib import Path
 
 import pytest
@@ -9,6 +11,7 @@ from cartlet import DecisionTree, MissingFeatureError, RandomForest
 from cartlet.io.bytes import write_forest_bytes, write_tree_bytes
 from cartlet.runner import INDEX_MASK, LEAF_FLAG, Predictor, load_model
 from cartlet.types import FeatureSpec
+from cartlet.utils import build_tree_indices
 
 
 def _bundled():
@@ -20,15 +23,21 @@ def _bundled():
     return module
 
 
-def _assert_steps(result, row, switch_cases=None):
+def _assert_steps(result, row, switch_cases=None, *, xgboost=False):
     for tree in result["trees"]:
         assert isinstance(tree["leaf"], int)
         for step in tree["path"]:
             value = row[step["feature"]]
             if step["op"] == "<=":
-                expected = "left" if float(value) <= step["value"] else "right"
+                numeric = float(value)
+                if xgboost:
+                    numeric = struct.unpack("<f", struct.pack("<f", numeric))[0]
+                expected = "left" if numeric <= step["value"] else "right"
             elif step["op"] == "<":
-                expected = "left" if float(value) < step["value"] else "right"
+                numeric = float(value)
+                if xgboost:
+                    numeric = struct.unpack("<f", struct.pack("<f", numeric))[0]
+                expected = "left" if numeric < step["value"] else "right"
             elif step["op"] == "=":
                 expected = "left" if str(value) == step["value"] else "right"
             else:
@@ -200,6 +209,43 @@ def test_tree_in_place_subtree_edit_refreshes_prediction_and_path_ids(tmp_path):
     )
 
 
+def test_deep_unvisited_branch_does_not_recurse_for_path_or_missing_error():
+    depth = 1200
+    root = "bottom"
+    for level in range(depth, 0, -1):
+        root = ["x", "<=", 0.0, root, f"right-{level}"]
+
+    model = DecisionTree(features=[{"name": "x", "dtype": "float", "type": "num"}])
+    model.model = root
+
+    result = model.predict_path([1.0])
+    assert result["prediction"] == "right-1"
+    assert result["trees"] == [
+        {
+            "tree": 0,
+            "leaf": depth,
+            "path": [
+                {
+                    "node": 0,
+                    "feature": 0,
+                    "name": "x",
+                    "op": "<=",
+                    "value": 0.0,
+                    "branch": "right",
+                }
+            ],
+        }
+    ]
+    decisions, leaves = build_tree_indices([root])[0]
+    assert decisions[()] == 0
+    assert leaves[(1,)] == depth
+    with pytest.raises(
+        MissingFeatureError,
+        match=r"feature 0 \('x'\) is missing at tree 0 node 0",
+    ):
+        model.predict([None])
+
+
 def test_forest_in_place_member_edit_refreshes_prediction_and_path_ids(tmp_path):
     features = [{"name": "x", "dtype": "float", "type": "num"}]
     model = RandomForest(n_estimators=2, features=features)
@@ -263,9 +309,49 @@ def test_xgboost_runner_paths(tmp_path):
         package_result = package.predict_path(row)
         assert package_result == standalone.predict_path(row)
         assert package_result["prediction"] == package.predict(row)
-        _assert_steps(package_result, row)
+        _assert_steps(package_result, row, xgboost=True)
         reached.update((tree["tree"], tree["leaf"]) for tree in package_result["trees"])
     assert len(reached) >= 3
+
+
+def test_xgboost_path_oracle_uses_float32_inputs_at_split_boundary(tmp_path):
+    pytest.importorskip("xgboost")
+    from cartlet import XGBoostTree
+
+    model = XGBoostTree(
+        n_estimators=1,
+        learning_rate=1.0,
+        max_depth=1,
+        min_child_weight=0,
+        features=[{"name": "x", "dtype": "float", "type": "num"}],
+    )
+    model.load_data([[0.0], [0.0], [1.0], [1.0]], ["left", "left", "right", "right"])
+    model.train(random_state=1)
+    threshold = model.trees[0][2]
+    assert threshold == struct.unpack("<f", struct.pack("<f", threshold))[0]
+    assert threshold > 0
+
+    path = tmp_path / "xgb-float32-boundary.cart"
+    model.export(str(path))
+    predictors = [Predictor(str(path)), _bundled().Predictor(str(path))]
+
+    raw_below = math.nextafter(threshold, -math.inf)
+    assert raw_below < threshold
+    assert struct.unpack("<f", struct.pack("<f", raw_below))[0] == threshold
+
+    threshold_bits = struct.unpack("<I", struct.pack("<f", threshold))[0]
+    float32_below = struct.unpack("<f", struct.pack("<I", threshold_bits - 1))[0]
+    assert float32_below < threshold
+
+    for predictor in predictors:
+        rounded_result = predictor.predict_path([raw_below])
+        exact_result = predictor.predict_path([float32_below])
+        assert rounded_result["trees"][0]["path"][0]["branch"] == "right"
+        assert exact_result["trees"][0]["path"][0]["branch"] == "left"
+        _assert_steps(rounded_result, [raw_below], xgboost=True)
+        _assert_steps(exact_result, [float32_below], xgboost=True)
+        assert rounded_result["prediction"] == model.predict([raw_below])
+        assert exact_result["prediction"] == model.predict([float32_below])
 
 
 @pytest.mark.parametrize(
