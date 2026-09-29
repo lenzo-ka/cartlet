@@ -138,10 +138,12 @@ class DecisionTree(BaseModel):
             min_samples_split: Positive integer samples to split a node (sklearn >= 2).
             min_samples_leaf: Positive integer samples in a leaf.
             store_distributions: Store probability distributions at leaves
-            min_dist_entropy: Minimum entropy to store distribution
-            min_confidence: If best-class probability exceeds this, store only the
-                class label instead of the full distribution (default 0.95).
-                Set to 1.0 to disable this confidence gate; entropy and tiny-probability gates still apply.
+            min_dist_entropy: Lossily collapse distributions below this entropy;
+                the retained class reports probability 1.0. The default 0.0
+                disables this gate.
+            min_confidence: If best-class probability exceeds this, lossily store
+                only the class label, which reports probability 1.0. The default
+                1.0 disables this gate.
             criterion: Split criterion for classification ("entropy" or "gini")
             categorical_split: Categorical split-search strategy for the native
                 backend: "exact" (default, fully reproducible) or "fast" (O(n)

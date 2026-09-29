@@ -796,8 +796,7 @@ class TestNoDistributions:
         )
         assert result.returncode == 0
         output = json.loads(result.stdout.strip())
-        # Without stored distributions, the runner returns the class label as a string
-        assert isinstance(output, str)
+        assert output == {"apple": 1.0}
 
     def test_no_dist_smaller_file(self, tmp_path):
         """Model without distributions is smaller or equal to model with."""
