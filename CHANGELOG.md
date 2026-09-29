@@ -22,6 +22,8 @@ requires it.
 
 ### Fixed
 
+- Treat float NaN as missing at every decision kind, and check missingness
+  before normalizing bool-dtype features in all prediction implementations.
 - Normalize bool-dtype features when evaluated by both `.cart` runners, keeping
   raw bool and accepted string inputs aligned with in-process prediction.
 

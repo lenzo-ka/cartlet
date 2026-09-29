@@ -6,7 +6,9 @@ from pathlib import Path
 import pytest
 
 from cartlet import DecisionTree, MissingFeatureError, RandomForest
-from cartlet.runner import Predictor
+from cartlet.io.bytes import write_tree_bytes
+from cartlet.runner import INDEX_MASK, LEAF_FLAG, Predictor, load_model
+from cartlet.types import FeatureSpec
 
 
 def _bundled():
@@ -300,3 +302,78 @@ def test_xgboost_missing_error_names_tree_and_node(tmp_path):
     assert package.predict([None], missing="right") == standalone.predict(
         [None], missing="right"
     )
+
+
+def test_nested_switch_path_uses_case_table_and_leaf_array_oracle(tmp_path):
+    tree = [
+        "color",
+        "switch",
+        {
+            "red": ["shape", "=", "round", "red-round", "red-other"],
+            "blue": "blue",
+        },
+        ["size", "<=", 1.5, "small-default", "large-default"],
+    ]
+    specs = [
+        FeatureSpec("color", "str", "cat", {"red", "blue"}),
+        FeatureSpec("shape", "str", "cat", {"round", "square"}),
+        FeatureSpec("size", "float", "num"),
+    ]
+    path = tmp_path / "nested-switch.cart"
+    write_tree_bytes(
+        str(path),
+        tree,
+        specs,
+        {"color": 0, "shape": 1, "size": 2},
+        ["red-round", "red-other", "blue", "small-default", "large-default"],
+        False,
+    )
+    loaded = load_model(str(path))
+    predictor = Predictor(str(path))
+    bundled = _bundled()
+    standalone = bundled.Predictor(str(path))
+
+    root = loaded["decisions"][loaded["tree_offsets"][0]]
+    table = loaded["case_tables"][root[2]]
+    red_child = table["lookup"]["red"]
+    default_child = table["default"]
+    assert loaded["tree_offsets"][0] == 0
+    assert default_child == 1
+    assert red_child == 2
+
+    def leaf_from_child(child, take_left):
+        decision = loaded["decisions"][child]
+        encoded = decision[3] if take_left else decision[4]
+        assert encoded & LEAF_FLAG
+        return encoded & INDEX_MASK
+
+    # Writer preorder: root decision; default decision and leaves 0/1; red
+    # decision and leaves 2/3; blue leaf 4.
+    cases = [
+        (["red", "round", 9.0], "case", leaf_from_child(red_child, True), 2),
+        (["green", "square", 1.0], "default", leaf_from_child(default_child, True), 0),
+    ]
+    for row, branch, oracle_leaf, handwritten_leaf in cases:
+        assert oracle_leaf == handwritten_leaf
+        for result in (predictor.predict_path(row), standalone.predict_path(row)):
+            assert result["trees"][0]["path"][0]["branch"] == branch
+            assert result["trees"][0]["leaf"] == oracle_leaf
+
+    for missing_value in (None, float("nan")):
+        row = [missing_value, "square", 1.0]
+        with pytest.raises(MissingFeatureError):
+            predictor.predict_path(row)
+        with pytest.raises(MissingFeatureError):
+            predictor.predict(row)
+        with pytest.raises(bundled.MissingFeatureError):
+            standalone.predict_path(row)
+        with pytest.raises(bundled.MissingFeatureError):
+            standalone.predict(row)
+        for result in (
+            predictor.predict_path(row, missing="right"),
+            standalone.predict_path(row, missing="right"),
+        ):
+            assert result["trees"][0]["path"][0]["branch"] == "default"
+            assert result["trees"][0]["leaf"] == 0
+        assert predictor.predict(row, missing="right") == "small-default"
+        assert standalone.predict(row, missing="right") == "small-default"

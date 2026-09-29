@@ -44,11 +44,14 @@ so caller mutations do not change the stored training data.
 
 Prediction has a separate missing-input policy. The default, `missing="error"`,
 raises `MissingFeatureError` only when an evaluated decision tests a `None`, a
-feature beyond the vector length, or a float NaN at a numeric node. The
+feature beyond the vector length, or a float NaN. NaN is missing at numeric,
+categorical-equality, and switch decisions; it is never a genuine category
+because training rejects nonfinite values. The
 compatibility policy `missing="right"` routes those values right, or to a
 switch default. Native XGBoost in-process prediction continues to use the
 Booster's learned missing directions; use a `.cart` runner for path attribution.
-Bool-dtype inputs are normalized only when their feature is tested, with the
+Bool-dtype inputs are checked for missingness and then normalized only when
+their feature is tested, with the
 same accepted values in nested prediction and both `.cart` runners.
 
 Named prediction and evaluation inputs are aligned to model feature names.

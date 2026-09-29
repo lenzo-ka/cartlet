@@ -164,9 +164,11 @@ At load time, the runner:
 
 All prediction entry points accept `missing="error"` or `missing="right"`.
 The default is `"error"`. If an evaluated decision tests `None`, an index at
-or beyond the vector length, or a float NaN at a numeric node, prediction raises
+or beyond the vector length, or a float NaN, prediction raises
 `MissingFeatureError` naming the feature, tree, and decision node. Missing
-values in features that the evaluated paths do not test are irrelevant.
+values in features that the evaluated paths do not test are irrelevant. NaN is
+missing for numeric comparisons, categorical equality, and switch nodes because
+training rejects nonfinite values and therefore cannot learn NaN as a category.
 
 For compatibility with 0.6.0, `missing="right"` makes numeric and categorical
 comparisons take the right branch and switch nodes take their default branch.
@@ -199,7 +201,8 @@ Exceptions raised by `vector[i]` propagate unchanged. `strict=True` is the
 documented exception: out-of-vocabulary validation must inspect all features.
 The executable contract is covered by `tests/test_lazy_features.py`.
 
-When a tested feature has bool dtype, runners normalize the value at that read
+When a tested feature has bool dtype, runners first check it for missingness,
+then normalize the value at that read
 using the same accepted true/false spellings as in-process prediction. An
 unrecognized bool value raises `ValueError`; an untested bool feature is never
 read or normalized.

@@ -98,6 +98,11 @@ def _check_missing_policy(missing: str) -> None:
         raise ValueError("missing must be 'error' or 'right'")
 
 
+def _is_missing(value: Any) -> bool:
+    """Return whether a read value is missing at any decision kind."""
+    return value is None or (isinstance(value, float) and math.isnan(value))
+
+
 def load_model(path: str) -> ModelData:
     """
     Load a trained model from a ``.cart`` file.
@@ -459,7 +464,9 @@ def predict(
         model: Loaded model dict from load_model()
         vector: Feature vector
         return_dist: If True and model has distributions, return dict of class->prob
-        missing: ``"error"`` (default) or legacy ``"right"`` routing
+        missing: ``"error"`` (default) raises when a tested value is ``None``,
+            absent, or float NaN at any decision kind; ``"right"`` routes it
+            right (or to a switch default)
 
     Returns:
         Prediction value (class label, regression value, or distribution dict)
@@ -571,38 +578,30 @@ def _predict_tree_recursive(
             raise RuntimeError(f"Invalid decision index: {idx}")
         feat, op, val, left, right = decisions[idx]
         feat_val = None if feat >= n_input_features else vector[feat]
-        if feat_val is None and missing == "error":
+        is_missing = _is_missing(feat_val)
+        if is_missing and missing == "error":
             feature_name = features[feat].get("name", str(feat))
             raise MissingFeatureError(
                 f"feature {feat} ({feature_name!r}) is missing at "
                 f"tree {tree_idx} node {idx}"
             )
-        if feat_val is not None and bool_features[feat]:
+        if not is_missing and bool_features[feat]:
             feat_val = normalize_bool(feat_val)
 
         if op in (OP_LE, OP_LT):
             if val >= len(floats):
                 raise RuntimeError(f"Invalid float index in decision: {val}")
-            if isinstance(feat_val, float) and feat_val != feat_val:
-                if missing == "error":
-                    feature_name = features[feat].get("name", str(feat))
-                    raise MissingFeatureError(
-                        f"feature {feat} ({feature_name!r}) is missing at "
-                        f"tree {tree_idx} node {idx}"
+            threshold = floats[val]
+            go_left = False
+            if not is_missing:
+                try:
+                    go_left = (
+                        float(feat_val) < threshold
+                        if op == OP_LT
+                        else float(feat_val) <= threshold
                     )
-                go_left = False
-            else:
-                threshold = floats[val]
-                go_left = False
-                if feat_val is not None:
-                    try:
-                        go_left = (
-                            float(feat_val) < threshold
-                            if op == OP_LT
-                            else float(feat_val) <= threshold
-                        )
-                    except (TypeError, ValueError):
-                        go_left = False
+                except (TypeError, ValueError):
+                    go_left = False
             idx = left if go_left else right
         elif op == OP_EQ:
             if val >= len(cat_vals):
@@ -611,9 +610,7 @@ def _predict_tree_recursive(
             if cat_idx >= len(strings):
                 raise RuntimeError(f"Invalid string index in cat_vals: {cat_idx}")
             idx = (
-                left
-                if feat_val is not None and str(feat_val) == strings[cat_idx]
-                else right
+                left if not is_missing and str(feat_val) == strings[cat_idx] else right
             )
         elif op == OP_SWITCH:
             if val >= len(case_tables):
@@ -621,7 +618,7 @@ def _predict_tree_recursive(
             table = case_tables[val]
             idx = (
                 table["default"]
-                if feat_val is None
+                if is_missing
                 else table["lookup"].get(str(feat_val), table["default"])
             )
     raise RuntimeError("Max tree depth exceeded (possible corrupted model)")
@@ -683,17 +680,14 @@ def _predict_tree_path_recursive(
         feat, op, val, left, right = decisions[idx]
 
         # A feature index past the end of the input vector is treated the same
-        # as an explicit missing (None) value: numeric/categorical comparisons
-        # fail (go right) and switch nodes take their default branch. This keeps
+        # as an explicit missing value. None and float NaN make comparisons fail
+        # (go right) and switch nodes take their default branch. This keeps
         # the two runners in sync and fixes switch nodes, whose right placeholder
         # is 0 (which would otherwise jump traversal to decision node 0).
         # Keep caller indexing outside conversion/comparison handlers: exceptions
         # raised by a lazy vector must propagate unchanged.
         feat_val = None if feat >= n_input_features else vector[feat]
-        is_numeric = op in (OP_LE, OP_LT)
-        is_missing = feat_val is None or (
-            is_numeric and isinstance(feat_val, float) and feat_val != feat_val
-        )
+        is_missing = _is_missing(feat_val)
         if is_missing and missing == "error":
             feature_name = features[feat].get("name", str(feat))
             raise MissingFeatureError(
@@ -723,7 +717,7 @@ def _predict_tree_path_recursive(
                 raise RuntimeError(f"Invalid float index in decision: {val}")
             threshold = floats[val]
             go_left = False
-            if feat_val is not None:
+            if not is_missing:
                 try:
                     go_left = (
                         (float(feat_val) < threshold)
@@ -753,7 +747,7 @@ def _predict_tree_path_recursive(
             if cat_idx >= len(strings):
                 raise RuntimeError(f"Invalid string index in cat_vals: {cat_idx}")
             cat_str = strings[cat_idx]
-            go_left = False if feat_val is None else (str(feat_val) == cat_str)
+            go_left = not is_missing and str(feat_val) == cat_str
             branch = "left" if go_left else "right"
             if path is not None:
                 path.append(
@@ -774,7 +768,7 @@ def _predict_tree_path_recursive(
             table = case_tables[val]
             next_idx = table["default"]
             branch = "default"
-            if feat_val is not None:
+            if not is_missing:
                 key = str(feat_val)
                 if key in table["lookup"]:
                     next_idx = table["lookup"][key]

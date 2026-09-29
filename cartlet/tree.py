@@ -524,6 +524,8 @@ class DecisionTree(BaseModel):
             vector: Feature vector
             return_dist: If True, return distribution when available (classification)
             strict: If True, raise ValueError for OOV categorical values
+            missing: Whether a tested None, absent value, or float NaN raises
+                or follows the right branch
 
         Returns:
             Classification: category (str) or distribution (dict)

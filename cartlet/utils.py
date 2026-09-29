@@ -211,6 +211,8 @@ def eval_tree(
         vector: Feature values
         name_to_col: Mapping of feature names to column indices
         return_dist: Return distribution dict (for classification leaves)
+        missing: Whether a tested None, absent value, or float NaN raises or
+            follows the right/default branch. This applies to every decision kind.
 
     Returns:
         Prediction (class label, distribution, or regression value)
@@ -286,17 +288,16 @@ def _eval_tree(
 
         # Deliberately outside every conversion/comparison handler.
         feat_val = vector[col] if col < len(vector) else None
+        is_missing = feat_val is None or (
+            isinstance(feat_val, float) and math.isnan(feat_val)
+        )
         if feature_specs and col < len(feature_specs):
             spec = feature_specs[col]
-            if getattr(spec, "dtype", None) == "bool" and feat_val is not None:
+            if getattr(spec, "dtype", None) == "bool" and not is_missing:
                 from .types import normalize_bool
 
                 feat_val = normalize_bool(feat_val)
 
-        is_numeric = op in ("<=", "<")
-        is_missing = feat_val is None or (
-            is_numeric and isinstance(feat_val, float) and math.isnan(feat_val)
-        )
         decision_id = indices[0][address] if indices else -1
         if is_missing and missing == "error":
             from .runner import MissingFeatureError

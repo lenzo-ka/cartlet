@@ -456,6 +456,8 @@ class RandomForest(BaseModel):
 
         Args:
             vector: Feature vector
+            missing: Whether a tested None, absent value, or float NaN raises
+                or follows the right branch
 
         Returns:
             Prediction (majority vote for classification, mean for regression)
