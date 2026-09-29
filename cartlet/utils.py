@@ -7,6 +7,7 @@ This module contains:
 """
 
 import logging
+import math
 from contextlib import suppress
 from typing import Any
 
@@ -192,6 +193,12 @@ def eval_tree(
     vector: list[Any],
     name_to_col: dict[str, int],
     return_dist: bool = False,
+    *,
+    missing: str = "error",
+    tree_idx: int = 0,
+    feature_specs: list[Any] | None = None,
+    indices: tuple[dict[tuple[Any, ...], int], dict[tuple[Any, ...], int]]
+    | None = None,
 ) -> Any:
     """
     Evaluate a nested tree structure (used by DecisionTree.predict).
@@ -208,31 +215,63 @@ def eval_tree(
     Returns:
         Prediction (class label, distribution, or regression value)
     """
-    # Leaf: string class label
-    if isinstance(node, str):
-        return {node: 1.0} if return_dist else node
+    result, _, _ = _eval_tree(
+        node,
+        vector,
+        name_to_col,
+        return_dist,
+        missing,
+        tree_idx,
+        feature_specs,
+        indices,
+        False,
+    )
+    return result
 
-    # Leaf: dict distribution
-    if isinstance(node, dict):
-        if return_dist:
-            return node
-        # Return class with highest probability
-        return max(node, key=lambda k: node[k])
 
-    # Leaf: regression [mean, variance, n]
-    if (
-        isinstance(node, list)
-        and len(node) == REGRESSION_LEAF_ARITY
-        and all(isinstance(x, (int, float)) for x in node)
-    ):
-        return node[0]  # Return mean
+def eval_tree_path(
+    node: Any,
+    vector: list[Any],
+    name_to_col: dict[str, int],
+    *,
+    missing: str = "error",
+    tree_idx: int = 0,
+    feature_specs: list[Any] | None = None,
+    indices: tuple[dict[tuple[Any, ...], int], dict[tuple[Any, ...], int]],
+) -> tuple[Any, int, list[dict[str, Any]]]:
+    """Evaluate a nested tree and return its prediction, leaf ID, and path."""
+    return _eval_tree(
+        node,
+        vector,
+        name_to_col,
+        False,
+        missing,
+        tree_idx,
+        feature_specs,
+        indices,
+        True,
+    )
 
-    # Decision node: [feature, op, value, left, right]
-    if is_decision_node(node):
-        feature, op, value, left, right = node
 
-        # Get feature index. Fail loudly on unknown feature names rather than
-        # silently routing the comparison to column 0.
+def _eval_tree(
+    node: Any,
+    vector: list[Any],
+    name_to_col: dict[str, int],
+    return_dist: bool,
+    missing: str,
+    tree_idx: int,
+    feature_specs: list[Any] | None,
+    indices: tuple[dict[tuple[Any, ...], int], dict[tuple[Any, ...], int]]
+    | None = None,
+    collect_path: bool = False,
+) -> tuple[Any, int, list[dict[str, Any]]]:
+    if missing not in ("error", "right"):
+        raise ValueError("missing must be 'error' or 'right'")
+    current = node
+    address: tuple[Any, ...] = ()
+    path: list[dict[str, Any]] = []
+    while is_decision_node(current):
+        feature, op, value, left, right = current
         if isinstance(feature, str):
             if feature not in name_to_col:
                 raise KeyError(
@@ -240,24 +279,103 @@ def eval_tree(
                     f"known features: {sorted(name_to_col)}"
                 )
             col = name_to_col[feature]
+            name = feature
         else:
             col = int(feature)
+            name = next((n for n, i in name_to_col.items() if i == col), str(col))
 
+        # Deliberately outside every conversion/comparison handler.
         feat_val = vector[col] if col < len(vector) else None
+        if feature_specs and col < len(feature_specs):
+            spec = feature_specs[col]
+            if getattr(spec, "dtype", None) == "bool" and feat_val is not None:
+                from .types import normalize_bool
+
+                feat_val = normalize_bool(feat_val)
+
+        is_numeric = op in ("<=", "<")
+        is_missing = feat_val is None or (
+            is_numeric and isinstance(feat_val, float) and math.isnan(feat_val)
+        )
+        decision_id = indices[0][address] if indices else -1
+        if is_missing and missing == "error":
+            from .runner import MissingFeatureError
+
+            raise MissingFeatureError(
+                f"feature {col} ({name!r}) is missing at "
+                f"tree {tree_idx} node {decision_id}"
+            )
 
         if op in ("<=", "<"):
             go_left = False
-            if feat_val is not None:
+            if not is_missing:
                 with suppress(TypeError, ValueError):
                     go_left = (
                         (float(feat_val) < float(value))
                         if op == "<"
                         else (float(feat_val) <= float(value))
                     )
-        else:  # op == "="
-            go_left = feat_val is not None and str(feat_val) == str(value)
+            branch = "left" if go_left else "right"
+            next_address = address + ((0 if go_left else 1),)
+            current = left if go_left else right
+        else:
+            go_left = not is_missing and str(feat_val) == str(value)
+            branch = "left" if go_left else "right"
+            next_address = address + ((0 if go_left else 1),)
+            current = left if go_left else right
+        if collect_path:
+            path.append(
+                {
+                    "node": decision_id,
+                    "feature": col,
+                    "name": name,
+                    "op": op,
+                    "value": str(value) if op == "=" else value,
+                    "branch": branch,
+                }
+            )
+        address = next_address
 
-        next_node = left if go_left else right
-        return eval_tree(next_node, vector, name_to_col, return_dist)
+    if isinstance(current, str):
+        result: Any = {current: 1.0} if return_dist else current
+    elif isinstance(current, dict):
+        result = current if return_dist else max(current, key=lambda k: current[k])
+    elif is_leaf(current):
+        result = current[0]
+    else:
+        raise ValueError(f"Unknown node type: {type(current)}")
+    leaf_id = indices[1][address] if indices else -1
+    return result, leaf_id, path
 
-    raise ValueError(f"Unknown node type: {type(node)}")
+
+def build_tree_indices(
+    trees: list[Any],
+) -> list[tuple[dict[tuple[Any, ...], int], dict[tuple[Any, ...], int]]]:
+    """Number nested nodes exactly as the .cart writer numbers its arrays."""
+    decision_count = 0
+    leaf_count = 0
+    result = []
+
+    for root in trees:
+        decisions: dict[tuple[Any, ...], int] = {}
+        leaves: dict[tuple[Any, ...], int] = {}
+
+        def walk(
+            current: Any,
+            address: tuple[Any, ...],
+            decisions: dict[tuple[Any, ...], int] = decisions,
+            leaves: dict[tuple[Any, ...], int] = leaves,
+        ) -> None:
+            nonlocal decision_count, leaf_count
+            if is_decision_node(current):
+                decisions[address] = decision_count
+                decision_count += 1
+                walk(current[3], address + (0,))
+                walk(current[4], address + (1,))
+            else:
+                leaves[address] = leaf_count
+                leaf_count += 1
+
+        walk(root, ())
+        result.append((decisions, leaves))
+    return result

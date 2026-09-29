@@ -67,6 +67,7 @@ model = Predictor("model.cart.gz")  # gzip supported
 # Predict
 result = model.predict(["red", "large"])
 results = model.predict_batch([["red", "large"], ["blue", "small"]])
+attribution = model.predict_path(["red", "large"])
 
 # With distribution (classification only, if model has distributions)
 dist = model.predict(["red", "large"], return_dist=True)
@@ -161,14 +162,47 @@ At load time, the runner:
 
 ## Missing Values
 
-When a feature value is `None`, missing, or out of bounds:
+All prediction entry points accept `missing="error"` or `missing="right"`.
+The default is `"error"`. If an evaluated decision tests `None`, an index at
+or beyond the vector length, or a float NaN at a numeric node, prediction raises
+`MissingFeatureError` naming the feature, tree, and decision node. Missing
+values in features that the evaluated paths do not test are irrelevant.
 
-- **Numeric comparisons** (`<=`): comparison fails → go right (value > threshold).
-- **Categorical comparisons** (`==`): comparison fails → go right (value ≠ target).
-- **Switch/case tables**: use default branch.
+For compatibility with 0.6.0, `missing="right"` makes numeric and categorical
+comparisons take the right branch and switch nodes take their default branch.
+CLI callers use `--missing {error,right}`. Empty delimited fields are parsed as
+`None`; absent named fields are also missing. Non-numeric strings at numeric
+nodes retain their established right-branch behavior.
 
-This policy is consistent across the runner and the in-process predictor and
-ensures deterministic behavior even with incomplete input vectors.
+`XGBoostTree.predict` uses the native Booster and its learned missing direction.
+Its `.cart` exports use the explicit runner policy because the binary format
+does not store those directions.
+
+## Decision paths
+
+`predict_path(model, vector, *, missing="error")` and
+`Predictor.predict_path(vector, *, missing="error")` return the ordinary
+prediction plus one path record per evaluated tree. Decision and leaf IDs are
+the model-global `.cart` array indexes documented in
+[the binary format](cart_format.md#stable-node-ids). Training-side
+`DecisionTree` and `RandomForest` expose the same result. For XGBoost, use one
+of the `.cart` runners for path attribution.
+
+## Lazy feature access
+
+Prediction indexes a vector only through `len(vector)` and `vector[i]`, where
+`i` is an integer feature index tested along an evaluated path. It does not
+iterate, slice, copy, or convert the whole vector, and reads each decision's
+feature at most once. This applies to trees, forests, and XGBoost `.cart`
+models in both runners, and to non-strict in-process tree and forest prediction.
+Exceptions raised by `vector[i]` propagate unchanged. `strict=True` is the
+documented exception: out-of-vocabulary validation must inspect all features.
+The executable contract is covered by `tests/test_lazy_features.py`.
+
+When a tested feature has bool dtype, runners normalize the value at that read
+using the same accepted true/false spellings as in-process prediction. An
+unrecognized bool value raises `ValueError`; an untested bool feature is never
+read or normalized.
 
 ---
 
@@ -193,8 +227,9 @@ class equivalent to the bundled runner's.
 ## Input and export contracts
 
 The package and standalone CART loaders recognize gzip by content, including a
-compressed file without a `.gz` suffix. Invalid numeric values at numeric nodes
-take the right branch in both nested-model and exported inference. XGBoost inputs and thresholds use float32 precision to match DMatrix. Strict
+compressed file without a `.gz` suffix. Invalid non-numeric values at numeric
+nodes take the right branch in both nested-model and exported inference.
+XGBoost inputs and thresholds use float32 precision to match DMatrix. Strict
 XGBoost nodes use `<`; native CART nodes use `<=`. Multiclass XGBoost
 metadata may carry one finite raw intercept per class; binary intercepts remain
 in probability space and are converted to a logit for additive prediction.

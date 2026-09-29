@@ -20,6 +20,10 @@ inspect it and perform an explicit conversion of its representation. The new
 release does not automatically migrate old artifacts. Replace copied standalone
 runners together with the models they load.
 
+Decision and leaf attribution uses the existing model-format-2 array indexes;
+adding `predict_path` does not change the binary format. See
+[stable node IDs](cart_format.md#stable-node-ids).
+
 A failed load leaves the existing model usable. A successful load replaces its
 training data and backend provenance; loading JSON over a sklearn-trained model
 cannot leave an old estimator available for `.skl` export.
@@ -37,6 +41,15 @@ numbers, with aligned targets and weights. Missing or nested training values
 are rejected. Weights must be finite, nonnegative, and have a finite positive
 total; zero-weight rows are omitted from fitting. Loaded observations are copied
 so caller mutations do not change the stored training data.
+
+Prediction has a separate missing-input policy. The default, `missing="error"`,
+raises `MissingFeatureError` only when an evaluated decision tests a `None`, a
+feature beyond the vector length, or a float NaN at a numeric node. The
+compatibility policy `missing="right"` routes those values right, or to a
+switch default. Native XGBoost in-process prediction continues to use the
+Booster's learned missing directions; use a `.cart` runner for path attribution.
+Bool-dtype inputs are normalized only when their feature is tested, with the
+same accepted values in nested prediction and both `.cart` runners.
 
 Named prediction and evaluation inputs are aligned to model feature names.
 Reordering CSV or JSONL columns therefore does not change predictions or

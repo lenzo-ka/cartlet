@@ -368,11 +368,9 @@ class XGBoostTree(BaseModel):
         yes_id = node.get("yes", 0)
         no_id = node.get("no", 1)
 
-        # cartlet's .cart format routes a missing/None feature to the right
-        # ("no") branch unconditionally. XGBoost stores a per-node "missing"
-        # direction; when it points at the "yes" branch, exported predictions
-        # can diverge from Booster.predict on inputs with missing features.
-        # The format can't encode per-node missing direction, so warn once.
+        # XGBoost stores a per-node missing direction, which .cart cannot
+        # encode. The runner raises by default; its explicit compatibility
+        # policy routes missing values right and can diverge from the Booster.
         missing_id = node.get("missing")
         if (
             missing_id is not None
@@ -381,9 +379,9 @@ class XGBoostTree(BaseModel):
         ):
             self.logger.warning(
                 "XGBoost model routes missing values to the 'yes' branch at "
-                "some nodes; the .cart format always routes missing values "
-                "right, so predictions on inputs with missing features may "
-                "diverge from Booster.predict."
+                "some nodes; .cart prediction with missing='right' routes "
+                "them right, so that compatibility policy may diverge from "
+                "Booster.predict."
             )
             self._warned_missing_direction = True
 
@@ -460,8 +458,9 @@ class XGBoostTree(BaseModel):
             Prediction (class label or float)
 
         Note:
-            Missing values: When a feature is None or missing, comparisons fail
-            and the tree takes the "no" branch (right child).
+            Missing values use the native Booster's learned per-node direction.
+            Use a ``.cart`` runner for decision-path attribution and its
+            explicit missing-input policy.
         """
         pred = self._raw_predict(vector)
 

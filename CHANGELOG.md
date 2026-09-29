@@ -5,6 +5,26 @@ formats incompatibly. Keep the package and standalone runner used to export and
 load a model on the same release; retrain or re-export models when a release
 requires it.
 
+## Unreleased
+
+### Breaking changes
+
+- Prediction now raises `MissingFeatureError` by default when an evaluated
+  decision tests a missing value. Pass `missing="right"` (or CLI
+  `--missing right`) for the 0.6.0 routing behavior.
+
+### Added
+
+- Add `predict_path` to nested tree and forest models and to both `.cart`
+  runners, with stable model-global decision and leaf IDs.
+- Guarantee lazy feature reads during non-strict prediction: only features
+  tested along evaluated paths are indexed, once per decision test.
+
+### Fixed
+
+- Normalize bool-dtype features when evaluated by both `.cart` runners, keeping
+  raw bool and accepted string inputs aligned with in-process prediction.
+
 ## 0.6.0 — 2026-09-13
 
 ### Breaking changes

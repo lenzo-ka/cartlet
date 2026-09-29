@@ -45,9 +45,11 @@ from .types import (
     normalize_bool,
 )
 from .utils import (
+    build_tree_indices,
     collapse_distributions,
     count_nodes,
     eval_tree,
+    eval_tree_path,
     is_decision_node,
 )
 from .utils import (
@@ -175,8 +177,19 @@ class DecisionTree(BaseModel):
         self.categorical_split = categorical_split
 
         # Trained model
-        self.model: Any = None
+        self._model: Any = None
+        self._path_indices: tuple[dict, dict] | None = None
         self.training_summary: dict[str, int] = {}
+
+    @property
+    def model(self) -> Any:
+        """The nested trained tree."""
+        return self._model
+
+    @model.setter
+    def model(self, value: Any) -> None:
+        self._model = value
+        self._path_indices = None
 
     def _feature_type(self, feat_idx: int) -> str:
         """Get the type (cat/num) for a feature."""
@@ -501,6 +514,7 @@ class DecisionTree(BaseModel):
         vector: list[Any],
         return_dist: bool = False,
         strict: bool = False,
+        missing: str = "error",
         **kwargs: Any,
     ) -> Any | dict[str, float] | float:
         """
@@ -521,19 +535,22 @@ class DecisionTree(BaseModel):
         if self.model is None:
             raise ValueError("Model not trained. Call train() first.")
 
-        # Normalize bool features
-        normalized = self._normalize_vector(vector)
-
         # Check for OOV values in strict mode
         if strict:
+            normalized = self._normalize_vector(vector)
             oov_features = self._check_oov(normalized)
             if oov_features:
                 raise ValueError(f"OOV values for features: {oov_features}")
+            return self._eval_normalized(normalized, return_dist, missing=missing)
 
-        return self._eval_normalized(normalized, return_dist)
+        return self._eval_normalized(vector, return_dist, missing=missing)
 
     def _eval_normalized(
-        self, normalized: list[Any], return_dist: bool = False
+        self,
+        normalized: list[Any],
+        return_dist: bool = False,
+        *,
+        missing: str = "error",
     ) -> Any | dict[str, float] | float:
         """Evaluate an already-normalized vector against this tree.
 
@@ -542,7 +559,38 @@ class DecisionTree(BaseModel):
         """
         if self.model is None:
             raise ValueError("Model not trained. Call train() first.")
-        return eval_tree(self.model, normalized, self.name_to_col, return_dist)
+        if self._path_indices is None:
+            self._path_indices = build_tree_indices([self.model])[0]
+        return eval_tree(
+            self.model,
+            normalized,
+            self.name_to_col,
+            return_dist,
+            missing=missing,
+            feature_specs=self.feature_specs,
+            indices=self._path_indices,
+        )
+
+    def predict_path(
+        self, vector: list[Any], *, missing: str = "error"
+    ) -> dict[str, Any]:
+        """Predict and return the decisions and model-global leaf ID."""
+        if self.model is None:
+            raise ValueError("Model not trained. Call train() first.")
+        if self._path_indices is None:
+            self._path_indices = build_tree_indices([self.model])[0]
+        prediction, leaf, path = eval_tree_path(
+            self.model,
+            vector,
+            self.name_to_col,
+            missing=missing,
+            feature_specs=self.feature_specs,
+            indices=self._path_indices,
+        )
+        return {
+            "prediction": prediction,
+            "trees": [{"tree": 0, "leaf": leaf, "path": path}],
+        }
 
     def _check_oov(self, vector: list[Any]) -> list[tuple[str, Any]]:
         """Check for OOV categorical values in a vector."""
@@ -576,7 +624,9 @@ class DecisionTree(BaseModel):
                 result[col] = normalize_bool(result[col])
         return result
 
-    def predict_with_confidence(self, vector: list[Any]) -> tuple[Any, float]:
+    def predict_with_confidence(
+        self, vector: list[Any], *, missing: str = "error"
+    ) -> tuple[Any, float]:
         """
         Predict with confidence score (classification only).
 
@@ -589,7 +639,7 @@ class DecisionTree(BaseModel):
             argmax class in the leaf distribution. Returns `("-", 0.0)` for
             non-classification leaves.
         """
-        dist = self.predict(vector, return_dist=True)
+        dist = self.predict(vector, return_dist=True, missing=missing)
         if isinstance(dist, str):
             return dist, 1.0
         if isinstance(dist, dict):
@@ -600,7 +650,7 @@ class DecisionTree(BaseModel):
         return "-", 0.0
 
     def predict_nbest(
-        self, vector: list[Any], n: int = _DEFAULT_NBEST
+        self, vector: list[Any], n: int = _DEFAULT_NBEST, *, missing: str = "error"
     ) -> list[tuple[Any, float]]:
         """
         Get n-best predictions with scores.
@@ -612,7 +662,7 @@ class DecisionTree(BaseModel):
         Returns:
             List of (category, probability) tuples, sorted by probability
         """
-        dist = self.predict(vector, return_dist=True)
+        dist = self.predict(vector, return_dist=True, missing=missing)
 
         if isinstance(dist, str):
             return [(dist, 1.0)]

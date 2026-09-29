@@ -382,8 +382,9 @@ the standard library.
 The runner produces **identical predictions** to sklearn-trained models
 (verified by automated tests).
 
-**Missing values**: when a feature is `None` or missing, comparisons fail and
-the tree takes the "no" branch (right child).
+**Missing values**: the default `missing="error"` raises `MissingFeatureError`
+when an evaluated path tests a missing value. Use `missing="right"` for the
+0.6.0 right/default routing behavior.
 
 ```python
 from predict import Predictor

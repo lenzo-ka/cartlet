@@ -30,12 +30,14 @@ from .io.bytes import bundle
 from .io.utils import resolve_format
 from .isolation import IsolationForest
 from .runner import (
+    MissingFeatureError,
     Predictor,
     get_vocabulary,
     is_oov,
     load_model,
     predict,
     predict_batch,
+    predict_path,
     read_cart_metadata,
 )
 from .trainer import Native, Trainer
@@ -214,11 +216,13 @@ __all__ = [
     "tree_stats",
     # Inference runner
     "Predictor",
+    "MissingFeatureError",
     "get_vocabulary",
     "is_oov",
     "load_model",
     "predict",
     "predict_batch",
+    "predict_path",
     "read_cart_metadata",
     # Bundling and conversion
     "bundle",

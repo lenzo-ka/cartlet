@@ -30,7 +30,7 @@ from .types import (
     TASK_REGRESSION,
     TYPE_NUM,
 )
-from .utils import collapse_distributions
+from .utils import build_tree_indices, collapse_distributions, eval_tree, eval_tree_path
 from .validation import (
     MODEL_SCHEMA_VERSION,
     validate_model_data,
@@ -137,7 +137,20 @@ class RandomForest(BaseModel):
         self._logger = logger
 
         # Trained trees
-        self.trees: list[DecisionTree] = []
+        self._trees: list[DecisionTree] = []
+        self._path_indices: list[tuple[dict, dict]] | None = None
+        self._path_model_ids: tuple[int, ...] = ()
+
+    @property
+    def trees(self) -> list[DecisionTree]:
+        """The forest's trained trees."""
+        return self._trees
+
+    @trees.setter
+    def trees(self, value: list[DecisionTree]) -> None:
+        self._trees = value
+        self._path_indices = None
+        self._path_model_ids = ()
 
     def load_data(
         self,
@@ -430,7 +443,14 @@ class RandomForest(BaseModel):
 
         return {"n_estimators": len(self.trees)}
 
-    def predict(self, vector: list[Any], **kwargs: Any) -> Any:
+    def predict(
+        self,
+        vector: list[Any],
+        *,
+        strict: bool = False,
+        missing: str = "error",
+        **kwargs: Any,
+    ) -> Any:
         """
         Predict for a feature vector.
 
@@ -445,19 +465,32 @@ class RandomForest(BaseModel):
 
         # All trees share the same feature schema, so normalize the input once
         # and reuse it across every tree rather than re-normalizing per tree.
-        normalized = self.trees[0]._normalize_vector(vector)
-        predictions = [t._eval_normalized(normalized) for t in self.trees]
+        if strict:
+            normalized = self.trees[0]._normalize_vector(vector)
+            oov_features = self.trees[0]._check_oov(normalized)
+            if oov_features:
+                raise ValueError(f"OOV values for features: {oov_features}")
+        else:
+            normalized = vector
+        indices = self._ensure_path_indices()
+        predictions = [
+            eval_tree(
+                tree.model,
+                normalized,
+                tree.name_to_col,
+                missing=missing,
+                tree_idx=tree_idx,
+                feature_specs=tree.feature_specs,
+                indices=indices[tree_idx],
+            )
+            for tree_idx, tree in enumerate(self.trees)
+        ]
 
-        if self._is_regression():
-            # In regression mode, predictions are numeric (mypy can't infer from runtime check)
-            values = [float(p) for p in predictions]  # type: ignore[arg-type]
-            return sum(values) / len(values)
+        return self._aggregate_predictions(predictions)
 
-        # Majority vote for classification
-        votes = Counter(predictions)
-        return votes.most_common(1)[0][0]
-
-    def predict_proba(self, vector: list[Any]) -> dict[Any, float]:
+    def predict_proba(
+        self, vector: list[Any], *, missing: str = "error"
+    ) -> dict[Any, float]:
         """
         Get class probabilities (classification only).
 
@@ -473,11 +506,63 @@ class RandomForest(BaseModel):
         if self._is_regression():
             raise ValueError("predict_proba not available for regression")
 
-        normalized = self.trees[0]._normalize_vector(vector)
-        predictions = [t._eval_normalized(normalized) for t in self.trees]
+        indices = self._ensure_path_indices()
+        predictions = [
+            eval_tree(
+                tree.model,
+                vector,
+                tree.name_to_col,
+                missing=missing,
+                tree_idx=tree_idx,
+                feature_specs=tree.feature_specs,
+                indices=indices[tree_idx],
+            )
+            for tree_idx, tree in enumerate(self.trees)
+        ]
         votes = Counter(predictions)
         total = len(predictions)
         return {cls: count / total for cls, count in votes.items()}
+
+    def predict_path(
+        self, vector: list[Any], *, missing: str = "error"
+    ) -> dict[str, Any]:
+        """Predict and return each tree's decisions and model-global leaf ID."""
+        if not self.trees:
+            raise ValueError("Forest not trained. Call train() first.")
+        indices_by_tree = self._ensure_path_indices()
+        values = []
+        paths = []
+        for tree_idx, (tree, indices) in enumerate(
+            zip(self.trees, indices_by_tree, strict=True)
+        ):
+            prediction, leaf, path = eval_tree_path(
+                tree.model,
+                vector,
+                tree.name_to_col,
+                missing=missing,
+                tree_idx=tree_idx,
+                feature_specs=tree.feature_specs,
+                indices=indices,
+            )
+            values.append(prediction)
+            paths.append({"tree": tree_idx, "leaf": leaf, "path": path})
+        prediction = self._aggregate_predictions(values)
+        return {"prediction": prediction, "trees": paths}
+
+    def _aggregate_predictions(self, predictions: list[Any]) -> Any:
+        """Aggregate per-tree values for predict and predict_path."""
+        if self._is_regression():
+            values = [float(prediction) for prediction in predictions]
+            return sum(values) / len(values)
+        return Counter(predictions).most_common(1)[0][0]
+
+    def _ensure_path_indices(self) -> list[tuple[dict, dict]]:
+        """Return cached writer-order indexes for the current tree objects."""
+        model_ids = tuple(id(tree.model) for tree in self.trees)
+        if self._path_indices is None or model_ids != self._path_model_ids:
+            self._path_indices = build_tree_indices([tree.model for tree in self.trees])
+            self._path_model_ids = model_ids
+        return self._path_indices
 
     @property
     def feature_importances_(self) -> dict[str, float]:

@@ -62,6 +62,7 @@ from .types import (
     TASK_REGRESSION,
     CaseTable,
     ModelData,
+    normalize_bool,
 )
 
 # Safety limit to prevent stack overflow from maliciously crafted models
@@ -77,13 +78,24 @@ _CART_MAX_TREES = 100_000
 _CART_MAX_NODES = 10_000_000
 
 __all__ = [
+    "MissingFeatureError",
     "load_model",
     "predict",
+    "predict_path",
     "predict_batch",
     "get_vocabulary",
     "is_oov",
     "Predictor",
 ]
+
+
+class MissingFeatureError(ValueError):
+    """A decision could not be made because its tested feature is missing."""
+
+
+def _check_missing_policy(missing: str) -> None:
+    if missing not in ("error", "right"):
+        raise ValueError("missing must be 'error' or 'right'")
 
 
 def load_model(path: str) -> ModelData:
@@ -272,6 +284,7 @@ def _load_cart_from_bytes(data: bytes) -> dict[str, Any]:
             "leaves": leaves,
             "distributions": distributions,
             "case_tables": case_tables,
+            "bool_features": [feature["dtype"] == "bool" for feature in features],
             "tree_offsets": tree_offsets,
             "is_regression": is_regression,
             "is_forest": is_forest,
@@ -436,33 +449,39 @@ def predict(
     model: ModelData,
     vector: list[Any],
     return_dist: bool = False,
+    *,
+    missing: str = "error",
 ) -> Any:
     """
     Make a prediction using a loaded model.
 
     Args:
         model: Loaded model dict from load_model()
-        vector: Feature vector (may contain None for missing values)
+        vector: Feature vector
         return_dist: If True and model has distributions, return dict of class->prob
+        missing: ``"error"`` (default) or legacy ``"right"`` routing
 
     Returns:
         Prediction value (class label, regression value, or distribution dict)
 
-    Note:
-        Missing values: When a feature value is None or the vector is shorter than
-        expected, comparisons fail and the tree takes the "no" branch (right
-        child); switch/case nodes take their default branch. This ensures
-        deterministic behavior with incomplete inputs.
+    Only features tested on evaluated paths are read. Caller indexing
+    exceptions propagate unchanged.
     """
+    _check_missing_policy(missing)
     if model.get("is_xgboost"):
-        return _predict_xgboost(model, vector, return_dist)
+        return _predict_xgboost(model, vector, return_dist, missing=missing)
     if model["is_forest"]:
-        return _predict_forest(model, vector, return_dist)
-    return _predict_tree(model, vector, 0, return_dist)
+        return _predict_forest(model, vector, return_dist, missing=missing)
+    return _predict_tree(model, vector, 0, return_dist, missing=missing)
 
 
 def _predict_tree(
-    model: ModelData, vector: list[Any], tree_idx: int, return_dist: bool = False
+    model: ModelData,
+    vector: list[Any],
+    tree_idx: int,
+    return_dist: bool = False,
+    *,
+    missing: str = "error",
 ) -> Any:
     """Predict using a single tree."""
     return _predict_tree_recursive(
@@ -476,8 +495,12 @@ def _predict_tree(
         model.get("distributions", []),
         model.get("case_tables", []),
         model["meta"]["features"],
+        model["bool_features"],
         len(vector),
         return_dist,
+        missing,
+        tree_idx,
+        False,
     )
 
 
@@ -492,8 +515,136 @@ def _predict_tree_recursive(
     distributions: list[list[tuple[int, float]]],
     case_tables: list[CaseTable],
     features: list[Any],
+    bool_features: list[bool],
     n_input_features: int,
     return_dist: bool = False,
+    missing: str = "error",
+    tree_idx: int = 0,
+    xgboost: bool = False,
+    path: list[dict[str, Any]] | None = None,
+) -> Any:
+    """Hot tree traversal; path collection uses a separate implementation."""
+    if path is not None or xgboost:
+        return _predict_tree_path_recursive(
+            idx,
+            vector,
+            decisions,
+            leaves,
+            floats,
+            cat_vals,
+            strings,
+            distributions,
+            case_tables,
+            features,
+            bool_features,
+            n_input_features,
+            return_dist,
+            missing,
+            tree_idx,
+            xgboost,
+            path,
+        )
+    for _ in range(MAX_TREE_DEPTH):
+        if idx & LEAF_FLAG:
+            leaf_idx = idx & INDEX_MASK
+            if leaf_idx >= len(leaves):
+                raise RuntimeError(f"Invalid leaf index: {leaf_idx}")
+            leaf_type, val = leaves[leaf_idx]
+            if leaf_type == LEAF_CLASS:
+                if val >= len(strings):
+                    raise RuntimeError(f"Invalid string index in leaf: {val}")
+                return strings[val]
+            if leaf_type == LEAF_CLASS_DIST:
+                if val >= len(distributions):
+                    raise RuntimeError(f"Invalid distribution index in leaf: {val}")
+                dist_data = distributions[val]
+                if return_dist:
+                    return {strings[ci]: prob for ci, prob in dist_data}
+                if not dist_data or dist_data[0][0] >= len(strings):
+                    raise RuntimeError("Invalid class index in distribution")
+                return strings[dist_data[0][0]]
+            if val >= len(floats):
+                raise RuntimeError(f"Invalid float index in leaf: {val}")
+            return floats[val]
+
+        if idx >= len(decisions):
+            raise RuntimeError(f"Invalid decision index: {idx}")
+        feat, op, val, left, right = decisions[idx]
+        feat_val = None if feat >= n_input_features else vector[feat]
+        if feat_val is None and missing == "error":
+            feature_name = features[feat].get("name", str(feat))
+            raise MissingFeatureError(
+                f"feature {feat} ({feature_name!r}) is missing at "
+                f"tree {tree_idx} node {idx}"
+            )
+        if feat_val is not None and bool_features[feat]:
+            feat_val = normalize_bool(feat_val)
+
+        if op in (OP_LE, OP_LT):
+            if val >= len(floats):
+                raise RuntimeError(f"Invalid float index in decision: {val}")
+            if isinstance(feat_val, float) and feat_val != feat_val:
+                if missing == "error":
+                    feature_name = features[feat].get("name", str(feat))
+                    raise MissingFeatureError(
+                        f"feature {feat} ({feature_name!r}) is missing at "
+                        f"tree {tree_idx} node {idx}"
+                    )
+                go_left = False
+            else:
+                threshold = floats[val]
+                go_left = False
+                if feat_val is not None:
+                    try:
+                        go_left = (
+                            float(feat_val) < threshold
+                            if op == OP_LT
+                            else float(feat_val) <= threshold
+                        )
+                    except (TypeError, ValueError):
+                        go_left = False
+            idx = left if go_left else right
+        elif op == OP_EQ:
+            if val >= len(cat_vals):
+                raise RuntimeError(f"Invalid cat_val index in decision: {val}")
+            cat_idx = cat_vals[val]
+            if cat_idx >= len(strings):
+                raise RuntimeError(f"Invalid string index in cat_vals: {cat_idx}")
+            idx = (
+                left
+                if feat_val is not None and str(feat_val) == strings[cat_idx]
+                else right
+            )
+        elif op == OP_SWITCH:
+            if val >= len(case_tables):
+                raise RuntimeError(f"Invalid case_table index in decision: {val}")
+            table = case_tables[val]
+            idx = (
+                table["default"]
+                if feat_val is None
+                else table["lookup"].get(str(feat_val), table["default"])
+            )
+    raise RuntimeError("Max tree depth exceeded (possible corrupted model)")
+
+
+def _predict_tree_path_recursive(
+    idx: int,
+    vector: list[Any],
+    decisions: list[tuple[int, int, int, int, int]],
+    leaves: list[tuple[int, int]],
+    floats: list[float],
+    cat_vals: list[int],
+    strings: list[str],
+    distributions: list[list[tuple[int, float]]],
+    case_tables: list[CaseTable],
+    features: list[Any],
+    bool_features: list[bool],
+    n_input_features: int,
+    return_dist: bool = False,
+    missing: str = "error",
+    tree_idx: int = 0,
+    xgboost: bool = False,
+    path: list[dict[str, Any]] | None = None,
 ) -> Any:
     """Core tree traversal logic."""
     for _ in range(MAX_TREE_DEPTH):
@@ -506,21 +657,25 @@ def _predict_tree_recursive(
             if leaf_type == LEAF_CLASS:
                 if val >= len(strings):
                     raise RuntimeError(f"Invalid string index in leaf: {val}")
-                return strings[val]
+                result: Any = strings[val]
+                return (result, leaf_idx) if path is not None else result
             elif leaf_type == LEAF_CLASS_DIST:
                 # Leaf with distribution
                 if val >= len(distributions):
                     raise RuntimeError(f"Invalid distribution index in leaf: {val}")
                 dist_data = distributions[val]
                 if return_dist:
-                    return {strings[ci]: prob for ci, prob in dist_data}
+                    result = {strings[ci]: prob for ci, prob in dist_data}
+                    return (result, leaf_idx) if path is not None else result
                 if not dist_data or dist_data[0][0] >= len(strings):
                     raise RuntimeError("Invalid class index in distribution")
-                return strings[dist_data[0][0]]
+                result = strings[dist_data[0][0]]
+                return (result, leaf_idx) if path is not None else result
             else:  # LEAF_FLOAT
                 if val >= len(floats):
                     raise RuntimeError(f"Invalid float index in leaf: {val}")
-                return floats[val]
+                result = floats[val]
+                return (result, leaf_idx) if path is not None else result
 
         # Decision node
         if idx >= len(decisions):
@@ -532,7 +687,33 @@ def _predict_tree_recursive(
         # fail (go right) and switch nodes take their default branch. This keeps
         # the two runners in sync and fixes switch nodes, whose right placeholder
         # is 0 (which would otherwise jump traversal to decision node 0).
+        # Keep caller indexing outside conversion/comparison handlers: exceptions
+        # raised by a lazy vector must propagate unchanged.
         feat_val = None if feat >= n_input_features else vector[feat]
+        is_numeric = op in (OP_LE, OP_LT)
+        is_missing = feat_val is None or (
+            is_numeric and isinstance(feat_val, float) and feat_val != feat_val
+        )
+        if is_missing and missing == "error":
+            feature_name = features[feat].get("name", str(feat))
+            raise MissingFeatureError(
+                f"feature {feat} ({feature_name!r}) is missing at "
+                f"tree {tree_idx} node {idx}"
+            )
+        if not is_missing and bool_features[feat]:
+            feat_val = normalize_bool(feat_val)
+        if xgboost and not is_missing:
+            try:
+                numeric = float(feat_val)
+            except (TypeError, ValueError):
+                pass
+            else:
+                try:
+                    feat_val = struct.unpack("<f", struct.pack("<f", numeric))[0]
+                except OverflowError as e:
+                    raise ValueError(
+                        f"XGBoost input {feat_val!r} exceeds float32 range"
+                    ) from e
 
         if op in (OP_LE, OP_LT):
             # Numeric comparison. Coerce the value to float regardless of the
@@ -551,6 +732,18 @@ def _predict_tree_recursive(
                     )
                 except (TypeError, ValueError):
                     go_left = False
+            branch = "left" if go_left else "right"
+            if path is not None:
+                path.append(
+                    {
+                        "node": idx,
+                        "feature": feat,
+                        "name": features[feat].get("name", str(feat)),
+                        "op": "<" if op == OP_LT else "<=",
+                        "value": threshold,
+                        "branch": branch,
+                    }
+                )
             idx = left if go_left else right
         elif op == OP_EQ:
             # Categorical comparison
@@ -561,21 +754,98 @@ def _predict_tree_recursive(
                 raise RuntimeError(f"Invalid string index in cat_vals: {cat_idx}")
             cat_str = strings[cat_idx]
             go_left = False if feat_val is None else (str(feat_val) == cat_str)
+            branch = "left" if go_left else "right"
+            if path is not None:
+                path.append(
+                    {
+                        "node": idx,
+                        "feature": feat,
+                        "name": features[feat].get("name", str(feat)),
+                        "op": "=",
+                        "value": cat_str,
+                        "branch": branch,
+                    }
+                )
             idx = left if go_left else right
         elif op == OP_SWITCH:
             # Case table lookup
             if val >= len(case_tables):
                 raise RuntimeError(f"Invalid case_table index in decision: {val}")
             table = case_tables[val]
-            idx = table["default"]
+            next_idx = table["default"]
+            branch = "default"
             if feat_val is not None:
-                idx = table["lookup"].get(str(feat_val), table["default"])
+                key = str(feat_val)
+                if key in table["lookup"]:
+                    next_idx = table["lookup"][key]
+                    branch = "case"
+            if path is not None:
+                path.append(
+                    {
+                        "node": idx,
+                        "feature": feat,
+                        "name": features[feat].get("name", str(feat)),
+                        "op": "switch",
+                        "value": None,
+                        "branch": branch,
+                    }
+                )
+            idx = next_idx
 
     raise RuntimeError("Max tree depth exceeded (possible corrupted model)")
 
 
+def _tree_path(
+    model: ModelData, vector: list[Any], tree_idx: int, missing: str
+) -> tuple[Any, dict[str, Any]]:
+    steps: list[dict[str, Any]] = []
+    result, leaf_idx = _predict_tree_recursive(
+        model["tree_offsets"][tree_idx],
+        vector,
+        model["decisions"],
+        model["leaves"],
+        model["floats"],
+        model["cat_vals"],
+        model["strings"],
+        model.get("distributions", []),
+        model.get("case_tables", []),
+        model["meta"]["features"],
+        model["bool_features"],
+        len(vector),
+        False,
+        missing,
+        tree_idx,
+        bool(model.get("is_xgboost")),
+        steps,
+    )
+    return result, {"tree": tree_idx, "leaf": leaf_idx, "path": steps}
+
+
+def predict_path(
+    model: ModelData, vector: list[Any], *, missing: str = "error"
+) -> dict[str, Any]:
+    """Predict and return the model-global leaf ID and decisions evaluated."""
+    _check_missing_policy(missing)
+    n_trees = model["n_trees"]
+    evaluated = [_tree_path(model, vector, i, missing) for i in range(n_trees)]
+    values = [item[0] for item in evaluated]
+    trees = [item[1] for item in evaluated]
+
+    if model.get("is_xgboost"):
+        prediction = _aggregate_xgboost(model, values, False)
+    elif model["is_forest"]:
+        prediction = _aggregate_forest(model, values, False)
+    else:
+        prediction = values[0]
+    return {"prediction": prediction, "trees": trees}
+
+
 def _predict_forest(
-    model: ModelData, vector: list[Any], return_dist: bool = False
+    model: ModelData,
+    vector: list[Any],
+    return_dist: bool = False,
+    *,
+    missing: str = "error",
 ) -> Any:
     """Predict using forest (majority vote or mean)."""
     decisions = model["decisions"]
@@ -600,15 +870,25 @@ def _predict_forest(
             distributions,
             case_tables,
             features,
+            model["bool_features"],
             n_input_features,
             return_dist,
+            missing,
+            i,
+            False,
         )
         for i in range(model["n_trees"])
     ]
 
+    return _aggregate_forest(model, predictions, return_dist)
+
+
+def _aggregate_forest(
+    model: ModelData, predictions: list[Any], return_dist: bool
+) -> Any:
+    """Aggregate per-tree forest outputs for both prediction APIs."""
     if model["is_regression"]:
         return sum(predictions) / len(predictions)
-
     if return_dist:
         # Aggregate distributions
         combined: dict[Any, float] = {}
@@ -621,7 +901,6 @@ def _predict_forest(
         total = sum(combined.values())
         return {cls: count / total for cls, count in combined.items()}
 
-    # Majority vote
     return Counter(predictions).most_common(1)[0][0]
 
 
@@ -639,25 +918,6 @@ def _softmax(scores: list[float]) -> list[float]:
     exp_scores = [math.exp(s - max_score) for s in scores]
     total = sum(exp_scores)
     return [e / total for e in exp_scores]
-
-
-def _xgboost_row(values):
-    """Match DMatrix float32 input precision before numeric traversal."""
-    row: list = []
-    for value in values:
-        if value is None:
-            row.append(None)
-            continue
-        try:
-            numeric = float(value)
-        except (TypeError, ValueError):
-            row.append(value)
-            continue
-        try:
-            row.append(struct.unpack("<f", struct.pack("<f", numeric))[0])
-        except OverflowError as e:
-            raise ValueError(f"XGBoost input {value!r} exceeds float32 range") from e
-    return row
 
 
 def _xgboost_base_scores(value, n_classes, is_regression):
@@ -678,8 +938,41 @@ def _xgboost_base_scores(value, n_classes, is_regression):
     return scores
 
 
+def _aggregate_xgboost(model: ModelData, values: Any, return_dist: bool = False) -> Any:
+    """Aggregate XGBoost tree outputs for both prediction APIs."""
+    n_classes = len(model["class_labels"])
+    class_labels = model["class_labels"]
+    meta_dict = cast(dict, model.get("meta", {}))
+    metadata = cast(dict, meta_dict.get("metadata", {}))
+    bases = _xgboost_base_scores(
+        metadata.get("base_score", 0.0), n_classes, model["is_regression"]
+    )
+    if model["is_regression"]:
+        return bases[0] + sum(values)
+    if n_classes == 2:
+        probability = _sigmoid(bases[0] + sum(values))
+        if return_dist:
+            return {class_labels[0]: 1 - probability, class_labels[1]: probability}
+        return (
+            class_labels[1]
+            if probability > BINARY_CLASSIFICATION_THRESHOLD
+            else class_labels[0]
+        )
+    scores = list(bases)
+    for tree_idx, value in enumerate(values):
+        scores[tree_idx % n_classes] += value
+    probabilities = _softmax(scores)
+    if return_dist:
+        return {class_labels[i]: probabilities[i] for i in range(n_classes)}
+    return class_labels[probabilities.index(max(probabilities))]
+
+
 def _predict_xgboost(
-    model: ModelData, vector: list[Any], return_dist: bool = False
+    model: ModelData,
+    vector: list[Any],
+    return_dist: bool = False,
+    *,
+    missing: str = "error",
 ) -> Any:
     """
     XGBoost prediction: additive model with sigmoid/softmax.
@@ -692,22 +985,7 @@ def _predict_xgboost(
       raw_scores[k] = base_score + sum(trees for class k)
       probabilities = softmax(raw_scores)
     """
-    vector = _xgboost_row(vector)
     n_trees = model["n_trees"]
-    n_classes = len(model["class_labels"])
-    class_labels = model["class_labels"]
-    # base_score is the additive offset the trained booster used; for binary
-    # classification XGBoost stores it in probability space, so we round-trip
-    # through the inverse logit so the addition lives in raw-score space and
-    # matches XGBoostTree.predict.
-    meta_dict = cast(dict, model.get("meta", {}))
-    metadata_blob = cast(dict, meta_dict.get("metadata", {}))
-    raw_base_score = metadata_blob.get("base_score", 0.0)
-    base_scores = _xgboost_base_scores(
-        raw_base_score, n_classes, model["is_regression"]
-    )
-    base_score = base_scores[0]
-
     decisions = model["decisions"]
     leaves = model["leaves"]
     floats = model["floats"]
@@ -730,50 +1008,25 @@ def _predict_xgboost(
             distributions,
             case_tables,
             features,
+            model["bool_features"],
             n_input_features,
+            False,
+            missing,
+            t_idx,
+            True,
         )
 
-    if model["is_regression"]:
-        raw_score = base_score
-        for i in range(n_trees):
-            raw_score += _eval_one(i)
-        return raw_score
-
-    if n_classes == 2:
-        # Binary classification
-        raw_score = base_score
-        for i in range(n_trees):
-            raw_score += _eval_one(i)
-        prob = _sigmoid(raw_score)
-        if return_dist:
-            return {class_labels[0]: 1 - prob, class_labels[1]: prob}
-        return (
-            class_labels[1]
-            if prob > BINARY_CLASSIFICATION_THRESHOLD
-            else class_labels[0]
-        )
-
-    # Multiclass: K trees per round
-    n_rounds = n_trees // n_classes
-    scores = list(base_scores)
-
-    for round_idx in range(n_rounds):
-        for class_idx in range(n_classes):
-            tree_idx = round_idx * n_classes + class_idx
-            scores[class_idx] += _eval_one(tree_idx)
-
-    probs = _softmax(scores)
-    if return_dist:
-        return {class_labels[i]: probs[i] for i in range(n_classes)}
-
-    best_idx = probs.index(max(probs))
-    return class_labels[best_idx]
+    return _aggregate_xgboost(
+        model, (_eval_one(tree_idx) for tree_idx in range(n_trees)), return_dist
+    )
 
 
 def predict_batch(
     model: ModelData,
     vectors: list[list[Any]],
     return_dist: bool = False,
+    *,
+    missing: str = "error",
 ) -> list[Any]:
     """
     Make predictions for multiple feature vectors.
@@ -786,7 +1039,9 @@ def predict_batch(
     Returns:
         List of predictions
     """
-    return [predict(model, v, return_dist=return_dist) for v in vectors]
+    return [
+        predict(model, v, return_dist=return_dist, missing=missing) for v in vectors
+    ]
 
 
 def read_cart_metadata(source: str | bytes) -> dict[str, Any]:
@@ -871,15 +1126,33 @@ class Predictor:
         else:
             self.model = model_source
 
-    def predict(self, vector: list[Any], return_dist: bool = False) -> Any:
+    def predict(
+        self,
+        vector: list[Any],
+        return_dist: bool = False,
+        *,
+        missing: str = "error",
+    ) -> Any:
         """Make a prediction for a single feature vector."""
-        return predict(self.model, vector, return_dist=return_dist)
+        return predict(self.model, vector, return_dist=return_dist, missing=missing)
+
+    def predict_path(
+        self, vector: list[Any], *, missing: str = "error"
+    ) -> dict[str, Any]:
+        """Predict and return the decisions and model-global leaf IDs."""
+        return predict_path(self.model, vector, missing=missing)
 
     def predict_batch(
-        self, vectors: list[list[Any]], return_dist: bool = False
+        self,
+        vectors: list[list[Any]],
+        return_dist: bool = False,
+        *,
+        missing: str = "error",
     ) -> list[Any]:
         """Make predictions for multiple feature vectors."""
-        return predict_batch(self.model, vectors, return_dist=return_dist)
+        return predict_batch(
+            self.model, vectors, return_dist=return_dist, missing=missing
+        )
 
     @property
     def feature_names(self) -> list[str]:

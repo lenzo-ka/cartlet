@@ -20,8 +20,9 @@ import os
 import pytest
 
 import cartlet.runner as pkg_runner
+from cartlet import DecisionTree, RandomForest
 from cartlet.io.bytes import write_tree_bytes
-from cartlet.types import FeatureSpec
+from cartlet.types import _BOOL_FALSE, _BOOL_TRUE, FeatureSpec
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PREDICT_PY = os.path.join(REPO_ROOT, "cartlet", "bundled", "predict.py")
@@ -37,6 +38,11 @@ def _load_bundled_module():
 bundled = _load_bundled_module()
 
 
+def test_bundled_bool_spellings_match_package():
+    assert bundled._BOOL_TRUE == _BOOL_TRUE
+    assert bundled._BOOL_FALSE == _BOOL_FALSE
+
+
 def _outcome(fn):
     """Return ('ok', value) or ('err', ExceptionType) without raising."""
     try:
@@ -45,14 +51,103 @@ def _outcome(fn):
         return ("err", type(e))
 
 
-def _assert_parity(cart_path, vector):
+def _assert_parity(cart_path, vector, *, missing="error"):
     """Both runners must return the same value or the same error type."""
-    pkg = _outcome(lambda: pkg_runner.predict(pkg_runner.load_model(cart_path), vector))
-    bnd = _outcome(lambda: bundled.predict(bundled.load_cart(cart_path), vector))
+    pkg = _outcome(
+        lambda: pkg_runner.predict(
+            pkg_runner.load_model(cart_path), vector, missing=missing
+        )
+    )
+    bnd = _outcome(
+        lambda: bundled.predict(bundled.load_cart(cart_path), vector, missing=missing)
+    )
     assert pkg[0] == bnd[0], f"one runner errored, the other did not: {pkg} vs {bnd}"
     if pkg[0] == "ok":
         assert pkg[1] == bnd[1], f"runners disagree: {pkg[1]!r} vs {bnd[1]!r}"
     return pkg
+
+
+@pytest.mark.parametrize("kind", ["tree", "forest"])
+@pytest.mark.parametrize("value", [True, False, "true", "0", 1])
+def test_bool_categorical_raw_input_parity(tmp_path, kind, value):
+    features = [{"name": "flag", "dtype": "bool", "type": "cat"}]
+    rows = [[False], [True]] * 8
+    labels = ["off", "on"] * 8
+    if kind == "tree":
+        model = DecisionTree(features=features, max_depth=2)
+        model.load_data(rows, labels)
+        model.train(validation_split=0)
+    else:
+        model = RandomForest(
+            n_estimators=3,
+            max_features=None,
+            bootstrap=False,
+            features=features,
+            max_depth=2,
+        )
+        model.load_data(rows, labels)
+        model.train(random_state=1)
+    path = str(tmp_path / f"bool-{kind}.cart")
+    model.export(path)
+    package_model = pkg_runner.load_model(path)
+    bundled_model = bundled.load_cart(path)
+
+    expected = model.predict([value])
+    expected_path = model.predict_path([value])
+    assert pkg_runner.predict(package_model, [value]) == expected
+    assert bundled.predict(bundled_model, [value]) == expected
+    assert pkg_runner.predict_path(package_model, [value]) == expected_path
+    assert bundled.predict_path(bundled_model, [value]) == expected_path
+
+
+@pytest.mark.parametrize("value", ["maybe", []])
+def test_unrecognized_bool_raises_in_all_predictors(tmp_path, value):
+    model = DecisionTree(
+        features=[{"name": "flag", "dtype": "bool", "type": "cat"}], max_depth=2
+    )
+    model.load_data([[False], [True]] * 4, ["off", "on"] * 4)
+    model.train(validation_split=0)
+    path = str(tmp_path / "bool-invalid.cart")
+    model.export(path)
+    package_model = pkg_runner.load_model(path)
+    bundled_model = bundled.load_cart(path)
+    for operation in (
+        lambda: model.predict([value]),
+        lambda: pkg_runner.predict(package_model, [value]),
+        lambda: bundled.predict(bundled_model, [value]),
+        lambda: model.predict_path([value]),
+        lambda: pkg_runner.predict_path(package_model, [value]),
+        lambda: bundled.predict_path(bundled_model, [value]),
+    ):
+        with pytest.raises(ValueError, match="Cannot convert"):
+            operation()
+
+
+@pytest.mark.parametrize(
+    ("dtype", "training_value", "inputs", "expected"),
+    [
+        ("int", 1, [1, 1.0, "1"], ["hit", "miss", "hit"]),
+        ("float", 1.0, [1, 1.0, "1"], ["miss", "hit", "miss"]),
+    ],
+)
+def test_numeric_dtype_categorical_string_parity(
+    tmp_path, dtype, training_value, inputs, expected
+):
+    model = DecisionTree(
+        features=[{"name": "category", "dtype": dtype, "type": "cat"}],
+        max_depth=2,
+    )
+    other = 2 if dtype == "int" else 2.0
+    model.load_data([[training_value], [other]] * 4, ["hit", "miss"] * 4)
+    model.train(validation_split=0)
+    path = str(tmp_path / f"cat-{dtype}.cart")
+    model.export(path)
+    package_model = pkg_runner.load_model(path)
+    bundled_model = bundled.load_cart(path)
+    for value, result in zip(inputs, expected, strict=True):
+        assert model.predict([value]) == result
+        assert pkg_runner.predict(package_model, [value]) == result
+        assert bundled.predict(bundled_model, [value]) == result
 
 
 # =============================================================================
@@ -105,8 +200,36 @@ def test_switch_missing_feature_takes_default(tmp_path):
     path = str(tmp_path / "switch.cart")
     _write_switch_model(path)
     # Empty vector: feature index 0 is past the end of the input.
-    assert _assert_parity(path, []) == ("ok", "unknown")
-    assert _assert_parity(path, [None]) == ("ok", "unknown")
+    assert _assert_parity(path, [], missing="right") == ("ok", "unknown")
+    assert _assert_parity(path, [None], missing="right") == ("ok", "unknown")
+
+
+@pytest.mark.parametrize("vector", [[], [None]])
+def test_switch_missing_feature_errors_by_default(tmp_path, vector):
+    path = str(tmp_path / "switch.cart")
+    _write_switch_model(path)
+    package = pkg_runner.load_model(path)
+    standalone = bundled.load_cart(path)
+    match = r"feature 0 \('color'\) is missing at tree 0 node 0"
+    with pytest.raises(pkg_runner.MissingFeatureError, match=match):
+        pkg_runner.predict(package, vector)
+    with pytest.raises(bundled.MissingFeatureError, match=match):
+        bundled.predict(standalone, vector)
+
+
+def test_none_at_categorical_equality_node(tmp_path):
+    tree = ["color", "=", "red", "warm", "other"]
+    specs = [FeatureSpec(name="color", dtype="str", type="cat", values={"red"})]
+    path = str(tmp_path / "categorical.cart")
+    write_tree_bytes(path, tree, specs, {"color": 0}, ["warm", "other"], False)
+    package = pkg_runner.load_model(path)
+    standalone = bundled.load_cart(path)
+    with pytest.raises(pkg_runner.MissingFeatureError):
+        pkg_runner.predict(package, [None])
+    with pytest.raises(bundled.MissingFeatureError):
+        bundled.predict(standalone, [None])
+    assert pkg_runner.predict(package, [None], missing="right") == "other"
+    assert bundled.predict(standalone, [None], missing="right") == "other"
 
 
 # =============================================================================
@@ -124,7 +247,7 @@ def test_numeric_node_non_numeric_value(tmp_path):
     assert _assert_parity(path, [9.0]) == ("ok", "big")
     # A non-numeric string at a numeric node: comparison fails -> right ("big").
     assert _assert_parity(path, ["not-a-number"]) == ("ok", "big")
-    assert _assert_parity(path, [None]) == ("ok", "big")
+    assert _assert_parity(path, [None], missing="right") == ("ok", "big")
 
 
 # =============================================================================
