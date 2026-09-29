@@ -88,6 +88,32 @@ def test_sparse_categorical_encoding_matches_dense_without_quadratic_storage():
     assert (snames, scolumns, svalues) == (names, columns, values)
 
 
+def test_sparse_categorical_encoding_matches_reference_csr():
+    np = pytest.importorskip("numpy")
+    sparse_module = pytest.importorskip("scipy.sparse")
+    from cartlet.trainer.sklearn import encode_categorical
+    from cartlet.types import FeatureSpec
+
+    X = [["b", 0.0], ["a", 2.5], ["b", -1.0]]
+    specs = [
+        FeatureSpec(name="kind", dtype="str", type="cat"),
+        FeatureSpec(name="score", dtype="float", type="num"),
+    ]
+    actual, names, columns, values = encode_categorical(
+        X, ["kind", "score"], specs, sparse=True
+    )
+    expected = sparse_module.csr_matrix(
+        np.asarray([[0, 1, 0], [1, 0, 2.5], [0, 1, -1]], dtype=np.float32)
+    )
+
+    assert names == ["kind=a", "kind=b", "score"]
+    assert columns == [0]
+    assert values == {0: ["a", "b"]}
+    assert actual.dtype == expected.dtype
+    assert actual.shape == expected.shape
+    assert (actual != expected).nnz == 0
+
+
 def test_xgboost_multiclass_training_supports_current_vector_intercepts():
     pytest.importorskip("xgboost")
     from cartlet.xgboost import XGBoostTree

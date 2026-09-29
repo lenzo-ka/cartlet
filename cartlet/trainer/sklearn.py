@@ -11,11 +11,17 @@ then converts back to our native format with proper equality splits.
 from __future__ import annotations
 
 import importlib.util
+from collections.abc import Sequence
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
 from ..types import PROB_HIGH_CONFIDENCE, TYPE_CAT
-from .base import Trainer, make_classification_distribution, normalize_importances
+from .base import (
+    Trainer,
+    _IndexedSequence,
+    make_classification_distribution,
+    normalize_importances,
+)
 
 if TYPE_CHECKING:
     from ..tree import DecisionTree
@@ -39,7 +45,7 @@ def _check_sklearn() -> bool:
 
 
 def encode_categorical(
-    X: list[list[Any]],
+    X: Sequence[Sequence[Any]],
     feature_names: list[str],
     feature_specs: list[FeatureSpec],
     *,
@@ -80,6 +86,7 @@ def encode_categorical(
             encoded_names.append(name)
 
     if sparse and cat_columns:
+        np = import_module("numpy")
         csr_matrix = import_module("scipy.sparse").csr_matrix
 
         offsets = []
@@ -94,16 +101,31 @@ def encode_categorical(
                 width += len(cat_values[col])
             else:
                 width += 1
-        data, indices, indptr = [], [], [0]
-        for row in X:
+        if len(cat_columns) == len(feature_names):
+            nnz = len(X) * len(feature_names)
+        else:
+            nnz = sum(
+                1
+                for row in X
+                for col, value in enumerate(row)
+                if col in cat_values or float(value) != 0
+            )
+        data = np.empty(nnz, dtype=np.float32)
+        indices = np.empty(nnz, dtype=np.int32)
+        indptr = np.empty(len(X) + 1, dtype=np.int64)
+        cursor = 0
+        indptr[0] = 0
+        for row_idx, row in enumerate(X):
             for col, value in enumerate(row):
                 if col in cat_values:
-                    indices.append(offsets[col] + value_indices[col][value])
-                    data.append(1.0)
+                    indices[cursor] = offsets[col] + value_indices[col][value]
+                    data[cursor] = 1.0
+                    cursor += 1
                 elif float(value) != 0:
-                    indices.append(offsets[col])
-                    data.append(float(value))
-            indptr.append(len(data))
+                    indices[cursor] = offsets[col]
+                    data[cursor] = float(value)
+                    cursor += 1
+            indptr[row_idx + 1] = cursor
         matrix = csr_matrix((data, indices, indptr), shape=(len(X), width))
         return matrix, encoded_names, cat_columns, cat_values
 
@@ -302,14 +324,14 @@ class Sklearn(Trainer):
     def train(
         self,
         tree: DecisionTree,
-        train_rows: list[int],
+        train_rows: Sequence[int],
         val_rows: list[int] | None = None,
     ) -> Any:
         """Build the decision tree using sklearn."""
         from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 
         # One-hot encode categorical features
-        X_subset = [tree.X[i] for i in train_rows]
+        X_subset = _IndexedSequence(tree.X, train_rows)
         X_encoded, encoded_names, cat_cols, cat_vals = encode_categorical(
             X_subset, tree.feature_names, tree.feature_specs, sparse=True
         )

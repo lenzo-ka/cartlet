@@ -25,7 +25,7 @@ from .io.bytes import write_tree_bytes
 from .io.cart_format import rebuild_tree_from_cart
 from .io.utils import write_with_optional_gzip
 from .trainer import Native, Trainer
-from .trainer.base import normalize_importances
+from .trainer.base import _IndexedSequence, normalize_importances
 from .types import (
     CRITERION_ENTROPY,
     DEFAULT_MIN_DIST_ENTROPY,
@@ -455,7 +455,7 @@ class DecisionTree(BaseModel):
         if not test_rows:
             return {}
 
-        X_test = [self.X[i] for i in test_rows]
+        X_test = _IndexedSequence(self.X, test_rows)
         y_test = [self.y[i] for i in test_rows]
         metrics = evaluate_tree(self, X_test, y_test)
         if self.verbose:

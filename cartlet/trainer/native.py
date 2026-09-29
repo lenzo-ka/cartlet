@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import math
 import random
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from time import time
 from typing import TYPE_CHECKING, Any
@@ -211,7 +211,7 @@ class Native(Trainer):
     def train(
         self,
         tree: DecisionTree,
-        train_rows: list[int],
+        train_rows: Sequence[int],
         val_rows: list[int] | None = None,
     ) -> Any:
         """Build the decision tree using pure Python."""
@@ -228,7 +228,6 @@ class Native(Trainer):
         self._feature_importances = dict.fromkeys(tree.feature_names, 0.0)
         self._total_samples = sum(tree.counts[i] for i in train_rows)
 
-        train_rows = [i for i in train_rows if tree.counts[i] > 0]
         model = self._build_tree(tree, set(train_rows))
 
         if self.prune and val_rows:
@@ -336,7 +335,7 @@ class Native(Trainer):
         self,
         tree: DecisionTree,
         node: Any,
-        train_rows: list[int],
+        train_rows: Sequence[int],
         val_rows: list[int],
     ) -> Any:
         """

@@ -115,17 +115,16 @@ def validate_dataset(
         raise ValueError("counts and X must have same length")
     if any(not isinstance(row, Sequence) or isinstance(row, (str, bytes)) for row in X):
         raise ValueError("training rows must be sequences of feature values")
-    rows = [list(row) for row in X]
-    width = len(rows[0])
-    if width == 0 or any(len(row) != width for row in rows):
+    width = len(X[0])
+    if width == 0 or any(len(row) != width for row in X):
         raise ValueError("training rows must be rectangular with at least one feature")
     targets = list(y) if y is not None else None
-    for value in chain(chain.from_iterable(rows), targets or []):
+    for value in chain(chain.from_iterable(X), targets or []):
         if not isinstance(value, (str, int, float, bool)) or (
             isinstance(value, (int, float)) and not math.isfinite(value)
         ):
             raise ValueError("training values must be finite scalar strings or numbers")
-    weights = list(counts) if counts is not None else [1] * len(rows)
+    weights = list(counts) if counts is not None else [1] * len(X)
     if any(
         not isinstance(weight, (int, float))
         or isinstance(weight, bool)
@@ -142,11 +141,20 @@ def validate_dataset(
         raise ValueError("total training weight must be finite") from exc
     if not math.isfinite(total):
         raise ValueError("total training weight must be finite")
-    active = [i for i, weight in enumerate(weights) if weight > 0]
+    if all(weight > 0 for weight in weights):
+        return [list(row) for row in X], targets, weights
     return (
-        [rows[i] for i in active],
-        [targets[i] for i in active] if targets is not None else None,
-        [weights[i] for i in active],
+        [list(row) for row, weight in zip(X, weights, strict=True) if weight > 0],
+        (
+            [
+                target
+                for target, weight in zip(targets, weights, strict=True)
+                if weight > 0
+            ]
+            if targets is not None
+            else None
+        ),
+        [weight for weight in weights if weight > 0],
     )
 
 

@@ -29,6 +29,22 @@ def test_models_reject_invalid_training_data(model_class, X, y, weights):
         model_class().load_data(X, y, weights)
 
 
+@pytest.mark.parametrize("model_class", [DecisionTree, RandomForest])
+def test_training_data_is_detached_from_caller(model_class):
+    X = [["a"], ["b"], ["a"], ["b"]]
+    y = ["A", "B", "A", "B"]
+    weights = [1.0, 1.0, 1.0, 1.0]
+    model = model_class(max_depth=1)
+    model.load_data(X, y, weights)
+
+    X[0][0] = "b"
+    y[0] = "B"
+    weights[0] = 100.0
+    model.train(trainer="native", random_state=7)
+
+    assert model.predict(["a"]) == "A"
+
+
 @pytest.mark.parametrize("metrics", [confusion_matrix, per_class_metrics])
 def test_metrics_reject_misaligned_labels(metrics):
     with pytest.raises(ValueError):

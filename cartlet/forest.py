@@ -10,14 +10,14 @@ import math
 import random
 from collections import Counter
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, cast
 
 from .base import BaseModel, _read_model_artifact
 from .io.bytes import write_forest_bytes
 from .io.cart_format import rebuild_tree_from_cart
 from .io.utils import write_with_optional_gzip
 from .trainer import Native
-from .trainer.base import normalize_importances
+from .trainer.base import _IndexedSequence, normalize_importances
 from .tree import DecisionTree
 from .types import (
     _MAX_RANDOM_SEED,
@@ -328,12 +328,14 @@ class RandomForest(BaseModel):
         self, indices: list[int], seed: int | None, max_features: int
     ) -> DecisionTree:
         """Train a single tree on bootstrap sample."""
-        X_sample = [self.X[i] for i in indices]
-        y_sample = [self.y[i] for i in indices]
-        counts_sample = [self.counts[i] for i in indices]
-
         tree = self._make_tree()
-        tree.load_data(X_sample, y_sample, counts_sample)
+        tree.X = cast(list[list[Any]], _IndexedSequence(self.X, indices))
+        tree.y = cast(list[Any], _IndexedSequence(self.y, indices))
+        tree.counts = cast(list[int], _IndexedSequence(self.counts, indices))
+        tree.feature_names = self.feature_names
+        tree.feature_specs = self.feature_specs
+        tree._detected_task = self._detected_task
+        tree._rebuild_name_to_col()
 
         tree_trainer = Native(
             max_depth=self.max_depth,
@@ -345,7 +347,15 @@ class RandomForest(BaseModel):
             categorical_split=self.categorical_split,
         )
 
-        tree.train(trainer=tree_trainer)
+        tree.model = tree_trainer.train(tree, range(len(indices)))
+        tree.training_summary = {
+            "training_samples": len(indices),
+            "validation_samples": 0,
+            "test_samples": 0,
+        }
+        tree.X = []
+        tree.y = []
+        tree.counts = []
         return tree
 
     def _train_sklearn(
