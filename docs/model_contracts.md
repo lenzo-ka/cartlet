@@ -55,7 +55,8 @@ default `missing="error"` raises `MissingFeatureError` only when an evaluated
 decision tests a missing value. `None` and a feature beyond the vector length
 are always missing. A
 numeric-node value is missing when `float(value)` is NaN, so the string `"nan"`
-is missing there. At categorical equality and switch decisions, a non-string
+is missing there. At categorical equality, membership, and switch decisions,
+a non-string
 scalar whose self-inequality returns a trusted Boolean true is missing; a string
 `"nan"` remains a category. Training rejects nonfinite values, so no model
 learns a NaN. The compatibility policy `missing="right"` routes those values

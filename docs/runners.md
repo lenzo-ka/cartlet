@@ -171,9 +171,9 @@ under the default policy, naming the feature, tree, and decision node. Missing
 values in features that the evaluated paths do not test are irrelevant. `None`
 and an index at or beyond the vector length are always
 missing. At a numeric node, any value that successfully converts with `float()`
-and produces NaN is missing, including the string `"nan"`. At equality and
-switch nodes, a non-string scalar is missing when comparing it with itself using
-`!=` produces a Boolean true result. This covers Python and NumPy scalar NaNs
+and produces NaN is missing, including the string `"nan"`. At equality,
+membership, and switch nodes, a non-string scalar is missing when comparing it
+with itself using `!=` produces a Boolean true result. This covers Python and NumPy scalar NaNs
 without making NumPy a runner dependency. Training rejects nonfinite values, so
 no model can learn a NaN category.
 
@@ -181,7 +181,8 @@ Self-inequality is deliberately conservative: an exception from `__ne__`, or a
 result that is neither a built-in Boolean nor NumPy's scalar Boolean, does not
 establish missingness. The value continues through ordinary comparison or bool
 normalization, which may then reject it. Strings never use this test, so a
-literal `"nan"` remains an ordinary category at equality and switch nodes.
+literal `"nan"` remains an ordinary category at equality, membership, and
+switch nodes.
 
 For compatibility with 0.6.0, `missing="right"` makes values that are missing
 under the new definition take the right branch at comparisons and the default

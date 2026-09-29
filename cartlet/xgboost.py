@@ -390,15 +390,13 @@ class XGBoostTree(BaseModel):
         is_categorical = isinstance(split_condition, list)
 
         if is_categorical:
-            categories = split_condition
+            categories = sorted(
+                self._get_category_value(feat_name, cat_idx)
+                for cat_idx in split_condition
+            )
             if len(categories) == 1:
-                cat_val = self._get_category_value(feat_name, categories[0])
-                return [feature_ref, "=", cat_val, yes_child, no_child]
-            cases = {}
-            for cat_idx in categories:
-                cat_val = self._get_category_value(feat_name, cat_idx)
-                cases[cat_val] = yes_child
-            return [feature_ref, "switch", cases, no_child]
+                return [feature_ref, "=", categories[0], yes_child, no_child]
+            return [feature_ref, "in", categories, yes_child, no_child]
 
         return [feature_ref, "<", float(split_condition), yes_child, no_child]
 
