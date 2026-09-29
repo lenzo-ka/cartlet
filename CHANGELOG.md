@@ -9,9 +9,13 @@ requires it.
 
 ### Breaking changes
 
-- `.cart` model format 3 adds decision flags, a category-set table, q16 leaf
-  probabilities, 32-bit varint record/table fields, and a 52-byte u32-count
-  header; JSON/JSONL/pickle tree and forest envelopes use `schema_version: 3`.
+- `.cart` model format 3 adds decision flags, a category-set table, 16-bit
+  quantized leaf probabilities (each stored value within 1/131070, about
+  7.6e-6, of the trained probability; loaders renormalize, with the bound in
+  [the format spec](docs/cart_format.md)), and varint record and table fields
+  behind a 52-byte header. Models are no longer limited to 64 features or
+  64 KiB of strings, and small models are smaller than in format 2.
+  JSON/JSONL/pickle tree and forest envelopes use `schema_version: 3`.
   Format 2 and schema 2, written by Cartlet 0.6.0, are refused. Migration:
   re-export from the training model or retrain, and replace copied standalone
   runners (`cartlet/bundled/predict.py`) together with the models they load.
