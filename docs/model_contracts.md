@@ -43,16 +43,24 @@ total; zero-weight rows are omitted from fitting. Loaded observations are copied
 so caller mutations do not change the stored training data.
 
 Prediction has a separate missing-input policy. The default, `missing="error"`,
-raises `MissingFeatureError` only when an evaluated decision tests a `None`, a
-feature beyond the vector length, or a float NaN. NaN is missing at numeric,
-categorical-equality, and switch decisions; it is never a genuine category
-because training rejects nonfinite values. The
+raises `MissingFeatureError` only when an evaluated decision tests a missing
+value. `None` and a feature beyond the vector length are always missing. A
+numeric-node value is missing when `float(value)` is NaN, so the string `"nan"`
+is missing there. At categorical equality and switch decisions, a non-string
+scalar whose self-inequality returns a trusted Boolean true is missing; a string
+`"nan"` remains a category. Training rejects nonfinite values, so no model
+learns a NaN. The
 compatibility policy `missing="right"` routes those values right, or to a
 switch default. Native XGBoost in-process prediction continues to use the
 Booster's learned missing directions; use a `.cart` runner for path attribution.
 Bool-dtype inputs are checked for missingness and then normalized only when
 their feature is tested, with the
 same accepted values in nested prediction and both `.cart` runners.
+
+With `strict=True`, OOV validation inspects every present value, normalizes
+bools, and rejects unrecognized bool and OOV values. It skips absent and missing
+values; traversal then applies the selected missing policy exactly as in
+non-strict prediction. This precedence is the same for trees and forests.
 
 Named prediction and evaluation inputs are aligned to model feature names.
 Reordering CSV or JSONL columns therefore does not change predictions or

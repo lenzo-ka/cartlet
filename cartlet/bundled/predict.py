@@ -93,9 +93,31 @@ def _check_missing_policy(missing):
         raise ValueError("missing must be 'error' or 'right'")
 
 
-def _is_missing(value):
-    """Return whether a read value is missing at any decision kind."""
-    return value is None or (isinstance(value, float) and math.isnan(value))
+def _is_self_unequal(value):
+    """Return whether a non-string scalar has a trustworthy ``x != x``."""
+    if isinstance(value, str):
+        return False
+    try:
+        result = value != value
+    except Exception:
+        return False
+    if isinstance(result, bool):
+        return result
+    result_type = type(result)
+    if result_type.__module__.split(".", 1)[0] == "numpy" and result_type.__name__ in (
+        "bool",
+        "bool_",
+    ):
+        try:
+            return bool(result)
+        except Exception:
+            return False
+    return False
+
+
+def _is_categorical_missing(value):
+    """Return whether a value is missing at equality or switch nodes."""
+    return value is None or _is_self_unequal(value)
 
 
 def normalize_bool(value):
@@ -677,7 +699,18 @@ def _predict_tree_recursive(
             raise RuntimeError(f"Invalid decision index: {idx}")
         feat, op, val, left, right = decisions[idx]
         feat_val = None if feat >= n_input_features else row[feat]
-        is_missing = _is_missing(feat_val)
+        numeric_value = None
+        if op in (OP_LE, OP_LT):
+            is_missing = feat_val is None
+            if not is_missing:
+                try:
+                    numeric_value = float(feat_val)
+                except (TypeError, ValueError):
+                    pass
+                else:
+                    is_missing = math.isnan(numeric_value)
+        else:
+            is_missing = _is_categorical_missing(feat_val)
         if is_missing and missing == "error":
             feature_name = features[feat].get("name", str(feat))
             raise MissingFeatureError(
@@ -686,21 +719,20 @@ def _predict_tree_recursive(
             )
         if not is_missing and bool_features[feat]:
             feat_val = normalize_bool(feat_val)
+            if op in (OP_LE, OP_LT):
+                numeric_value = float(feat_val)
 
         if op in (OP_LE, OP_LT):
             if val >= len(floats):
                 raise RuntimeError(f"Invalid float index in decision: {val}")
             threshold = floats[val]
             go_left = False
-            if not is_missing:
-                try:
-                    go_left = (
-                        float(feat_val) < threshold
-                        if op == OP_LT
-                        else float(feat_val) <= threshold
-                    )
-                except (TypeError, ValueError):
-                    go_left = False
+            if not is_missing and numeric_value is not None:
+                go_left = (
+                    numeric_value < threshold
+                    if op == OP_LT
+                    else numeric_value <= threshold
+                )
             idx = left if go_left else right
         elif op == OP_EQ:
             if val >= len(cat_vals):
@@ -778,15 +810,25 @@ def _predict_tree_path_recursive(
             raise RuntimeError(f"Invalid decision index: {idx}")
         feat, op, val, left, right = decisions[idx]
 
-        # A feature index past the end of the input vector is treated the same
-        # as an explicit missing value. None and float NaN make comparisons fail
-        # (go right) and switch nodes take their default branch. This keeps
-        # the two runners in sync and fixes switch nodes, whose right placeholder
-        # is 0 (which would otherwise jump traversal to decision node 0).
+        # A feature index past the input is missing. Numeric nodes also treat a
+        # successful float conversion to NaN as missing; categorical nodes use
+        # conservative scalar self-inequality. The compatibility policy routes
+        # missing comparisons right and switches to their default child.
         # Index outside conversion/comparison handlers so caller exceptions
         # from lazy vectors propagate unchanged.
         feat_val = None if feat >= n_input_features else row[feat]
-        is_missing = _is_missing(feat_val)
+        numeric_value = None
+        if op in (OP_LE, OP_LT):
+            is_missing = feat_val is None
+            if not is_missing:
+                try:
+                    numeric_value = float(feat_val)
+                except (TypeError, ValueError):
+                    pass
+                else:
+                    is_missing = math.isnan(numeric_value)
+        else:
+            is_missing = _is_categorical_missing(feat_val)
         if is_missing and missing == "error":
             feature_name = features[feat].get("name", str(feat))
             raise MissingFeatureError(
@@ -795,33 +837,36 @@ def _predict_tree_path_recursive(
             )
         if not is_missing and bool_features[feat]:
             feat_val = normalize_bool(feat_val)
+            if op in (OP_LE, OP_LT):
+                numeric_value = float(feat_val)
         if xgboost and not is_missing:
-            try:
-                numeric = float(feat_val)
-            except (TypeError, ValueError):
-                pass
-            else:
+            numeric = numeric_value
+            if numeric is None:
+                try:
+                    numeric = float(feat_val)
+                except (TypeError, ValueError):
+                    numeric = None
+            if numeric is not None:
                 try:
                     feat_val = struct.unpack("<f", struct.pack("<f", numeric))[0]
                 except OverflowError as e:
                     raise ValueError(
                         f"XGBoost input {feat_val!r} exceeds float32 range"
                     ) from e
+                if op in (OP_LE, OP_LT):
+                    numeric_value = feat_val
 
         if op in (OP_LE, OP_LT):
             if val >= len(floats):
                 raise RuntimeError(f"Invalid float index in decision: {val}")
             threshold = floats[val]
             go_left = False
-            if not is_missing:
-                try:
-                    go_left = (
-                        (float(feat_val) < threshold)
-                        if op == OP_LT
-                        else (float(feat_val) <= threshold)
-                    )
-                except (TypeError, ValueError):
-                    go_left = False
+            if not is_missing and numeric_value is not None:
+                go_left = (
+                    (numeric_value < threshold)
+                    if op == OP_LT
+                    else (numeric_value <= threshold)
+                )
             branch = "left" if go_left else "right"
             if path is not None:
                 path.append(
@@ -950,9 +995,10 @@ def predict(model, row, return_dist=False, *, missing="error"):
         model: Loaded model dict
         row: Feature values
         return_dist: If True, return probability distribution
-        missing: "error" (default) raises when a tested value is None, absent,
-            or float NaN at any decision kind; "right" routes it right (or to
-            a switch default)
+        missing: "error" (default) raises when a tested value is absent, None,
+            float-convertible to NaN at a numeric node, or a non-string
+            self-unequal scalar at equality/switch nodes. "right" routes it
+            right (or to a switch default).
 
     Only features tested on evaluated paths are read. Caller indexing
     exceptions propagate unchanged.

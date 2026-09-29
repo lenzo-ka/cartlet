@@ -163,12 +163,22 @@ At load time, the runner:
 ## Missing Values
 
 All prediction entry points accept `missing="error"` or `missing="right"`.
-The default is `"error"`. If an evaluated decision tests `None`, an index at
-or beyond the vector length, or a float NaN, prediction raises
-`MissingFeatureError` naming the feature, tree, and decision node. Missing
-values in features that the evaluated paths do not test are irrelevant. NaN is
-missing for numeric comparisons, categorical equality, and switch nodes because
-training rejects nonfinite values and therefore cannot learn NaN as a category.
+The default is `"error"`. If an evaluated decision tests a missing value,
+prediction raises `MissingFeatureError` naming the feature, tree, and decision
+node. Missing values in features that the evaluated paths do not test are
+irrelevant. `None` and an index at or beyond the vector length are always
+missing. At a numeric node, any value that successfully converts with `float()`
+and produces NaN is missing, including the string `"nan"`. At equality and
+switch nodes, a non-string scalar is missing when comparing it with itself using
+`!=` produces a Boolean true result. This covers Python and NumPy scalar NaNs
+without making NumPy a runner dependency. Training rejects nonfinite values, so
+no model can learn a NaN category.
+
+Self-inequality is deliberately conservative: an exception from `__ne__`, or a
+result that is neither a built-in Boolean nor NumPy's scalar Boolean, does not
+establish missingness. The value continues through ordinary comparison or bool
+normalization, which may then reject it. Strings never use this test, so a
+literal `"nan"` remains an ordinary category at equality and switch nodes.
 
 For compatibility with 0.6.0, `missing="right"` makes numeric and categorical
 comparisons take the right branch and switch nodes take their default branch.
@@ -198,8 +208,14 @@ iterate, slice, copy, or convert the whole vector, and reads each decision's
 feature at most once. This applies to trees, forests, and XGBoost `.cart`
 models in both runners, and to non-strict in-process tree and forest prediction.
 Exceptions raised by `vector[i]` propagate unchanged. `strict=True` is the
-documented exception: out-of-vocabulary validation must inspect all features.
-The executable contract is covered by `tests/test_lazy_features.py`.
+documented exception: out-of-vocabulary validation must inspect every present
+feature. It skips absent and missing values, but normalizes every present bool
+and rejects unrecognized bool or out-of-vocabulary values before traversal.
+Missing values are then handled during traversal by `missing`, exactly as in
+non-strict prediction. Thus strict validation takes precedence for invalid
+present values, while the missing policy takes precedence for missing values.
+The executable contracts are covered by `tests/test_lazy_features.py` and
+`tests/test_missing_scalar_contract.py`.
 
 When a tested feature has bool dtype, runners first check it for missingness,
 then normalize the value at that read

@@ -51,6 +51,7 @@ from .utils import (
     eval_tree,
     eval_tree_path,
     is_decision_node,
+    is_missing_for_feature,
 )
 from .utils import (
     max_depth as compute_max_depth,
@@ -523,9 +524,14 @@ class DecisionTree(BaseModel):
         Args:
             vector: Feature vector
             return_dist: If True, return distribution when available (classification)
-            strict: If True, raise ValueError for OOV categorical values
-            missing: Whether a tested None, absent value, or float NaN raises
-                or follows the right branch
+            strict: If True, inspect every present feature, normalize bools, and
+                raise ValueError for unrecognized bool or OOV categorical values.
+                Missing values are skipped here and handled by ``missing`` only
+                if evaluation tests them.
+            missing: Whether a tested missing value raises or follows the right
+                or default branch. At numeric nodes, any value whose float
+                conversion is NaN is missing; at equality and switch nodes,
+                non-string self-unequal scalar values are missing.
 
         Returns:
             Classification: category (str) or distribution (dict)
@@ -602,6 +608,7 @@ class DecisionTree(BaseModel):
         for col, spec in enumerate(self.feature_specs):
             if (
                 col < len(vector)
+                and not is_missing_for_feature(vector[col], spec)
                 and spec.values is not None
                 and vector[col] not in spec.values
             ):
@@ -620,9 +627,13 @@ class DecisionTree(BaseModel):
         """
         if not self.feature_specs:
             return vector
-        result = vector[:]
+        result = [vector[col] for col in range(len(vector))]
         for col, spec in enumerate(self.feature_specs):
-            if col < len(result) and spec.dtype == DTYPE_BOOL:
+            if (
+                col < len(result)
+                and spec.dtype == DTYPE_BOOL
+                and not is_missing_for_feature(result[col], spec)
+            ):
                 result[col] = normalize_bool(result[col])
         return result
 

@@ -456,8 +456,13 @@ class RandomForest(BaseModel):
 
         Args:
             vector: Feature vector
-            missing: Whether a tested None, absent value, or float NaN raises
-                or follows the right branch
+            strict: If True, inspect every present feature, normalize bools, and
+                raise ValueError for unrecognized bool or OOV categorical values.
+                Missing values are skipped here and handled by ``missing`` only
+                if an evaluated tree tests them.
+            missing: Whether a tested missing value raises or follows the right
+                or default branch. Numeric float-convertible NaNs and
+                categorical non-string self-unequal scalars are missing.
 
         Returns:
             Prediction (majority vote for classification, mean for regression)

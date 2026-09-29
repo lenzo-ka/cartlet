@@ -8,7 +8,6 @@ This module contains:
 
 import logging
 import math
-from contextlib import suppress
 from typing import Any
 
 # =============================================================================
@@ -58,6 +57,46 @@ def is_decision_node(node: Any) -> bool:
     Format: [feature, op, value, left, right]
     """
     return isinstance(node, list) and len(node) == DECISION_ARITY
+
+
+def is_switch_node(node: Any) -> bool:
+    """Return whether ``node`` is a nested categorical switch."""
+    return isinstance(node, list) and len(node) == 4 and node[1] == "switch"
+
+
+def _is_self_unequal(value: Any) -> bool:
+    """Return whether a non-string scalar has a trustworthy ``x != x``."""
+    if isinstance(value, str):
+        return False
+    try:
+        result = value != value
+    except Exception:
+        return False
+    if isinstance(result, bool):
+        return result
+    result_type = type(result)
+    if result_type.__module__.split(".", 1)[0] == "numpy" and result_type.__name__ in (
+        "bool",
+        "bool_",
+    ):
+        try:
+            return bool(result)
+        except Exception:
+            return False
+    return False
+
+
+def is_missing_for_feature(value: Any, spec: Any) -> bool:
+    """Apply node-equivalent missing detection from a feature specification."""
+    if value is None:
+        return True
+    if getattr(spec, "type", None) == "num":
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return False
+        return math.isnan(numeric)
+    return _is_self_unequal(value)
 
 
 def get_children(node: Any) -> tuple[Any, Any]:
@@ -211,8 +250,9 @@ def eval_tree(
         vector: Feature values
         name_to_col: Mapping of feature names to column indices
         return_dist: Return distribution dict (for classification leaves)
-        missing: Whether a tested None, absent value, or float NaN raises or
-            follows the right/default branch. This applies to every decision kind.
+        missing: Whether a tested missing value raises or follows the
+            right/default branch. Numeric float-convertible NaNs and categorical
+            non-string self-unequal scalars are missing.
 
     Returns:
         Prediction (class label, distribution, or regression value)
@@ -272,8 +312,14 @@ def _eval_tree(
     current = node
     address: tuple[Any, ...] = ()
     path: list[dict[str, Any]] = []
-    while is_decision_node(current):
-        feature, op, value, left, right = current
+    while is_decision_node(current) or is_switch_node(current):
+        is_switch = is_switch_node(current)
+        if is_switch:
+            feature, op, cases, default = current
+            value = None
+            left = right = None
+        else:
+            feature, op, value, left, right = current
         if isinstance(feature, str):
             if feature not in name_to_col:
                 raise KeyError(
@@ -288,15 +334,27 @@ def _eval_tree(
 
         # Deliberately outside every conversion/comparison handler.
         feat_val = vector[col] if col < len(vector) else None
-        is_missing = feat_val is None or (
-            isinstance(feat_val, float) and math.isnan(feat_val)
-        )
+        numeric_value = None
+        if op in ("<=", "<"):
+            is_missing = feat_val is None
+            if not is_missing:
+                try:
+                    numeric_value = float(feat_val)
+                except (TypeError, ValueError):
+                    pass
+                else:
+                    is_missing = math.isnan(numeric_value)
+        else:
+            is_missing = feat_val is None or _is_self_unequal(feat_val)
+        spec = None
         if feature_specs and col < len(feature_specs):
             spec = feature_specs[col]
             if getattr(spec, "dtype", None) == "bool" and not is_missing:
                 from .types import normalize_bool
 
                 feat_val = normalize_bool(feat_val)
+                if op in ("<=", "<"):
+                    numeric_value = float(feat_val)
 
         decision_id = indices[0][address] if indices else -1
         if is_missing and missing == "error":
@@ -309,18 +367,43 @@ def _eval_tree(
 
         if op in ("<=", "<"):
             go_left = False
-            if not is_missing:
-                with suppress(TypeError, ValueError):
-                    go_left = (
-                        (float(feat_val) < float(value))
-                        if op == "<"
-                        else (float(feat_val) <= float(value))
-                    )
+            if not is_missing and numeric_value is not None:
+                threshold = float(value)
+                go_left = (
+                    (numeric_value < threshold)
+                    if op == "<"
+                    else (numeric_value <= threshold)
+                )
             branch = "left" if go_left else "right"
             next_address = address + ((0 if go_left else 1),)
             current = left if go_left else right
+        elif is_switch:
+            items = list(cases.items()) if isinstance(cases, dict) else cases
+            key = None if is_missing else str(feat_val)
+            selected = None
+            for case_idx, (case_value, subtree) in enumerate(items):
+                if spec is not None and getattr(spec, "dtype", None) == "bool":
+                    from .types import normalize_bool
+
+                    case_value = normalize_bool(case_value)
+                if key == str(case_value):
+                    selected = (case_idx, subtree)
+                    break
+            if selected is None:
+                branch = "default"
+                next_address = address + ("default",)
+                current = default
+            else:
+                branch = "case"
+                next_address = address + (("case", selected[0]),)
+                current = selected[1]
         else:
-            go_left = not is_missing and str(feat_val) == str(value)
+            predicate = value
+            if spec is not None and getattr(spec, "dtype", None) == "bool":
+                from .types import normalize_bool
+
+                predicate = normalize_bool(predicate)
+            go_left = not is_missing and str(feat_val) == str(predicate)
             branch = "left" if go_left else "right"
             next_address = address + ((0 if go_left else 1),)
             current = left if go_left else right
@@ -331,7 +414,9 @@ def _eval_tree(
                     "feature": col,
                     "name": name,
                     "op": op,
-                    "value": str(value) if op == "=" else value,
+                    "value": None
+                    if is_switch
+                    else (str(value) if op == "=" else value),
                     "branch": branch,
                 }
             )
@@ -373,6 +458,14 @@ def build_tree_indices(
                 decision_count += 1
                 walk(current[3], address + (0,))
                 walk(current[4], address + (1,))
+            elif is_switch_node(current):
+                decisions[address] = decision_count
+                decision_count += 1
+                walk(current[3], address + ("default",))
+                cases = current[2]
+                items = list(cases.items()) if isinstance(cases, dict) else cases
+                for case_idx, (_, subtree) in enumerate(items):
+                    walk(subtree, address + (("case", case_idx),))
             else:
                 leaves[address] = leaf_count
                 leaf_count += 1

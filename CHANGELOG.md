@@ -22,8 +22,12 @@ requires it.
 
 ### Fixed
 
-- Treat float NaN as missing at every decision kind, and check missingness
-  before normalizing bool-dtype features in all prediction implementations.
+- Treat float-convertible NaN as missing at numeric nodes and non-string
+  self-unequal scalar NaN as missing at equality and switch nodes, before
+  normalizing bool-dtype features in all prediction implementations.
+- Canonicalize hand-authored bool-dtype predicates during nested prediction to
+  match `.cart` export, and let strict OOV validation defer missing values to
+  the selected missing policy for trees and forests.
 - Normalize bool-dtype features when evaluated by both `.cart` runners, keeping
   raw bool and accepted string inputs aligned with in-process prediction.
 
