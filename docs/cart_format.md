@@ -1,14 +1,16 @@
-> Current writer/reader format version: **2**. Version 2 adds a distinct strict
-> numeric comparison opcode for XGBoost and float64 numeric/probability pools.
+> Current writer/reader format version: **3**. Version 3 adds a one-byte flags
+> field to every decision record so XGBoost's learned missing direction is
+> stored. Version 2 added a distinct strict numeric comparison opcode for
+> XGBoost and float64 numeric/probability pools.
 > Native thresholds, regression means and class probabilities retain Python
 > float precision; XGBoost inputs and thresholds are normalized to float32.
 > Nested native CART nodes use `"<="`; strict XGBoost nodes use `"<"`.
-> Readers reject other
-> versions rather than guessing their semantics.
+> Readers reject other versions rather than guessing their semantics. In
+> particular, format 2 must be re-exported from the training model or retrained.
 
 # .cart Binary Format Specification
 
-Version 1 — Little-endian throughout
+Version 3 — Little-endian throughout
 
 ---
 
@@ -59,7 +61,7 @@ The `.cart` format is a compact binary representation of decision trees, random 
 | Offset | Size | Field | Description |
 |--------|------|-------|-------------|
 | 0 | 4 | magic | `CART` (0x43 0x41 0x52 0x54) |
-| 4 | 2 | version | Format version (currently 2) |
+| 4 | 2 | version | Format version (currently 3) |
 | 6 | 2 | flags | Bitfield (see below) |
 | 8 | 2 | n_features | Number of features |
 | 10 | 2 | n_classes | Number of class labels |
@@ -161,6 +163,7 @@ Variable-size encoding for each node:
 
 ```
 feat_op: u8                     # Packed feature index + operation
+flags: u8                       # Learned missing direction (see below)
 val: u16                        # Index into floats, cat_vals, or case_tables
 left: varint                    # Left child index (OP_LE/OP_LT/OP_EQ only)
 right: varint                   # Right child index (OP_LE/OP_LT/OP_EQ only)
@@ -181,6 +184,22 @@ right: varint                   # Right child index (OP_LE/OP_LT/OP_EQ only)
 | 3 | `OP_LT` | Numeric: `feature < floats[val]` | left, right |
 | 1 | `OP_EQ` | Categorical: `feature == strings[cat_vals[val]]` | left, right |
 | 2 | `OP_SWITCH` | Case table lookup | In case_tables[val] |
+
+### Decision flags
+
+Every decision record has one flags byte, including native CART and switch
+nodes. Exactly one of these complete byte values is valid; bits 2-7 are
+reserved and must be zero.
+
+| Value | Constant | Meaning |
+|-------|----------|---------|
+| 0 | `MISSING_NONE` | No learned route; apply the runner's missing policy |
+| 1 | `MISSING_LEFT` | A missing value follows the left/yes branch |
+| 2 | `MISSING_RIGHT` | A missing value follows the right/no branch |
+
+For `OP_SWITCH`, left means the XGBoost yes/category child and right means the
+default/no child. The flags field costs exactly one byte per decision node; the
+header, pools, leaf records, and child varints are unchanged.
 
 ### Child Index Encoding
 
@@ -280,13 +299,19 @@ For implementers, here are the key constants:
 ```python
 # Magic
 MAGIC = b"CART"
-VERSION = 2
+VERSION = 3
 
 # Flags
 FLAG_IS_FOREST = 0x01
 FLAG_IS_REGRESSION = 0x02
 FLAG_HAS_DISTRIBUTIONS = 0x04
 FLAG_IS_XGBOOST = 0x08
+
+# Decision flags
+MISSING_NONE = 0
+MISSING_LEFT = 1
+MISSING_RIGHT = 2
+MISSING_MASK = 0x03
 
 # Operations
 OP_LE = 0

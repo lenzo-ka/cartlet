@@ -9,6 +9,11 @@ requires it.
 
 ### Breaking changes
 
+- `.cart` model format 3 adds a one-byte flags field to each decision record,
+  and JSON/JSONL/pickle tree envelopes use `schema_version: 3`. Format 2,
+  written by Cartlet 0.6.0, is refused; re-export from the training model or
+  retrain.
+
 - Classification leaves keep their class distribution by default:
   `min_confidence=1.0` and `min_dist_entropy=0.0`. Only class probabilities
   below `PROB_MIN_THRESHOLD` (1e-8) are dropped. Explicit lower confidence or
@@ -31,6 +36,9 @@ requires it.
   tested along evaluated paths are indexed, once per decision test.
 
 ### Fixed
+
+- Preserve XGBoost's learned left/right missing direction in nested trees and
+  `.cart` exports, so missing-value predictions and paths match the Booster.
 
 - Return `{label: 1.0}` from both `.cart` runners when `return_dist=True`
   reaches a bare classification leaf, matching in-process prediction.

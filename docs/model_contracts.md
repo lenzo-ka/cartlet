@@ -1,26 +1,33 @@
 # Model and data contracts
 
-Cartlet is in alpha. Version 0.6.0 introduces these contracts and model format 2;
-no compatibility layer is provided for pre-version-2 model artifacts.
+Cartlet is in alpha. The current contracts use model format 3; no compatibility
+layer is provided for older model artifacts.
 
 ## Saved models
 
-The binary `.cart` format is version 2. Numeric values and probabilities use
-float64 storage so native tree thresholds survive export without float32
+The binary `.cart` format is version 3. Decision records store XGBoost's learned
+missing direction. Numeric values and probabilities use float64 storage so
+native tree thresholds survive export without float32
 rounding. Numeric decision operators are explicit: `<=` is inclusive and `<`
 is strict. XGBoost's strict comparisons retain its float32 input semantics.
 The package and standalone runners use the same operators and stored feature
 dtypes. See [the binary specification](cart_format.md).
 
 DecisionTree and RandomForest JSON, JSONL, and pickle envelopes declare
-`schema_version: 2`. Loading an older or unversioned envelope raises a clear
+`schema_version: 3`. Loading an older or unversioned envelope raises a clear
 error instead of interpreting its old `<` nodes as strict comparisons.
-Retrain with the new release, or use the release that wrote the artifact to
-inspect it and perform an explicit conversion of its representation. The new
-release does not automatically migrate old artifacts. Replace copied standalone
-runners together with the models they load.
+Schema 2 was written by Cartlet 0.6.0. Re-export from the training model or
+retrain; the new release does not automatically migrate old artifacts. Replace
+copied standalone runners together with the models they load.
 
-Decision and leaf attribution uses the existing model-format-2 array indexes;
+Nested XGBoost comparison nodes keep the five-element decision shape. Their
+feature reference is `{"feature": name_or_index, "missing": "left"}` or the
+same object with `"right"`; native CART nodes retain the plain feature reference.
+XGBoost switch nodes use the same feature descriptor in their existing
+four-element switch shape. These descriptors round-trip through JSON and binary
+tree rebuilds.
+
+Decision and leaf attribution uses the existing decision and leaf array indexes;
 adding `predict_path` does not change the binary format. See
 [stable node IDs](cart_format.md#stable-node-ids).
 
@@ -42,9 +49,11 @@ are rejected. Weights must be finite, nonnegative, and have a finite positive
 total; zero-weight rows are omitted from fitting. Loaded observations are copied
 so caller mutations do not change the stored training data.
 
-Prediction has a separate missing-input policy. The default, `missing="error"`,
-raises `MissingFeatureError` only when an evaluated decision tests a missing
-value. `None` and a feature beyond the vector length are always missing. A
+Prediction has a separate missing-input policy. At XGBoost-converted decisions,
+the learned direction overrides either policy. At decisions without one, the
+default `missing="error"` raises `MissingFeatureError` only when an evaluated
+decision tests a missing value. `None` and a feature beyond the vector length
+are always missing. A
 numeric-node value is missing when `float(value)` is NaN, so the string `"nan"`
 is missing there. At categorical equality and switch decisions, a non-string
 scalar whose self-inequality returns a trusted Boolean true is missing; a string
@@ -53,9 +62,8 @@ learns a NaN. The compatibility policy `missing="right"` routes those values
 right, or to a switch default, under this new missing definition. It differs
 from 0.6.0 when a non-string NaN reaches an equality or switch decision keyed
 `"nan"`: 0.6.0 could match the string conversion and take the left/case branch;
-the new policy takes the right/default branch. Native XGBoost in-process
-prediction continues to use the Booster's learned missing directions; use a
-`.cart` runner for path attribution.
+the new policy takes the right/default branch. Native XGBoost in-process,
+nested, and `.cart` prediction use the same learned missing directions.
 Bool-dtype inputs are checked for missingness and then normalized only when
 their feature is tested, with the
 same accepted values in nested prediction and both `.cart` runners.

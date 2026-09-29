@@ -543,7 +543,7 @@ def test_forest_missing_error_names_tree_and_node(tmp_path):
     )
 
 
-def test_xgboost_missing_error_names_tree_and_node(tmp_path):
+def test_xgboost_learned_missing_route_overrides_runner_policy(tmp_path):
     pytest.importorskip("xgboost")
     from cartlet import XGBoostTree
 
@@ -560,14 +560,17 @@ def test_xgboost_missing_error_names_tree_and_node(tmp_path):
     package = Predictor(str(path))
     bundled = _bundled()
     standalone = bundled.Predictor(str(path))
-    match = r"feature 0 \('x'\) is missing at tree 0 node 0"
-    with pytest.raises(MissingFeatureError, match=match):
-        package.predict([float("nan")])
-    with pytest.raises(bundled.MissingFeatureError, match=match):
-        standalone.predict([None])
-    assert package.predict([None], missing="right") == standalone.predict(
-        [None], missing="right"
-    )
+    expected = model.predict([float("nan")])
+    for predictor in (package, standalone):
+        assert predictor.predict([float("nan")]) == expected
+        assert predictor.predict([None], missing="right") == expected
+        path_result = predictor.predict_path([])
+        assert path_result["prediction"] == expected
+        assert all(
+            step.get("missing") is True
+            for tree in path_result["trees"]
+            for step in tree["path"]
+        )
 
 
 def test_nested_switch_path_uses_case_table_and_leaf_array_oracle(tmp_path):
@@ -600,7 +603,7 @@ def test_nested_switch_path_uses_case_table_and_leaf_array_oracle(tmp_path):
     standalone = bundled.Predictor(str(path))
 
     root = loaded["decisions"][loaded["tree_offsets"][0]]
-    table = loaded["case_tables"][root[2]]
+    table = loaded["case_tables"][root[3]]
     red_child = table["lookup"]["red"]
     blue_child = table["lookup"]["blue"]
     default_child = table["default"]
@@ -610,7 +613,7 @@ def test_nested_switch_path_uses_case_table_and_leaf_array_oracle(tmp_path):
 
     def leaf_from_child(child, take_left):
         decision = loaded["decisions"][child]
-        encoded = decision[3] if take_left else decision[4]
+        encoded = decision[4] if take_left else decision[5]
         assert encoded & LEAF_FLAG
         return encoded & INDEX_MASK
 

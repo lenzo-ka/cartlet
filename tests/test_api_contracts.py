@@ -242,7 +242,7 @@ def test_missing_schema_rejected_actionably(tmp_path):
 )
 def test_schema_feature_contract_failure_preserves_live_model(tmp_path, changes):
     data = {
-        "schema_version": 2,
+        "schema_version": 3,
         "feature_names": ["x"],
         "feature_specs": [],
         "model": "NEW",

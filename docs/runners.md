@@ -164,9 +164,12 @@ At load time, the runner:
 
 All prediction entry points accept `missing="error"` or `missing="right"`.
 The default is `"error"`. If an evaluated decision tests a missing value,
-prediction raises `MissingFeatureError` naming the feature, tree, and decision
-node. Missing values in features that the evaluated paths do not test are
-irrelevant. `None` and an index at or beyond the vector length are always
+an XGBoost learned missing direction stored on that decision takes precedence:
+the value follows its learned left or right branch under either policy. At a
+decision without a learned direction, prediction raises `MissingFeatureError`
+under the default policy, naming the feature, tree, and decision node. Missing
+values in features that the evaluated paths do not test are irrelevant. `None`
+and an index at or beyond the vector length are always
 missing. At a numeric node, any value that successfully converts with `float()`
 and produces NaN is missing, including the string `"nan"`. At equality and
 switch nodes, a non-string scalar is missing when comparing it with itself using
@@ -190,9 +193,8 @@ Empty delimited fields are parsed as `None`; absent named fields are also
 missing. Non-numeric strings at numeric nodes retain their established
 right-branch behavior.
 
-`XGBoostTree.predict` uses the native Booster and its learned missing direction.
-Its `.cart` exports use the explicit runner policy because the binary format
-does not store those directions.
+`XGBoostTree.predict`, nested evaluation, and `.cart` inference use the same
+per-decision learned missing directions.
 
 ## Decision paths
 
@@ -205,6 +207,8 @@ the model-global `.cart` array indexes documented in
 of the `.cart` runners for path attribution. A step's predicate `value` is the
 writer-canonical value: numeric thresholds are floats, equality values are
 strings, and bool-dtype equality values are normalized to `"0"` or `"1"`.
+When a learned missing direction was used, that step alone also contains
+`"missing": true`. Node IDs are unchanged.
 
 ## Lazy feature access
 

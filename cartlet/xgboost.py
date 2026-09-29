@@ -29,6 +29,7 @@ from .types import (
     infer_feature_specs,
     is_likely_regression,
 )
+from .utils import feature_with_missing_direction
 from .validation import MODEL_SCHEMA_VERSION, validate_dataset
 
 _DEFAULT_BASE_SCORE = 0.5
@@ -105,7 +106,6 @@ class XGBoostTree(BaseModel):
         self.class_labels: list[str] = []
         self.base_score: float | list[float] = _DEFAULT_BASE_SCORE
         self._xgb_model: Any = None  # Raw XGBoost Booster
-        self._warned_missing_direction = False
 
     def load_data(
         self,
@@ -134,7 +134,6 @@ class XGBoostTree(BaseModel):
         self._xgb_model = None
         self.trees = []
         self.base_score = _DEFAULT_BASE_SCORE
-        self._warned_missing_direction = False
 
     def _infer_features(self) -> None:
         """Infer feature types from data."""
@@ -368,22 +367,13 @@ class XGBoostTree(BaseModel):
         yes_id = node.get("yes", 0)
         no_id = node.get("no", 1)
 
-        # XGBoost stores a per-node missing direction, which .cart cannot
-        # encode. The runner raises by default; its explicit compatibility
-        # policy routes missing values right and can diverge from the Booster.
         missing_id = node.get("missing")
-        if (
-            missing_id is not None
-            and missing_id != no_id
-            and not self._warned_missing_direction
-        ):
-            self.logger.warning(
-                "XGBoost model routes missing values to the 'yes' branch at "
-                "some nodes; .cart prediction with missing='right' routes "
-                "them right, so that compatibility policy may diverge from "
-                "Booster.predict."
-            )
-            self._warned_missing_direction = True
+        if missing_id not in (yes_id, no_id):
+            raise ValueError(f"Invalid XGBoost missing child for node: {node}")
+        feat_name = split_feature
+        feature_ref = feature_with_missing_direction(
+            feat_name, "left" if missing_id == yes_id else "right"
+        )
 
         yes_child = None
         no_child = None
@@ -396,9 +386,6 @@ class XGBoostTree(BaseModel):
         if yes_child is None or no_child is None:
             raise ValueError(f"Could not find children for node: {node}")
 
-        # Get feature name
-        feat_name = split_feature
-
         # Detect categorical: split_condition is a list
         is_categorical = isinstance(split_condition, list)
 
@@ -406,14 +393,14 @@ class XGBoostTree(BaseModel):
             categories = split_condition
             if len(categories) == 1:
                 cat_val = self._get_category_value(feat_name, categories[0])
-                return [feat_name, "=", cat_val, yes_child, no_child]
+                return [feature_ref, "=", cat_val, yes_child, no_child]
             cases = {}
             for cat_idx in categories:
                 cat_val = self._get_category_value(feat_name, cat_idx)
                 cases[cat_val] = yes_child
-            return [feat_name, "switch", cases, no_child]
+            return [feature_ref, "switch", cases, no_child]
 
-        return [feat_name, "<", float(split_condition), yes_child, no_child]
+        return [feature_ref, "<", float(split_condition), yes_child, no_child]
 
     def _get_category_value(self, feat_name: str, cat_idx: int) -> str:
         """Get category string value from index."""

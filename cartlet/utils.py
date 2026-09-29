@@ -26,10 +26,30 @@ def default_logger():
 
 # Nested-tree node shapes (list-based):
 #   decision node = [feature, op, value, left, right]  (5 elements)
+# XGBoost decisions wrap ``feature`` as
+#   {"feature": feature, "missing": "left" | "right"}
+# so the learned route survives JSON without changing the node arity.
 #   regression leaf = [mean, variance, n]              (3 numbers)
 # (classification leaves are str or dict, not lists.)
 DECISION_ARITY = 5
 REGRESSION_LEAF_ARITY = 3
+MISSING_DIRECTIONS = ("left", "right")
+
+
+def split_feature_and_missing(feature: Any) -> tuple[Any, str | None]:
+    """Return a decision's feature reference and optional learned missing route."""
+    if isinstance(feature, dict) and set(feature) == {"feature", "missing"}:
+        direction = feature["missing"]
+        if direction in MISSING_DIRECTIONS:
+            return feature["feature"], direction
+    return feature, None
+
+
+def feature_with_missing_direction(feature: Any, direction: str) -> dict[str, Any]:
+    """Build the JSON-safe XGBoost feature descriptor used by nested trees."""
+    if direction not in MISSING_DIRECTIONS:
+        raise ValueError("missing direction must be 'left' or 'right'")
+    return {"feature": feature, "missing": direction}
 
 
 def is_leaf(node: Any) -> bool:
@@ -333,6 +353,7 @@ def _eval_tree(
             left = right = None
         else:
             feature, op, value, left, right = current
+        feature, learned_missing = split_feature_and_missing(feature)
         if isinstance(feature, str):
             if feature not in name_to_col:
                 raise KeyError(
@@ -376,7 +397,8 @@ def _eval_tree(
         decision_id = (
             indices[0][address] if indices else decision_offset if collect_path else -1
         )
-        if is_missing and missing == "error":
+        used_learned_missing = is_missing and learned_missing is not None
+        if is_missing and learned_missing is None and missing == "error":
             from .runner import MissingFeatureError
 
             # Ordinary prediction deliberately carries no node-ID index. Build
@@ -406,7 +428,7 @@ def _eval_tree(
             )
 
         if op in ("<=", "<"):
-            go_left = False
+            go_left = learned_missing == "left" if used_learned_missing else False
             if not is_missing and numeric_value is not None:
                 threshold = float(value)
                 go_left = (
@@ -421,15 +443,21 @@ def _eval_tree(
             items = list(cases.items()) if isinstance(cases, dict) else cases
             key = None if is_missing else str(feat_val)
             selected = None
-            for case_idx, (case_value, subtree) in enumerate(items):
-                if spec is not None and getattr(spec, "dtype", None) == "bool":
-                    from .types import normalize_bool
+            if not used_learned_missing:
+                for case_idx, (case_value, subtree) in enumerate(items):
+                    if spec is not None and getattr(spec, "dtype", None) == "bool":
+                        from .types import normalize_bool
 
-                    case_value = normalize_bool(case_value)
-                if key == str(case_value):
-                    selected = (case_idx, subtree)
-                    break
-            if selected is None:
+                        case_value = normalize_bool(case_value)
+                    if key == str(case_value):
+                        selected = (case_idx, subtree)
+                        break
+            if used_learned_missing and learned_missing == "left":
+                branch = "case"
+                selector = ("case", 0)
+                selected = (0, items[0][1])
+                next_address = address + (selector,)
+            elif selected is None:
                 branch = "default"
                 selector = "default"
                 next_address = address + (selector,)
@@ -443,7 +471,11 @@ def _eval_tree(
                 from .types import normalize_bool
 
                 predicate = normalize_bool(predicate)
-            go_left = not is_missing and str(feat_val) == str(predicate)
+            go_left = (
+                learned_missing == "left"
+                if used_learned_missing
+                else not is_missing and str(feat_val) == str(predicate)
+            )
             branch = "left" if go_left else "right"
             selector = 0 if go_left else 1
             next_address = address + (selector,)
@@ -460,16 +492,17 @@ def _eval_tree(
                 path_value = str(predicate)
             else:
                 path_value = float(value)
-            path.append(
-                {
-                    "node": decision_id,
-                    "feature": col,
-                    "name": name,
-                    "op": op,
-                    "value": path_value,
-                    "branch": branch,
-                }
-            )
+            step = {
+                "node": decision_id,
+                "feature": col,
+                "name": name,
+                "op": op,
+                "value": path_value,
+                "branch": branch,
+            }
+            if used_learned_missing:
+                step["missing"] = True
+            path.append(step)
         if collect_path:
             current, decision_offset, leaf_offset = _writer_child_offsets(
                 current,

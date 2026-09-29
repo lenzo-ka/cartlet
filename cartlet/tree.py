@@ -51,6 +51,7 @@ from .utils import (
     eval_tree_path,
     is_decision_node,
     is_missing_for_feature,
+    split_feature_and_missing,
 )
 from .utils import (
     max_depth as compute_max_depth,
@@ -710,6 +711,7 @@ class DecisionTree(BaseModel):
                 return  # Leaf node
 
             feature, _op, _value, left, right = node
+            feature, _missing_direction = split_feature_and_missing(feature)
 
             # Weight by depth (higher nodes affect more samples)
             weight = 1.0 / (depth + 1)

@@ -9,7 +9,7 @@ from itertools import chain
 from pathlib import Path
 from typing import Any
 
-MODEL_SCHEMA_VERSION = 2
+MODEL_SCHEMA_VERSION = 3
 
 
 def validate_training_parameters(
@@ -219,10 +219,15 @@ def validate_model_data(data: Any, *, forest: bool = False) -> None:
     Positional decision references do not require feature names.
     """
     from .types import VALID_DTYPES, VALID_TASKS, VALID_TYPES
-    from .utils import is_decision_node
+    from .utils import is_decision_node, split_feature_and_missing
 
     if not isinstance(data, dict) or data.get("isolation_forest"):
         raise ValueError("expected a supervised model object")
+    if data.get("schema_version") == 2:
+        raise ValueError(
+            "unsupported model schema 2: schema 2 was written by Cartlet 0.6.0; "
+            "re-export from the training model or retrain"
+        )
     if data.get("schema_version") != MODEL_SCHEMA_VERSION:
         raise ValueError(
             "unsupported model schema; retrain or re-export with this release"
@@ -314,6 +319,8 @@ def validate_model_data(data: Any, *, forest: bool = False) -> None:
             continue
         if is_decision_node(node):
             feature, op, value, left, right = node
+            raw_feature = feature
+            feature, learned_missing = split_feature_and_missing(feature)
             if not (
                 (isinstance(feature, str) and feature in names)
                 or (
@@ -324,6 +331,8 @@ def validate_model_data(data: Any, *, forest: bool = False) -> None:
                 )
             ) or op not in ("=", "<=", "<"):
                 raise ValueError("invalid model decision reference or operator")
+            if isinstance(raw_feature, dict) and learned_missing is None:
+                raise ValueError("invalid model learned missing direction")
             if op in ("<=", "<"):
                 try:
                     finite = math.isfinite(float(value))
