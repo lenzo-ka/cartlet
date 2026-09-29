@@ -22,6 +22,10 @@ requires it.
 
 ### Fixed
 
+- Preserve the 0.6.0 base-first, tree-order floating-point accumulation for
+  XGBoost runner predictions and path predictions.
+- Canonicalize nested `predict_path` predicate values exactly as the `.cart`
+  writer does, and reject switch cases with duplicate canonical keys.
 - Treat float-convertible NaN as missing at numeric nodes and non-string
   self-unequal scalar NaN as missing at equality and switch nodes, before
   normalizing bool-dtype features in all prediction implementations.

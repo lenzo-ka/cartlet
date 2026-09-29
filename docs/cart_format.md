@@ -242,6 +242,13 @@ default_child: varint           # Child index for unmatched values
 cases: (cat_val_idx: u16, child: varint)[n_cases]
 ```
 
+Case keys are stored as strings. Bool-dtype case keys are normalized to `"0"`
+or `"1"` first. The writer rejects a switch when two authored keys have the
+same stored string (for example, `"yes"` and `True` on a bool feature), rather
+than emitting an ambiguous table. Hand-authored switch nodes are supported by
+the `.cart` writer, runners, and binary rebuild path; the JSON/pickle nested
+model validator does not admit switch nodes.
+
 ---
 
 ## Varint Encoding

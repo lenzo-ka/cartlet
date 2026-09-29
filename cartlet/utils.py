@@ -408,15 +408,25 @@ def _eval_tree(
             next_address = address + ((0 if go_left else 1),)
             current = left if go_left else right
         if collect_path:
+            path_value: str | float | None
+            if is_switch:
+                path_value = None
+            elif op == "=":
+                predicate = value
+                if spec is not None and getattr(spec, "dtype", None) == "bool":
+                    from .types import normalize_bool
+
+                    predicate = normalize_bool(predicate)
+                path_value = str(predicate)
+            else:
+                path_value = float(value)
             path.append(
                 {
                     "node": decision_id,
                     "feature": col,
                     "name": name,
                     "op": op,
-                    "value": None
-                    if is_switch
-                    else (str(value) if op == "=" else value),
+                    "value": path_value,
                     "branch": branch,
                 }
             )

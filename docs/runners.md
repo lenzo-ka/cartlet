@@ -198,7 +198,9 @@ prediction plus one path record per evaluated tree. Decision and leaf IDs are
 the model-global `.cart` array indexes documented in
 [the binary format](cart_format.md#stable-node-ids). Training-side
 `DecisionTree` and `RandomForest` expose the same result. For XGBoost, use one
-of the `.cart` runners for path attribution.
+of the `.cart` runners for path attribution. A step's predicate `value` is the
+writer-canonical value: numeric thresholds are floats, equality values are
+strings, and bool-dtype equality values are normalized to `"0"` or `"1"`.
 
 ## Lazy feature access
 

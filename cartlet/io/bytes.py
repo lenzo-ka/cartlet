@@ -245,6 +245,21 @@ class ByteWriter:
             feature, _, cases, default_node = node
             feat_idx = self._resolve_feat_idx(feature, name_to_col)
 
+            cases_items = list(cases.items()) if isinstance(cases, dict) else cases
+            canonical_cases = []
+            seen_case_keys: set[str] = set()
+            for val, subtree in cases_items:
+                if feat_idx in self.bool_features:
+                    val = normalize_bool(val)
+                key = str(val)
+                if key in seen_case_keys:
+                    raise ValueError(
+                        f"duplicate canonical switch case key {key!r} "
+                        f"for feature {feature!r}"
+                    )
+                seen_case_keys.add(key)
+                canonical_cases.append((key, subtree))
+
             # Reserve decision slot
             dec_idx = len(self.decisions)
             self.decisions.append((0, 0, 0, 0, 0))  # placeholder
@@ -252,14 +267,9 @@ class ByteWriter:
             # Process default first
             default_idx = self._flatten_node(default_node, name_to_col)
 
-            # Process cases
-            cases_items = list(cases.items()) if isinstance(cases, dict) else cases
-
             case_list: list[tuple[int, int]] = []
-            for val, subtree in cases_items:
-                if feat_idx in self.bool_features:
-                    val = normalize_bool(val)
-                str_idx = self._add_string(str(val))
+            for key, subtree in canonical_cases:
+                str_idx = self._add_string(key)
                 cat_val_idx = self._add_cat_value(str_idx)
                 child_idx = self._flatten_node(subtree, name_to_col)
                 case_list.append((cat_val_idx, child_idx))

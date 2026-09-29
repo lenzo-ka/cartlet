@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from cartlet import DecisionTree, MissingFeatureError, RandomForest
-from cartlet.io.bytes import write_tree_bytes
+from cartlet.io.bytes import write_forest_bytes, write_tree_bytes
 from cartlet.runner import INDEX_MASK, LEAF_FLAG, Predictor, load_model
 from cartlet.types import FeatureSpec
 
@@ -20,7 +20,7 @@ def _bundled():
     return module
 
 
-def _assert_steps(result, row):
+def _assert_steps(result, row, switch_cases=None):
     for tree in result["trees"]:
         assert isinstance(tree["leaf"], int)
         for step in tree["path"]:
@@ -32,7 +32,11 @@ def _assert_steps(result, row):
             elif step["op"] == "=":
                 expected = "left" if str(value) == step["value"] else "right"
             else:
-                expected = step["branch"]
+                assert switch_cases is not None
+                assert step["node"] in switch_cases
+                expected = (
+                    "case" if str(value) in switch_cases[step["node"]] else "default"
+                )
             assert step["branch"] == expected
 
 
@@ -92,6 +96,58 @@ def test_regression_tree_paths_roundtrip(tmp_path):
     model.load_data(rows, [x * 10 + y for x, y in rows])
     model.train(validation_split=0)
     _roundtrips(model, rows, tmp_path, "regression")
+
+
+@pytest.mark.parametrize(
+    ("feature", "node", "row", "canonical_value"),
+    [
+        (
+            {"name": "flag", "dtype": "bool", "type": "cat", "values": [0, 1]},
+            ["flag", "=", True, "on", "off"],
+            [True],
+            "1",
+        ),
+        (
+            {"name": "flag", "dtype": "bool", "type": "cat", "values": [0, 1]},
+            ["flag", "=", "true", "on", "off"],
+            [True],
+            "1",
+        ),
+        (
+            {"name": "flag", "dtype": "bool", "type": "cat", "values": [0, 1]},
+            ["flag", "=", 1, "on", "off"],
+            [True],
+            "1",
+        ),
+        (
+            {"name": "x", "dtype": "float", "type": "num"},
+            ["x", "<=", "0.5", "low", "high"],
+            [0.25],
+            0.5,
+        ),
+    ],
+)
+def test_authored_path_values_match_writer_canonical_form(
+    tmp_path, feature, node, row, canonical_value
+):
+    model = DecisionTree(features=[feature])
+    model.model = node
+    json_path = tmp_path / "authored.json"
+    cart_path = tmp_path / "authored.cart"
+    model.export(str(json_path))
+    model.export(str(cart_path))
+
+    json_model = DecisionTree()
+    json_model.load_model(str(json_path))
+    bundled = _bundled()
+    results = [
+        model.predict_path(row),
+        json_model.predict_path(row),
+        Predictor(str(cart_path)).predict_path(row),
+        bundled.Predictor(str(cart_path)).predict_path(row),
+    ]
+    assert all(result == results[0] for result in results[1:])
+    assert results[0]["trees"][0]["path"][0]["value"] == canonical_value
 
 
 def test_forest_paths_roundtrip(tmp_path):
@@ -154,6 +210,60 @@ def test_xgboost_runner_paths(tmp_path):
     assert len(reached) >= 3
 
 
+@pytest.mark.parametrize(
+    ("is_regression", "class_labels", "expected"),
+    [
+        (False, ["negative", "positive"], "negative"),
+        (True, [], -0.5),
+    ],
+)
+def test_xgboost_aggregation_preserves_base_first_tree_order(
+    tmp_path, is_regression, class_labels, expected
+):
+    path = tmp_path / f"xgb-order-{is_regression}.cart"
+    values = [1e16, -1e16, -0.5]
+    write_forest_bytes(
+        str(path),
+        [[value, 0.0, 1] for value in values],
+        [],
+        {},
+        class_labels,
+        is_regression,
+        metadata={"base_score": 0.65},
+        is_xgboost=True,
+    )
+    bundled = _bundled()
+    for predictor in (Predictor(str(path)), bundled.Predictor(str(path))):
+        assert predictor.predict([]) == expected
+        assert predictor.predict_path([])["prediction"] == expected
+
+
+def test_regression_forest_aggregation_uses_sum_then_divide(tmp_path):
+    path = tmp_path / "forest-order.cart"
+    values = [1e16, -1e16, -0.5]
+    forest = RandomForest(n_estimators=len(values), task="regression")
+    forest.trees = []
+    for value in values:
+        tree = DecisionTree(task="regression")
+        tree.model = [value, 0.0, 1]
+        forest.trees.append(tree)
+    write_forest_bytes(
+        str(path),
+        [[value, 0.0, 1] for value in values],
+        [],
+        {},
+        [],
+        True,
+    )
+    expected = sum(values) / len(values)
+    assert forest.predict([]) == expected
+    assert forest.predict_path([])["prediction"] == expected
+    bundled = _bundled()
+    for predictor in (Predictor(str(path)), bundled.Predictor(str(path))):
+        assert predictor.predict([]) == expected
+        assert predictor.predict_path([])["prediction"] == expected
+
+
 @pytest.mark.parametrize("task", ["multiclass", "regression"])
 def test_xgboost_path_prediction_matches_predict_many_rows(tmp_path, task):
     pytest.importorskip("xgboost")
@@ -194,6 +304,18 @@ def test_xgboost_path_prediction_matches_predict_many_rows(tmp_path, task):
             assert package_result["prediction"] == package.predict(row)
             assert standalone_result["prediction"] == standalone.predict(row)
         assert standalone_result == package_result
+    if task == "multiclass":
+        from cartlet import runner
+
+        bundled = _bundled()
+        for loaded, predict, predict_path in (
+            (runner.load_model(str(path)), runner.predict, runner.predict_path),
+            (bundled.load_cart(str(path)), bundled.predict, bundled.predict_path),
+        ):
+            loaded["n_trees"] -= 1
+            for call in (predict, predict_path):
+                with pytest.raises(ValueError, match="not a multiple of 3 classes"):
+                    call(loaded, rows[0])
 
 
 @pytest.mark.parametrize("missing_row", [[], [None], [float("nan")]])
@@ -336,6 +458,7 @@ def test_nested_switch_path_uses_case_table_and_leaf_array_oracle(tmp_path):
     root = loaded["decisions"][loaded["tree_offsets"][0]]
     table = loaded["case_tables"][root[2]]
     red_child = table["lookup"]["red"]
+    blue_child = table["lookup"]["blue"]
     default_child = table["default"]
     assert loaded["tree_offsets"][0] == 0
     assert default_child == 1
@@ -349,13 +472,17 @@ def test_nested_switch_path_uses_case_table_and_leaf_array_oracle(tmp_path):
 
     # Writer preorder: root decision; default decision and leaves 0/1; red
     # decision and leaves 2/3; blue leaf 4.
+    assert blue_child & LEAF_FLAG
+    blue_leaf = blue_child & INDEX_MASK
     cases = [
         (["red", "round", 9.0], "case", leaf_from_child(red_child, True), 2),
+        (["blue", "square", 9.0], "case", blue_leaf, 4),
         (["green", "square", 1.0], "default", leaf_from_child(default_child, True), 0),
     ]
     for row, branch, oracle_leaf, handwritten_leaf in cases:
         assert oracle_leaf == handwritten_leaf
         for result in (predictor.predict_path(row), standalone.predict_path(row)):
+            _assert_steps(result, row, {0: {"red", "blue"}})
             assert result["trees"][0]["path"][0]["branch"] == branch
             assert result["trees"][0]["leaf"] == oracle_leaf
 
@@ -377,3 +504,21 @@ def test_nested_switch_path_uses_case_table_and_leaf_array_oracle(tmp_path):
             assert result["trees"][0]["leaf"] == 0
         assert predictor.predict(row, missing="right") == "small-default"
         assert standalone.predict(row, missing="right") == "small-default"
+
+
+def test_writer_rejects_duplicate_canonical_bool_switch_keys(tmp_path):
+    tree = [
+        "flag",
+        "switch",
+        {"yes": "first", True: "second"},
+        "default",
+    ]
+    with pytest.raises(ValueError, match="duplicate canonical switch case key '1'"):
+        write_tree_bytes(
+            str(tmp_path / "collision.cart"),
+            tree,
+            [FeatureSpec("flag", "bool", "cat", {0, 1})],
+            {"flag": 0},
+            ["first", "second", "default"],
+            False,
+        )

@@ -1096,12 +1096,24 @@ def _aggregate_xgboost(model, values, return_dist=False):
         model["is_regression"],
     )
     if model["is_regression"]:
-        return bases[0] + sum(values)
+        raw = bases[0]
+        for value in values:
+            raw += value
+        return raw
     if n_classes == 2:
-        probability = sigmoid(bases[0] + sum(values))
+        raw = bases[0]
+        for value in values:
+            raw += value
+        probability = sigmoid(raw)
         if return_dist:
             return {class_labels[0]: 1 - probability, class_labels[1]: probability}
         return class_labels[1] if probability > BINARY_THRESHOLD else class_labels[0]
+    values = list(values)
+    if len(values) % n_classes:
+        raise ValueError(
+            f"multiclass XGBoost model has {len(values)} trees, "
+            f"not a multiple of {n_classes} classes"
+        )
     scores = list(bases)
     for tree_idx, value in enumerate(values):
         scores[tree_idx % n_classes] += value
@@ -1116,11 +1128,11 @@ def predict_xgboost(model, row, return_dist=False, *, missing="error"):
     XGBoost prediction: additive model with sigmoid/softmax.
 
     For binary classification:
-      raw_score = base_score + sum(tree outputs)
+      raw_score starts at base_score and adds each tree output in tree order
       probability = sigmoid(raw_score)
 
     For multiclass (K classes, K trees per round):
-      raw_scores[k] = base_score + sum(trees for class k)
+      raw_scores[k] starts at its base score and adds each round in tree order
       probabilities = softmax(raw_scores)
     """
     n_trees = model.get("n_trees", len(model["tree_offsets"]))
