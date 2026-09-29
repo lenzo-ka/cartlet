@@ -376,11 +376,20 @@ class ByteWriter:
                     "(.json/.pkl)."
                 )
 
-        _check(len(feature_info), self._MAX_U32, "number of features")
-        _check(len(class_labels), self._MAX_U32, "number of classes")
-        _check(len(self.tree_offsets), self._MAX_U32, "number of trees")
-        _check(len(self.decisions), 0x7FFFFFFF, "number of decision nodes")
-        _check(len(self.leaves), 0x7FFFFFFF, "number of leaf nodes")
+        # The loaders refuse headers beyond these caps, so never write a file
+        # that neither runner would load.
+        from ..runner import (
+            _CART_MAX_CLASSES,
+            _CART_MAX_FEATURES,
+            _CART_MAX_NODES,
+            _CART_MAX_TREES,
+        )
+
+        _check(len(feature_info), _CART_MAX_FEATURES, "number of features")
+        _check(len(class_labels), _CART_MAX_CLASSES, "number of classes")
+        _check(len(self.tree_offsets), _CART_MAX_TREES, "number of trees")
+        _check(len(self.decisions), _CART_MAX_NODES, "number of decision nodes")
+        _check(len(self.leaves), _CART_MAX_NODES, "number of leaf nodes")
         _check(len(self.floats), self._MAX_U32, "number of floats")
         _check(len(self.strings), self._MAX_U32, "number of strings")
         _check(len(self.cat_values), self._MAX_U32, "number of categorical values")

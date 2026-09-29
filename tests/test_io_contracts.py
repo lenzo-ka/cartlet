@@ -428,3 +428,40 @@ def test_bundle_rejected_schema_preserves_existing_output(tmp_path):
         bundle(str(source), str(output))
     assert output.read_bytes() == b"KEEP"
     assert source.read_bytes() == before
+
+
+def test_writer_refuses_models_beyond_loader_caps(tmp_path):
+    import cartlet.bundled.predict as bundled
+    import cartlet.runner as package
+
+    assert (
+        package._CART_MAX_FEATURES,
+        package._CART_MAX_CLASSES,
+        package._CART_MAX_TREES,
+        package._CART_MAX_NODES,
+    ) == (
+        bundled._MAX_FEATURES,
+        bundled._MAX_CLASSES,
+        bundled._MAX_TREES,
+        bundled._MAX_NODES,
+    )
+    classes = [f"c{i}" for i in range(package._CART_MAX_CLASSES + 1)]
+    with pytest.raises(ValueError, match="number of classes"):
+        write_tree_bytes(
+            "c0",
+            str(tmp_path / "classes.cart"),
+            [FeatureSpec("x", "str", "cat", None)],
+            {"x": 0},
+            classes,
+            False,
+        )
+    n = package._CART_MAX_FEATURES + 1
+    with pytest.raises(ValueError, match="number of features"):
+        write_tree_bytes(
+            "c0",
+            str(tmp_path / "features.cart"),
+            [FeatureSpec(f"f{i}", "str", "cat", None) for i in range(n)],
+            {f"f{i}": i for i in range(n)},
+            ["c0"],
+            False,
+        )
