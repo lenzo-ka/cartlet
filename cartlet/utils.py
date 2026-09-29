@@ -238,6 +238,7 @@ def eval_tree(
     feature_specs: list[Any] | None = None,
     indices: tuple[dict[tuple[Any, ...], int], dict[tuple[Any, ...], int]]
     | None = None,
+    id_trees: list[Any] | None = None,
 ) -> Any:
     """
     Evaluate a nested tree structure (used by DecisionTree.predict).
@@ -267,6 +268,7 @@ def eval_tree(
         feature_specs,
         indices,
         False,
+        id_trees,
     )
     return result
 
@@ -306,6 +308,7 @@ def _eval_tree(
     indices: tuple[dict[tuple[Any, ...], int], dict[tuple[Any, ...], int]]
     | None = None,
     collect_path: bool = False,
+    id_trees: list[Any] | None = None,
 ) -> tuple[Any, int, list[dict[str, Any]]]:
     if missing not in ("error", "right"):
         raise ValueError("missing must be 'error' or 'right'")
@@ -359,6 +362,17 @@ def _eval_tree(
         decision_id = indices[0][address] if indices else -1
         if is_missing and missing == "error":
             from .runner import MissingFeatureError
+
+            # Ordinary prediction deliberately carries no node-ID index. Build
+            # the current writer-order numbering only on this exceptional path
+            # so in-place model edits cannot affect prediction correctness or
+            # add tree-size work to successful predictions.
+            if indices is None:
+                if id_trees is None:
+                    current_indices = build_tree_indices([node])[0]
+                else:
+                    current_indices = build_tree_indices(id_trees)[tree_idx]
+                decision_id = current_indices[0][address]
 
             raise MissingFeatureError(
                 f"feature {col} ({name!r}) is missing at "

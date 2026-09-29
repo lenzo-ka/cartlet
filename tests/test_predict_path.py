@@ -164,6 +164,64 @@ def test_forest_paths_roundtrip(tmp_path):
     _roundtrips(model, rows, tmp_path, "forest")
 
 
+def _assert_edited_cart_parity(model, rows, tmp_path, filename):
+    """Compare an edited nested model with a fresh binary export and reload."""
+    path = tmp_path / filename
+    model.export(str(path))
+    cls = RandomForest if isinstance(model, RandomForest) else DecisionTree
+    reloaded = cls()
+    reloaded.load_model(str(path))
+    package = Predictor(str(path))
+    for row in rows:
+        assert model.predict(row) == package.predict(row) == reloaded.predict(row)
+        assert (
+            model.predict_path(row)
+            == package.predict_path(row)
+            == reloaded.predict_path(row)
+        )
+
+
+def test_tree_in_place_subtree_edit_refreshes_prediction_and_path_ids(tmp_path):
+    features = [{"name": "x", "dtype": "float", "type": "num"}]
+    model = DecisionTree(features=features)
+    model.load_data([[0.0], [2.0]], ["a", "b"])
+    model.model = ["x", "<=", 1.0, "a", "b"]
+
+    # Prime both former cache users, then replace the left leaf in place. The
+    # edit is on the 0.5 path and off the 2.0 path, whose leaf ID still shifts.
+    assert model.predict([0.5]) == "a"
+    assert model.predict_path([2.0])["trees"][0]["leaf"] == 1
+    model.model[3] = ["x", "<=", 0.0, "c", "d"]
+
+    assert model.predict([0.5]) == "d"
+    assert model.predict_path([2.0])["trees"][0]["leaf"] == 2
+    _assert_edited_cart_parity(
+        model, [[-0.5], [0.5], [2.0]], tmp_path, "edited-tree.cart"
+    )
+
+
+def test_forest_in_place_member_edit_refreshes_prediction_and_path_ids(tmp_path):
+    features = [{"name": "x", "dtype": "float", "type": "num"}]
+    model = RandomForest(n_estimators=2, features=features)
+    model.load_data([[0.0], [2.0]], ["a", "b"])
+    first = model._make_tree()
+    first.model = ["x", "<=", 1.0, "a", "b"]
+    second = model._make_tree()
+    second.model = ["x", "<=", 1.0, "a", "b"]
+    model.trees = [first, second]
+
+    assert model.predict([0.5]) == "a"
+    primed = model.predict_path([2.0])
+    assert [tree["leaf"] for tree in primed["trees"]] == [1, 3]
+    first.model[3] = ["x", "<=", 0.0, "c", "d"]
+
+    assert model.predict([0.5]) == "d"
+    assert [tree["leaf"] for tree in model.predict_path([2.0])["trees"]] == [2, 4]
+    _assert_edited_cart_parity(
+        model, [[-0.5], [0.5], [2.0]], tmp_path, "edited-forest.cart"
+    )
+
+
 def test_regression_forest_path_prediction_matches_predict(tmp_path):
     rows = [[float(x), float(y)] for x in range(5) for y in range(3)]
     model = RandomForest(

@@ -179,7 +179,6 @@ class DecisionTree(BaseModel):
 
         # Trained model
         self._model: Any = None
-        self._path_indices: tuple[dict, dict] | None = None
         self.training_summary: dict[str, int] = {}
 
     @property
@@ -190,7 +189,6 @@ class DecisionTree(BaseModel):
     @model.setter
     def model(self, value: Any) -> None:
         self._model = value
-        self._path_indices = None
 
     def _feature_type(self, feat_idx: int) -> str:
         """Get the type (cat/num) for a feature."""
@@ -567,8 +565,6 @@ class DecisionTree(BaseModel):
         """
         if self.model is None:
             raise ValueError("Model not trained. Call train() first.")
-        if self._path_indices is None:
-            self._path_indices = build_tree_indices([self.model])[0]
         return eval_tree(
             self.model,
             normalized,
@@ -576,7 +572,6 @@ class DecisionTree(BaseModel):
             return_dist,
             missing=missing,
             feature_specs=self.feature_specs,
-            indices=self._path_indices,
         )
 
     def predict_path(
@@ -585,15 +580,14 @@ class DecisionTree(BaseModel):
         """Predict and return the decisions and model-global leaf ID."""
         if self.model is None:
             raise ValueError("Model not trained. Call train() first.")
-        if self._path_indices is None:
-            self._path_indices = build_tree_indices([self.model])[0]
+        indices = build_tree_indices([self.model])[0]
         prediction, leaf, path = eval_tree_path(
             self.model,
             vector,
             self.name_to_col,
             missing=missing,
             feature_specs=self.feature_specs,
-            indices=self._path_indices,
+            indices=indices,
         )
         return {
             "prediction": prediction,

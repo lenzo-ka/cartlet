@@ -22,6 +22,9 @@ requires it.
 
 ### Fixed
 
+- Keep nested tree and forest prediction and path IDs correct after public
+  models are edited in place; ordinary prediction no longer uses a node-ID
+  cache, and path attribution computes current writer-order IDs per call.
 - Preserve the 0.6.0 base-first, tree-order floating-point accumulation for
   XGBoost runner predictions and path predictions.
 - Canonicalize nested `predict_path` predicate values exactly as the `.cart`

@@ -138,8 +138,6 @@ class RandomForest(BaseModel):
 
         # Trained trees
         self._trees: list[DecisionTree] = []
-        self._path_indices: list[tuple[dict, dict]] | None = None
-        self._path_model_ids: tuple[int, ...] = ()
 
     @property
     def trees(self) -> list[DecisionTree]:
@@ -149,8 +147,6 @@ class RandomForest(BaseModel):
     @trees.setter
     def trees(self, value: list[DecisionTree]) -> None:
         self._trees = value
-        self._path_indices = None
-        self._path_model_ids = ()
 
     def load_data(
         self,
@@ -479,7 +475,7 @@ class RandomForest(BaseModel):
                 raise ValueError(f"OOV values for features: {oov_features}")
         else:
             normalized = vector
-        indices = self._ensure_path_indices()
+        models = [tree.model for tree in self.trees]
         predictions = [
             eval_tree(
                 tree.model,
@@ -488,7 +484,7 @@ class RandomForest(BaseModel):
                 missing=missing,
                 tree_idx=tree_idx,
                 feature_specs=tree.feature_specs,
-                indices=indices[tree_idx],
+                id_trees=models,
             )
             for tree_idx, tree in enumerate(self.trees)
         ]
@@ -513,7 +509,7 @@ class RandomForest(BaseModel):
         if self._is_regression():
             raise ValueError("predict_proba not available for regression")
 
-        indices = self._ensure_path_indices()
+        models = [tree.model for tree in self.trees]
         predictions = [
             eval_tree(
                 tree.model,
@@ -522,7 +518,7 @@ class RandomForest(BaseModel):
                 missing=missing,
                 tree_idx=tree_idx,
                 feature_specs=tree.feature_specs,
-                indices=indices[tree_idx],
+                id_trees=models,
             )
             for tree_idx, tree in enumerate(self.trees)
         ]
@@ -536,7 +532,7 @@ class RandomForest(BaseModel):
         """Predict and return each tree's decisions and model-global leaf ID."""
         if not self.trees:
             raise ValueError("Forest not trained. Call train() first.")
-        indices_by_tree = self._ensure_path_indices()
+        indices_by_tree = build_tree_indices([tree.model for tree in self.trees])
         values = []
         paths = []
         for tree_idx, (tree, indices) in enumerate(
@@ -562,14 +558,6 @@ class RandomForest(BaseModel):
             values = [float(prediction) for prediction in predictions]
             return sum(values) / len(values)
         return Counter(predictions).most_common(1)[0][0]
-
-    def _ensure_path_indices(self) -> list[tuple[dict, dict]]:
-        """Return cached writer-order indexes for the current tree objects."""
-        model_ids = tuple(id(tree.model) for tree in self.trees)
-        if self._path_indices is None or model_ids != self._path_model_ids:
-            self._path_indices = build_tree_indices([tree.model for tree in self.trees])
-            self._path_model_ids = model_ids
-        return self._path_indices
 
     @property
     def feature_importances_(self) -> dict[str, float]:

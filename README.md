@@ -638,6 +638,13 @@ cartlet predict model.cart input.tsv --output-format tsv -o predictions.tsv
 Prediction uses `.cart` models. Named input columns are aligned to the model;
 headerless data is positional. Output defaults to stdout. Modes return values,
 append a prediction column, or replace the target column in the output data.
+Delimited fields are parsed before prediction: empty fields become `None`, and
+other fields are converted with `float()` when they contain a period or with
+`int()` otherwise when conversion succeeds, regardless of model feature type.
+JSONL values retain their JSON types. Consequently, documented bool spellings
+apply to the value after this parsing step; for example, CSV text `01` reaches
+the library as integer `1`, not string `"01"`. The bundled standalone CLI has a
+different input parser, documented in [Standalone deployment](docs/runners.md).
 
 ### evaluate
 
