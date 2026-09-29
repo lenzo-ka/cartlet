@@ -511,7 +511,8 @@ def _eval_tree(
                     from .types import normalize_bool
 
                     predicates = [normalize_bool(predicate) for predicate in predicates]
-                path_value = [str(predicate) for predicate in predicates]
+                # Match the writer, which stores the canonical set once.
+                path_value = sorted({str(predicate) for predicate in predicates})
             else:
                 path_value = float(value)
             step = {

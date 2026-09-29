@@ -54,16 +54,19 @@ def _train_size_model(categories, trees, depth):
     return model
 
 
-def test_category_set_exports_are_bounded_by_booster_nodes(tmp_path):
+def test_category_set_exports_match_booster_nodes(tmp_path):
     for categories, trees, depth in ((20, 5, 4), (40, 50, 6)):
         model = _train_size_model(categories, trees, depth)
         booster_decisions, booster_leaves = _booster_counts(model)
         path = tmp_path / f"category-{categories}.cart"
         model.export(str(path))
         loaded = package_runner.load_model(str(path))
-        assert len(loaded["decisions"]) <= booster_decisions
-        assert len(loaded["leaves"]) <= booster_leaves
+        assert len(loaded["decisions"]) == booster_decisions
+        assert len(loaded["leaves"]) == booster_leaves
         assert loaded["category_sets"]
+        X, _ = _categorical_training_data(categories, rows=200)
+        for row in X:
+            assert package_runner.predict(loaded, row) == model.predict(row)
 
 
 def _prediction_model(task):
@@ -153,3 +156,14 @@ def test_category_set_json_and_cart_round_trips_preserve_paths(tmp_path):
         assert json_model.predict_path(row) == expected
         assert Predictor(str(cart_path)).predict_path(row) == expected
         assert BundledPredictor(str(cart_path)).predict_path(row) == expected
+
+
+def test_bool_category_set_aliases_report_the_canonical_set(tmp_path):
+    model = DecisionTree(features=[{"name": "b", "type": "cat", "dtype": "bool"}])
+    model.model = ["b", "in", ["1", "True"], "hit", "miss"]
+    path = tmp_path / "bool-set.cart"
+    model.export(str(path))
+    expected = model.predict_path([True])
+    assert expected["trees"][0]["path"][0]["value"] == ["1"]
+    assert Predictor(str(path)).predict_path([True]) == expected
+    assert BundledPredictor(str(path)).predict_path([True]) == expected
