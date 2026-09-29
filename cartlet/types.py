@@ -146,7 +146,7 @@ _MAX_RANDOM_SEED = 2**31
 # Probability thresholds (for leaf distributions)
 # =============================================================================
 
-# Lossless default: confidence-based distribution collapse is opt-in.
+# Default keeps distributions: confidence-based distribution collapse is opt-in.
 PROB_HIGH_CONFIDENCE = 1.0
 
 # Minimum probability to include in distribution (filter out noise)
@@ -176,7 +176,7 @@ TASK_INFER_UNIQUE_RATIO = 0.5
 DEFAULT_N_ESTIMATORS = 100
 DEFAULT_VALIDATION_SPLIT = 0.05
 DEFAULT_TEST_SPLIT = 0.05
-# Lossless default: entropy-based distribution collapse is opt-in.
+# Default keeps distributions: entropy-based distribution collapse is opt-in.
 DEFAULT_MIN_DIST_ENTROPY = 0.0
 DEFAULT_MIN_SAMPLES_SPLIT = 2
 DEFAULT_MIN_SAMPLES_LEAF = 1
