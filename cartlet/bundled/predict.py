@@ -7,7 +7,7 @@ This file is shipped standalone (and embedded by `cartlet bundle`) so it
 intentionally duplicates the format constants and traversal logic that
 otherwise live in `cartlet/io/cart_format.py` and `cartlet/runner.py`.
 Keep the constants below (OP_*, LEAF_*, FLAG_*, HEADER_SIZE, EXPECTED_VERSION,
-SIZE_*, MAX_TREE_DEPTH) in sync with `cartlet/io/cart_format.py`. The format
+MAX_TREE_DEPTH) in sync with `cartlet/io/cart_format.py`. The format
 is versioned via `EXPECTED_VERSION`; bump both files together if the layout
 changes.
 
@@ -35,12 +35,7 @@ import struct
 import sys
 from collections import Counter
 
-# Decision node encoding (packed feat_op byte)
-# Bits 0-5: feature index (max 63 inline)
-# Bits 6-7: operation type
-OP_SHIFT = 6
-OP_MASK = 0xC0  # Upper 2 bits for op
-FEAT_MASK = 0x3F  # Lower 6 bits = feature index
+# Decision node operation values. Feature indices are stored as varints.
 OP_LE = 0  # Numerical less-than
 OP_EQ = 1  # Categorical equality
 OP_SWITCH = 2  # Case table lookup
@@ -76,7 +71,7 @@ EXPECTED_VERSION = 3
 BINARY_THRESHOLD = 0.5
 
 # Header
-HEADER_SIZE = 36  # Minimum header size in bytes
+HEADER_SIZE = 52  # Minimum header size in bytes
 TYPE_MASK = 0x03  # Feature type mask: 0=cat, 1=num
 
 # Sanity limits for header values
@@ -147,6 +142,8 @@ def decode_varint(data, pos):
     # long chain of continuation bits raises instead of building a huge int.
     for _ in range(5):
         byte = data[pos]
+        if shift == 28 and not (byte & 0x80) and byte > 0x0F:
+            raise ValueError("varint exceeds u32 (corrupt .cart file)")
         result |= (byte & 0x7F) << shift
         pos += 1
         if not (byte & 0x80):
@@ -398,9 +395,9 @@ def _load_cart_from_bytes_impl(data):
         )
 
     version, flags, n_features, n_classes, n_trees = struct.unpack_from(
-        "<HHHHH", data, pos
+        "<HHIII", data, pos
     )
-    pos += 10
+    pos += 16
 
     if version == 2:
         raise ValueError(
@@ -420,8 +417,8 @@ def _load_cart_from_bytes_impl(data):
         n_case_tables,
         n_category_sets,
         metadata_len,
-    ) = struct.unpack_from("<IIIHHHHH", data, pos)
-    pos += 22
+    ) = struct.unpack_from("<IIIIIIII", data, pos)
+    pos += 32
 
     # Sanity checks on header values
     if n_features > _MAX_FEATURES:
@@ -451,33 +448,28 @@ def _load_cart_from_bytes_impl(data):
             "FLAG_IS_FOREST nor FLAG_IS_XGBOOST is set"
         )
 
-    # String table
-    (n_strings,) = struct.unpack_from("<H", data, pos)
-    pos += 2
-    string_offsets = struct.unpack_from(f"<{n_strings}H", data, pos)
-    pos += 2 * n_strings
-
-    # Find end of string data by scanning for nulls
+    # Sequential varint-length-prefixed string table
+    n_strings, pos = decode_varint(data, pos)
     strings = []
-    string_data_start = pos
-    end = string_data_start
-    for off in string_offsets:
-        start = string_data_start + off
-        term = data.index(b"\x00", start)
-        strings.append(data[start:term].decode("utf-8"))
-        # Advance by byte position, not decoded character count (which is
-        # wrong for any non-ASCII string).
-        if term + 1 > end:
-            end = term + 1
-    pos = end
+    for _ in range(n_strings):
+        byte_length, pos = decode_varint(data, pos)
+        end = pos + byte_length
+        if end > len(data):
+            raise IndexError("string extends past end of file")
+        strings.append(data[pos:end].decode("utf-8"))
+        pos = end
 
     # Feature table
     features = []
     for _ in range(n_features):
-        name_idx, type_flags, n_cat = struct.unpack_from("<HBB", data, pos)
-        pos += 4
-        cat_indices = list(struct.unpack_from(f"<{n_cat}H", data, pos))
-        pos += 2 * n_cat
+        name_idx, pos = decode_varint(data, pos)
+        (type_flags,) = struct.unpack_from("<B", data, pos)
+        pos += 1
+        n_cat, pos = decode_varint(data, pos)
+        cat_indices = []
+        for _ in range(n_cat):
+            value, pos = decode_varint(data, pos)
+            cat_indices.append(value)
         feat_type = "cat" if (type_flags & TYPE_MASK) == 0 else "num"
         dtype = decode_feature_dtype(type_flags)
         features.append(
@@ -494,8 +486,7 @@ def _load_cart_from_bytes_impl(data):
     # Class table
     class_labels = []
     for _ in range(n_classes):
-        (ci,) = struct.unpack_from("<H", data, pos)
-        pos += 2
+        ci, pos = decode_varint(data, pos)
         class_labels.append(strings[ci])
 
     # Float pool
@@ -503,8 +494,10 @@ def _load_cart_from_bytes_impl(data):
     pos += 8 * n_floats
 
     # Cat value pool
-    cat_vals = list(struct.unpack_from(f"<{n_cat_vals}H", data, pos))
-    pos += 2 * n_cat_vals
+    cat_vals = []
+    for _ in range(n_cat_vals):
+        value, pos = decode_varint(data, pos)
+        cat_vals.append(value)
 
     # Tree offsets (varint encoded)
     tree_offsets = []
@@ -513,14 +506,16 @@ def _load_cart_from_bytes_impl(data):
         tree_offsets.append(off)
 
     # Decision nodes (variable size)
-    # Comparisons: feat_op(1) + flags(1) + val(2) + child varints
-    # OP_SWITCH: feat_op(1) + flags(1) + table_idx(2)
+    # feat(varint) + op(1) + flags(1) + val(varint), plus child varints
+    # for comparison operations. OP_SWITCH has no child fields.
     decisions = []
     for _ in range(n_decisions):
-        feat_op, missing_flags, val = struct.unpack_from("<BBH", data, pos)
-        pos += 4
-        feat = feat_op & FEAT_MASK
-        op = (feat_op & OP_MASK) >> OP_SHIFT
+        feat, pos = decode_varint(data, pos)
+        op, missing_flags = struct.unpack_from("<BB", data, pos)
+        pos += 2
+        val, pos = decode_varint(data, pos)
+        if op not in (OP_LE, OP_EQ, OP_SWITCH, OP_LT):
+            raise ValueError(f"Invalid decision operation: {op}")
         if missing_flags & ~DECISION_FLAGS_MASK:
             raise ValueError(f"Invalid decision flags: {missing_flags}")
         missing_direction = missing_flags & MISSING_MASK
@@ -536,25 +531,35 @@ def _load_cart_from_bytes_impl(data):
             right, pos = decode_varint(data, pos)
             decisions.append((feat, op, missing_flags, val, left, right))
 
-    # Leaf nodes (3 bytes each - no padding)
+    # Leaf nodes (type byte + value varint)
     leaves = []
     for _ in range(n_leaves):
-        leaf_type, val = struct.unpack_from("<BH", data, pos)
-        pos += 3
+        (leaf_type,) = struct.unpack_from("<B", data, pos)
+        pos += 1
+        val, pos = decode_varint(data, pos)
         leaves.append((leaf_type, val))
 
     # Distributions (if FLAG_HAS_DISTRIBUTIONS)
     distributions = []
     if has_distributions:
         for _ in range(n_dists):
-            (n_entries,) = struct.unpack_from("<H", data, pos)
-            pos += 2
-            dist = []
+            n_entries, pos = decode_varint(data, pos)
+            quantized = []
             for _ in range(n_entries):
-                class_idx, prob = struct.unpack_from("<Hd", data, pos)
-                pos += 10
-                dist.append((class_idx, prob))
-            distributions.append(dist)
+                class_idx, pos = decode_varint(data, pos)
+                (probability_q16,) = struct.unpack_from("<H", data, pos)
+                pos += 2
+                quantized.append((class_idx, probability_q16))
+            decoded = [
+                (class_idx, probability_q16 / 65535)
+                for class_idx, probability_q16 in quantized
+            ]
+            total = sum(probability for _, probability in decoded)
+            if not total:
+                raise ValueError("Invalid all-zero quantized distribution")
+            distributions.append(
+                [(class_idx, probability / total) for class_idx, probability in decoded]
+            )
 
     # Case tables (for OP_SWITCH nodes). Resolve cases to a
     # {category_string: child_idx} lookup once so switch traversal is O(1) per
@@ -562,14 +567,12 @@ def _load_cart_from_bytes_impl(data):
     # runner.py). First-match-wins via setdefault.
     case_tables = []
     for _ in range(n_case_tables):
-        (n_cases,) = struct.unpack_from("<H", data, pos)
-        pos += 2
+        n_cases, pos = decode_varint(data, pos)
         default_child, pos = decode_varint(data, pos)
         cases = []
         lookup: dict = {}
         for _ in range(n_cases):
-            (cat_val_idx,) = struct.unpack_from("<H", data, pos)
-            pos += 2
+            cat_val_idx, pos = decode_varint(data, pos)
             child_idx, pos = decode_varint(data, pos)
             cases.append((cat_val_idx, child_idx))
             if cat_val_idx >= len(cat_vals):
@@ -582,12 +585,10 @@ def _load_cart_from_bytes_impl(data):
 
     category_sets = []
     for _ in range(n_category_sets):
-        (n_values,) = struct.unpack_from("<H", data, pos)
-        pos += 2
+        n_values, pos = decode_varint(data, pos)
         values = set()
         for _ in range(n_values):
-            (cat_val_idx,) = struct.unpack_from("<H", data, pos)
-            pos += 2
+            cat_val_idx, pos = decode_varint(data, pos)
             if cat_val_idx >= len(cat_vals) or cat_vals[cat_val_idx] >= len(strings):
                 raise ValueError("Invalid categorical value index in category set")
             values.add(strings[cat_vals[cat_val_idx]])

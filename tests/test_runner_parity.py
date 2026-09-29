@@ -267,19 +267,19 @@ def test_gzip_parity(tmp_path):
 
 
 # =============================================================================
-# H1: > 63 features must be rejected at export (no silent corruption)
+# H1: feature indices wider than the old packed 6-bit field round-trip
 # =============================================================================
 
 
-def test_wide_feature_index_rejected(tmp_path):
-    # A split on feature index 64 cannot fit the 6-bit packed field.
+def test_wide_feature_index_roundtrips(tmp_path):
     names = [f"f{i}" for i in range(65)]
     tree = ["f64", "=", "yes", "a", "b"]
     specs = [FeatureSpec(name=n, dtype="str", type="cat") for n in names]
     name_to_col = {n: i for i, n in enumerate(names)}
     path = str(tmp_path / "wide.cart")
-    with pytest.raises(ValueError, match="feature index"):
-        write_tree_bytes(path, tree, specs, name_to_col, ["a", "b"], False)
+    write_tree_bytes(path, tree, specs, name_to_col, ["a", "b"], False)
+    assert pkg_runner.load_model(path)["decisions"][0][0] == 64
+    assert _assert_parity(path, ["no"] * 64 + ["yes"]) == ("ok", "a")
 
 
 # =============================================================================

@@ -5,9 +5,9 @@ This module defines the binary format for decision trees and forests.
 All multi-byte values are little-endian.
 
 Format optimizations:
-- Decision nodes use varint for child indices
-- Leaf nodes are 3 bytes (type + val, no padding)
-- feat + op packed into 1 byte (6 bits feat, 2 bits op)
+- Repeated counts and indices use 32-bit varints
+- Probabilities use unsigned 16-bit fixed-point values
+- Header counts use fixed-width unsigned 32-bit values
 """
 
 import struct
@@ -19,16 +19,13 @@ MAGIC = b"CART"
 VERSION = 3
 
 # Decision node encoding:
-# - feat_op: 1 byte (bits 0-5 = feature index, bits 6-7 = op)
+# - feat: varint (feature index)
+# - op: 1 byte
 # - flags: 1 byte (learned missing direction and categorical-set marker)
-# - val: 2 bytes (index into floats, cat_vals, category_sets, or case_tables)
+# - val: varint (index into floats, cat_vals, category_sets, or case_tables)
 # - left: varint (1-5 bytes) - only for OP_LE/OP_LT/OP_EQ
 # - right: varint (1-5 bytes) - only for OP_LE/OP_LT/OP_EQ
 # Note: OP_SWITCH nodes have children in the case table instead
-OP_SHIFT = 6  # Op is in bits 6-7
-OP_MASK = 0xC0  # Upper 2 bits for op
-FEAT_MASK = 0x3F  # Lower 6 bits for feature index (max 63 features inline)
-
 # Per-decision flags byte. Native CART nodes use MISSING_NONE.
 MISSING_NONE = 0
 MISSING_LEFT = 1
@@ -92,52 +89,48 @@ def decode_feature_value(value: str, dtype: str) -> Any:
 
 
 # Header size (bytes)
-HEADER_SIZE = 36
+HEADER_SIZE = 52
 # Offset into header
 OFF_VERSION = 4
 OFF_FLAGS = 6
 OFF_FEATURES = 8
-OFF_CLASSES = 10
-OFF_TREES = 12
-OFF_DECISIONS = 14
-OFF_LEAVES = 18
-OFF_FLOATS = 22
-OFF_CAT_VALS = 26
-OFF_DISTS = 28
-OFF_CASE_TABLES = 30
-OFF_CATEGORY_SETS = 32
-OFF_META_LEN = 34
+OFF_CLASSES = 12
+OFF_TREES = 16
+OFF_DECISIONS = 20
+OFF_LEAVES = 24
+OFF_FLOATS = 28
+OFF_CAT_VALS = 32
+OFF_DISTS = 36
+OFF_CASE_TABLES = 40
+OFF_CATEGORY_SETS = 44
+OFF_META_LEN = 48
 
 # Breakdown:
 #   magic:          4 bytes
 #   version:        2 bytes (u16)
 #   flags:          2 bytes (u16)
-#   n_features:     2 bytes (u16)
-#   n_classes:      2 bytes (u16)
-#   n_trees:        2 bytes (u16)
+#   n_features:     4 bytes (u32)
+#   n_classes:      4 bytes (u32)
+#   n_trees:        4 bytes (u32)
 #   n_decisions:    4 bytes (u32)
 #   n_leaves:       4 bytes (u32)
 #   n_floats:       4 bytes (u32)
-#   n_cat_vals:     2 bytes (u16)
-#   n_dists:        2 bytes (u16) -- number of distribution entries
-#   n_case_tables:  2 bytes (u16) -- number of case tables
-#   n_category_sets: 2 bytes (u16) -- number of categorical membership sets
-#   metadata_len:   2 bytes (u16)
-# Total: 4 + (5*2) + (3*4) + (5*2) = 4 + 10 + 12 + 10 = 36
+#   n_cat_vals:     4 bytes (u32)
+#   n_dists:        4 bytes (u32) -- number of distribution entries
+#   n_case_tables:  4 bytes (u32) -- number of case tables
+#   n_category_sets: 4 bytes (u32) -- number of categorical membership sets
+#   metadata_len:   4 bytes (u32)
+# Total: 4 + 2 + 2 + (11*4) = 52
 
-# Element sizes (bytes)
-SIZE_U16 = 2
+# Fixed-width element sizes (bytes)
 SIZE_F64 = 8  # Float64 preserves native thresholds and regression outputs
-SIZE_LEAF = 3  # type(1) + val(2) - no padding
-SIZE_DIST_ENTRY = 10  # class_idx(u16) + prob(f64)
-SIZE_FEAT_HEADER = 4  # name_idx(u16) + type_flags(u8) + n_cat(u8)
-SIZE_DECISION_HEADER = 4  # feat_op(1) + flags(1) + val(2); then child varints
+SIZE_Q16 = 2
 
 # Header struct groups parsed after the 4-byte magic (see the breakdown above).
-HEADER_FMT_COUNTS1 = "<HHHHH"  # version, flags, n_features, n_classes, n_trees
-HEADER_FMT_COUNTS2 = "<IIIHHHHH"  # nodes/floats + cat/dist/case/set/meta
-SIZE_HEADER_COUNTS1 = struct.calcsize(HEADER_FMT_COUNTS1)  # 10
-SIZE_HEADER_COUNTS2 = struct.calcsize(HEADER_FMT_COUNTS2)  # 22
+HEADER_FMT_COUNTS1 = "<HHIII"  # version, flags, n_features, n_classes, n_trees
+HEADER_FMT_COUNTS2 = "<IIIIIIII"  # nodes/floats + cat/dist/case/set/meta
+SIZE_HEADER_COUNTS1 = struct.calcsize(HEADER_FMT_COUNTS1)  # 16
+SIZE_HEADER_COUNTS2 = struct.calcsize(HEADER_FMT_COUNTS2)  # 32
 # Sanity: the magic + both count groups must equal the fixed header size.
 assert 4 + SIZE_HEADER_COUNTS1 + SIZE_HEADER_COUNTS2 == HEADER_SIZE
 
@@ -151,6 +144,8 @@ def encode_varint(value: int) -> bytes:
     """Encode a non-negative integer as a varint (1-5 bytes for 32-bit values)."""
     if value < 0:
         raise ValueError(f"varint cannot encode a negative value: {value}")
+    if value > 0xFFFFFFFF:
+        raise ValueError(f"varint value exceeds u32: {value}")
     result = bytearray()
     while value > 0x7F:
         result.append((value & 0x7F) | 0x80)
@@ -167,6 +162,8 @@ def decode_varint(data: bytes, pos: int) -> tuple[int, int]:
     # long chain of continuation bits raises instead of spinning up a huge int.
     for _ in range(5):
         byte = data[pos]
+        if shift == 28 and not (byte & 0x80) and byte > 0x0F:
+            raise ValueError("varint exceeds u32 (corrupt .cart file)")
         result |= (byte & 0x7F) << shift
         pos += 1
         if not (byte & 0x80):

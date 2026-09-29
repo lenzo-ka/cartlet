@@ -20,7 +20,6 @@ from ..utils import split_feature_and_missing
 from .cart_format import (
     CATEGORY_SET,
     DTYPE_MAP,
-    FEAT_MASK,
     FLAG_HAS_DISTRIBUTIONS,
     FLAG_IS_FOREST,
     FLAG_IS_REGRESSION,
@@ -36,7 +35,6 @@ from .cart_format import (
     OP_EQ,
     OP_LE,
     OP_LT,
-    OP_SHIFT,
     OP_SWITCH,
     TYPE_CAT,
     TYPE_NUM,
@@ -88,8 +86,8 @@ class ByteWriter:
         self.float_to_idx: dict[float, int] = {}
         self.cat_values: list[int] = []  # string indices for categorical comparisons
         self.cat_val_to_idx: dict[int, int] = {}  # string_idx -> cat_values index
-        # Distributions: list of [(class_idx, prob), ...]
-        self.distributions: list[list[tuple[int, float]]] = []
+        # Distributions: list of [(class_idx, q16_probability), ...]
+        self.distributions: list[list[tuple[int, int]]] = []
         self.dist_to_idx: dict[tuple, int] = {}  # hashable dist -> index
         # Case tables: list of (default_child, [(cat_val_idx, child_idx), ...])
         self.case_tables: list[tuple[int, list[tuple[int, int]]]] = []
@@ -134,11 +132,20 @@ class ByteWriter:
 
     def _add_distribution(self, dist: dict) -> int:
         """Add distribution to pool, return index."""
-        # Convert dict to sorted list of (class_idx, prob)
+        # Sort before quantizing. Rounding is monotone but can turn a strict
+        # probability ordering into a tie; retaining this order keeps the
+        # first entry identical to Python's stable in-process argmax.
         items = []
         for cls, prob in sorted(dist.items(), key=lambda x: -x[1]):
             class_idx = self._add_string(str(cls))
-            items.append((class_idx, float(prob)))
+            probability = float(prob)
+            if not math.isfinite(probability) or not 0.0 <= probability <= 1.0:
+                raise ValueError(
+                    f"Probability {probability!r} cannot be represented as q16"
+                )
+            items.append((class_idx, round(probability * 65535)))
+        if not sum(probability_q16 for _, probability_q16 in items):
+            raise ValueError("Distribution quantizes to all-zero q16 probabilities")
 
         # Check for duplicate
         key = tuple(items)
@@ -348,20 +355,18 @@ class ByteWriter:
         root_idx = self._flatten_node(model, name_to_col)
         self.tree_offsets.append(root_idx)
 
-    # Fixed-width field limits imposed by the .cart format. Exceeding any of
-    # these must raise a clear error rather than silently truncate (feature
-    # index) or emit a cryptic struct.error (everything else).
-    _MAX_FEAT_IDX = FEAT_MASK  # 6-bit packed feature index (0-63)
-    _MAX_U8 = 0xFF
-    _MAX_U16 = 0xFFFF
+    # Fixed u32 and 32-bit-varint limits imposed by the .cart format. Exceeding
+    # any of these must raise a clear error rather than emit corrupt bytes.
+    _MAX_U32 = 0xFFFFFFFF
 
     def _validate_capacity(
         self,
         feature_info: list[tuple[int, int, int, list[int]]],
-        string_offsets: list[int],
+        string_lengths: list[int],
         class_labels: list[str],
+        metadata_len: int,
     ) -> None:
-        """Reject models whose pools overflow the format's fixed-width fields."""
+        """Reject models whose pools overflow the format's u32 fields."""
 
         def _check(count: int, limit: int, what: str) -> None:
             if count > limit:
@@ -371,32 +376,41 @@ class ByteWriter:
                     "(.json/.pkl)."
                 )
 
-        _check(len(feature_info), self._MAX_U16, "number of features")
-        _check(len(class_labels), self._MAX_U16, "number of classes")
-        _check(len(self.tree_offsets), self._MAX_U16, "number of trees")
-        _check(len(self.cat_values), self._MAX_U16, "number of categorical values")
-        _check(len(self.distributions), self._MAX_U16, "number of distributions")
-        _check(len(self.case_tables), self._MAX_U16, "number of case tables")
-        _check(len(self.category_sets), self._MAX_U16, "number of category sets")
+        _check(len(feature_info), self._MAX_U32, "number of features")
+        _check(len(class_labels), self._MAX_U32, "number of classes")
+        _check(len(self.tree_offsets), self._MAX_U32, "number of trees")
+        _check(len(self.decisions), 0x7FFFFFFF, "number of decision nodes")
+        _check(len(self.leaves), 0x7FFFFFFF, "number of leaf nodes")
+        _check(len(self.floats), self._MAX_U32, "number of floats")
+        _check(len(self.strings), self._MAX_U32, "number of strings")
+        _check(len(self.cat_values), self._MAX_U32, "number of categorical values")
+        _check(len(self.distributions), self._MAX_U32, "number of distributions")
+        _check(len(self.case_tables), self._MAX_U32, "number of case tables")
+        _check(len(self.category_sets), self._MAX_U32, "number of category sets")
+        _check(metadata_len, self._MAX_U32, "metadata length")
         for category_set in self.category_sets:
-            _check(len(category_set), self._MAX_U16, "values in a category set")
+            _check(len(category_set), self._MAX_U32, "values in a category set")
 
-        # String offsets are u16 into the string blob.
-        if string_offsets:
-            _check(max(string_offsets), self._MAX_U16, "string-table byte offset")
+        for dist in self.distributions:
+            _check(len(dist), self._MAX_U32, "entries in a distribution")
+        for _default_child, cases in self.case_tables:
+            _check(len(cases), self._MAX_U32, "cases in a case table")
 
-        # Per-feature categorical value count is a u8.
+        for length in string_lengths:
+            _check(length, self._MAX_U32, "UTF-8 string byte length")
+
+        # Per-feature categorical value counts and string indices are u32 varints.
         for _name_idx, _type_flags, n_cat, _cat_indices in feature_info:
-            _check(n_cat, self._MAX_U8, "categorical values for a single feature")
+            _check(n_cat, self._MAX_U32, "categorical values for a single feature")
 
-        # Decision-node feature index is a packed 6-bit field; val is a u16.
+        # Decision-node feature and value indices are u32 varints.
         for feat, _op, _missing, val, _left, _right in self.decisions:
-            _check(feat, self._MAX_FEAT_IDX, "feature index")
-            _check(val, self._MAX_U16, "decision-node value index")
+            _check(feat, self._MAX_U32, "feature index")
+            _check(val, self._MAX_U32, "decision-node value index")
 
-        # Leaf val is a u16 index into floats/strings/distributions.
+        # Leaf val is a u32 varint index into floats/strings/distributions.
         for _leaf_type, val in self.leaves:
-            _check(val, self._MAX_U16, "leaf value index")
+            _check(val, self._MAX_U32, "leaf value index")
 
     def write(
         self,
@@ -431,17 +445,16 @@ class ByteWriter:
         # Add class labels to string table
         class_indices = [self._add_string(str(c)) for c in class_labels]
 
-        # Build string table into a bytearray so appends are amortized O(1)
-        # (bytes concatenation in a loop is O(n^2) for large string pools).
-        string_data = bytearray()
-        string_offsets: list[int] = []
-        for s in self.strings:
-            string_offsets.append(len(string_data))
-            string_data += s.encode("utf-8") + b"\x00"
+        # Encode each string once. The table writes varint byte lengths followed
+        # by raw UTF-8, so readers can parse it sequentially in O(n).
+        encoded_strings = [s.encode("utf-8") for s in self.strings]
+        string_lengths = [len(value) for value in encoded_strings]
 
-        # Fail fast (before opening the file) if anything overflows a
-        # fixed-width field, rather than truncating or raising struct.error.
-        self._validate_capacity(feature_info, string_offsets, class_labels)
+        # Fail fast before opening the file if anything exceeds a u32-backed
+        # fixed or varint field.
+        self._validate_capacity(
+            feature_info, string_lengths, class_labels, len(meta_bytes)
+        )
 
         # Build flags
         flags = 0
@@ -454,10 +467,7 @@ class ByteWriter:
         if self.is_xgboost:
             flags |= FLAG_IS_XGBOOST
 
-        for value in [
-            *self.floats,
-            *(prob for dist in self.distributions for _, prob in dist),
-        ]:
+        for value in self.floats:
             try:
                 if not math.isfinite(value):
                     raise ValueError("nonfinite value")
@@ -469,39 +479,39 @@ class ByteWriter:
 
         # Serialize completely before replacing an existing destination.
         with atomic_output_path(path) as output, open(output, "wb") as f:
-            # Header (34 bytes)
+            # Header (52 bytes)
             f.write(MAGIC)
             f.write(struct.pack("<H", VERSION))
             f.write(struct.pack("<H", flags))
-            f.write(struct.pack("<H", len(feature_specs)))
-            f.write(struct.pack("<H", len(class_labels)))
-            f.write(struct.pack("<H", len(self.tree_offsets)))
+            f.write(struct.pack("<I", len(feature_specs)))
+            f.write(struct.pack("<I", len(class_labels)))
+            f.write(struct.pack("<I", len(self.tree_offsets)))
             f.write(struct.pack("<I", len(self.decisions)))  # n_decisions
             f.write(struct.pack("<I", len(self.leaves)))  # n_leaves
             f.write(struct.pack("<I", len(self.floats)))  # n_floats
-            f.write(struct.pack("<H", len(self.cat_values)))
-            f.write(struct.pack("<H", len(self.distributions)))  # n_dists
-            f.write(struct.pack("<H", len(self.case_tables)))  # n_case_tables
-            f.write(struct.pack("<H", len(self.category_sets)))  # n_category_sets
-            f.write(struct.pack("<H", len(meta_bytes)))
+            f.write(struct.pack("<I", len(self.cat_values)))
+            f.write(struct.pack("<I", len(self.distributions)))  # n_dists
+            f.write(struct.pack("<I", len(self.case_tables)))  # n_case_tables
+            f.write(struct.pack("<I", len(self.category_sets)))  # n_category_sets
+            f.write(struct.pack("<I", len(meta_bytes)))
 
             # String table
-            f.write(struct.pack("<H", len(self.strings)))
-            for off in string_offsets:
-                f.write(struct.pack("<H", off))
-            f.write(string_data)
+            f.write(encode_varint(len(encoded_strings)))
+            for encoded_string in encoded_strings:
+                f.write(encode_varint(len(encoded_string)))
+                f.write(encoded_string)
 
             # Feature table
             for name_idx, type_flags, n_cat, cat_indices in feature_info:
-                f.write(struct.pack("<H", name_idx))
+                f.write(encode_varint(name_idx))
                 f.write(struct.pack("<B", type_flags))
-                f.write(struct.pack("<B", n_cat))
+                f.write(encode_varint(n_cat))
                 for ci in cat_indices:
-                    f.write(struct.pack("<H", ci))
+                    f.write(encode_varint(ci))
 
             # Class table
             for ci in class_indices:
-                f.write(struct.pack("<H", ci))
+                f.write(encode_varint(ci))
 
             # Float pool
             for fv in self.floats:
@@ -509,7 +519,7 @@ class ByteWriter:
 
             # Cat value pool (string indices)
             for si in self.cat_values:
-                f.write(struct.pack("<H", si))
+                f.write(encode_varint(si))
 
             # Tree offsets (always written - needed for single-leaf trees too)
             # Use varint for tree offsets too
@@ -517,42 +527,45 @@ class ByteWriter:
                 f.write(encode_varint(off))
 
             # Decision nodes (variable size)
-            # Comparisons: feat_op(1) + flags(1) + val(2) + child varints
-            # OP_SWITCH: feat_op(1) + flags(1) + table_idx(2)
+            # feat(varint) + op(1) + flags(1) + val(varint), followed by child
+            # varints for comparison operations. OP_SWITCH has no child fields.
             for feat, op, missing_flags, val, left, right in self.decisions:
-                feat_op = (feat & FEAT_MASK) | (op << OP_SHIFT)
-                f.write(struct.pack("<BBH", feat_op, missing_flags, val))
+                f.write(encode_varint(feat))
+                f.write(struct.pack("<BB", op, missing_flags))
+                f.write(encode_varint(val))
                 if op != OP_SWITCH:
                     f.write(encode_varint(left))
                     f.write(encode_varint(right))
 
-            # Leaf nodes (3 bytes each - no padding)
+            # Leaf nodes: type(u8) + val(varint)
             for leaf_type, val in self.leaves:
-                f.write(struct.pack("<BH", leaf_type, val))
+                f.write(struct.pack("<B", leaf_type))
+                f.write(encode_varint(val))
 
             # Distributions (if FLAG_HAS_DISTRIBUTIONS)
-            # Format: for each dist: n_entries(u16) + [class_idx(u16) + prob(f64)]...
+            # Format: n_entries(varint) + [class_idx(varint) + q(u16)]...
             for dist in self.distributions:
-                f.write(struct.pack("<H", len(dist)))
-                for class_idx, prob in dist:
-                    f.write(struct.pack("<Hd", class_idx, prob))
+                f.write(encode_varint(len(dist)))
+                for class_idx, probability_q16 in dist:
+                    f.write(encode_varint(class_idx))
+                    f.write(struct.pack("<H", probability_q16))
 
             # Case tables (for OP_SWITCH nodes)
-            # Format: for each table: n_cases(u16) + default(varint) +
-            #         [cat_val_idx(u16) + child(varint)]...
+            # Format: n_cases(varint) + default(varint) +
+            #         [cat_val_idx(varint) + child(varint)]...
             for default_child, cases in self.case_tables:
-                f.write(struct.pack("<H", len(cases)))
+                f.write(encode_varint(len(cases)))
                 f.write(encode_varint(default_child))
                 for cat_val_idx, child_idx in cases:
-                    f.write(struct.pack("<H", cat_val_idx))
+                    f.write(encode_varint(cat_val_idx))
                     f.write(encode_varint(child_idx))
 
             # Category-set tables (for OP_EQ nodes with CATEGORY_SET).
-            # Format: for each set: n_values(u16) + cat_val_idx(u16)[n_values]
+            # Format: n_values(varint) + cat_val_idx(varint)[n_values]
             for category_set in self.category_sets:
-                f.write(struct.pack("<H", len(category_set)))
+                f.write(encode_varint(len(category_set)))
                 for cat_val_idx in category_set:
-                    f.write(struct.pack("<H", cat_val_idx))
+                    f.write(encode_varint(cat_val_idx))
 
             # Metadata
             if meta_bytes:

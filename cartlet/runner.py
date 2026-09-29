@@ -27,7 +27,6 @@ from typing import Any, cast
 from .io.cart_format import (
     CATEGORY_SET,
     DECISION_FLAGS_MASK,
-    FEAT_MASK,
     FLAG_HAS_DISTRIBUTIONS,
     FLAG_IS_FOREST,
     FLAG_IS_REGRESSION,
@@ -45,17 +44,10 @@ from .io.cart_format import (
     OP_EQ,
     OP_LE,
     OP_LT,
-    OP_MASK,
-    OP_SHIFT,
     OP_SWITCH,
-    SIZE_DECISION_HEADER,
-    SIZE_DIST_ENTRY,
     SIZE_F64,
-    SIZE_FEAT_HEADER,
     SIZE_HEADER_COUNTS1,
     SIZE_HEADER_COUNTS2,
-    SIZE_LEAF,
-    SIZE_U16,
     TYPE_MASK,
     VERSION,
     decode_feature_dtype,
@@ -202,7 +194,7 @@ def _load_cart_from_bytes(data: bytes) -> dict[str, Any]:
             raise ValueError(f"Invalid magic: {magic!r}, expected {MAGIC!r}")
 
         version, flags, n_features, n_classes, n_trees = struct.unpack_from(
-            "<HHHHH", data, pos
+            "<HHIII", data, pos
         )
         pos += SIZE_HEADER_COUNTS1
 
@@ -225,7 +217,7 @@ def _load_cart_from_bytes(data: bytes) -> dict[str, Any]:
             n_case_tables,
             n_category_sets,
             metadata_len,
-        ) = struct.unpack_from("<IIIHHHHH", data, pos)
+        ) = struct.unpack_from("<IIIIIIII", data, pos)
         pos += SIZE_HEADER_COUNTS2
 
         if n_features > _CART_MAX_FEATURES:
@@ -274,8 +266,10 @@ def _load_cart_from_bytes(data: bytes) -> dict[str, Any]:
         pos += SIZE_F64 * n_floats
 
         # Cat value pool
-        cat_vals = list(struct.unpack_from(f"<{n_cat_vals}H", data, pos))
-        pos += SIZE_U16 * n_cat_vals
+        cat_vals = []
+        for _ in range(n_cat_vals):
+            value, pos = decode_varint(data, pos)
+            cat_vals.append(value)
 
         # Tree offsets (varint encoded)
         tree_offsets = []
@@ -286,7 +280,7 @@ def _load_cart_from_bytes(data: bytes) -> dict[str, Any]:
         # Decision nodes (variable size)
         decisions, pos = _parse_decision_nodes(data, pos, n_decisions)
 
-        # Leaf nodes (3 bytes each - no padding)
+        # Leaf nodes (type byte + value varint)
         leaves, pos = _parse_leaf_nodes(data, pos, n_leaves)
 
         # Distributions (if FLAG_HAS_DISTRIBUTIONS)
@@ -346,25 +340,17 @@ def _load_cart_from_bytes(data: bytes) -> dict[str, Any]:
 
 
 def _parse_string_table(data: bytes, pos: int) -> tuple[list[str], int]:
-    """Parse string table from binary data."""
-    (n_strings,) = struct.unpack_from("<H", data, pos)
-    pos += SIZE_U16
-    string_offsets = struct.unpack_from(f"<{n_strings}H", data, pos)
-    pos += SIZE_U16 * n_strings
-
+    """Parse the sequential varint-length-prefixed string table."""
+    n_strings, pos = decode_varint(data, pos)
     strings = []
-    string_data_start = pos
-    end = string_data_start
-    for off in string_offsets:
-        start = string_data_start + off
-        term = data.index(b"\x00", start)
-        strings.append(data[start:term].decode("utf-8"))
-        # Advance past the null terminator using the byte position, not the
-        # decoded character count (which is wrong for any non-ASCII string).
-        if term + 1 > end:
-            end = term + 1
-
-    return strings, end
+    for _ in range(n_strings):
+        byte_length, pos = decode_varint(data, pos)
+        end = pos + byte_length
+        if end > len(data):
+            raise IndexError("string extends past end of file")
+        strings.append(data[pos:end].decode("utf-8"))
+        pos = end
+    return strings, pos
 
 
 def _parse_feature_table(
@@ -373,10 +359,14 @@ def _parse_feature_table(
     """Parse feature table from binary data."""
     features = []
     for _ in range(n_features):
-        name_idx, type_flags, n_cat = struct.unpack_from("<HBB", data, pos)
-        pos += SIZE_FEAT_HEADER
-        cat_indices = list(struct.unpack_from(f"<{n_cat}H", data, pos))
-        pos += SIZE_U16 * n_cat
+        name_idx, pos = decode_varint(data, pos)
+        (type_flags,) = struct.unpack_from("<B", data, pos)
+        pos += 1
+        n_cat, pos = decode_varint(data, pos)
+        cat_indices = []
+        for _ in range(n_cat):
+            value, pos = decode_varint(data, pos)
+            cat_indices.append(value)
         feat_type = "cat" if (type_flags & TYPE_MASK) == 0 else "num"
         dtype = decode_feature_dtype(type_flags)
         features.append(
@@ -398,8 +388,7 @@ def _parse_class_table(
     """Parse class table from binary data."""
     class_labels = []
     for _ in range(n_classes):
-        (ci,) = struct.unpack_from("<H", data, pos)
-        pos += SIZE_U16
+        ci, pos = decode_varint(data, pos)
         class_labels.append(strings[ci])
     return class_labels, pos
 
@@ -410,10 +399,12 @@ def _parse_decision_nodes(
     """Parse decision nodes (variable size)."""
     decisions = []
     for _ in range(n_decisions):
-        feat_op, missing_flags, val = struct.unpack_from("<BBH", data, pos)
-        pos += SIZE_DECISION_HEADER
-        feat = feat_op & FEAT_MASK
-        op = (feat_op & OP_MASK) >> OP_SHIFT
+        feat, pos = decode_varint(data, pos)
+        op, missing_flags = struct.unpack_from("<BB", data, pos)
+        pos += 2
+        val, pos = decode_varint(data, pos)
+        if op not in (OP_LE, OP_EQ, OP_SWITCH, OP_LT):
+            raise ValueError(f"Invalid decision operation: {op}")
         if missing_flags & ~DECISION_FLAGS_MASK:
             raise ValueError(f"Invalid decision flags: {missing_flags}")
         missing_direction = missing_flags & MISSING_MASK
@@ -431,11 +422,12 @@ def _parse_decision_nodes(
 
 
 def _parse_leaf_nodes(data: bytes, pos: int, n_leaves: int) -> tuple[list[tuple], int]:
-    """Parse leaf nodes (3 bytes each)."""
+    """Parse leaf nodes (type byte + value varint)."""
     leaves = []
     for _ in range(n_leaves):
-        leaf_type, val = struct.unpack_from("<BH", data, pos)
-        pos += SIZE_LEAF
+        (leaf_type,) = struct.unpack_from("<B", data, pos)
+        pos += 1
+        val, pos = decode_varint(data, pos)
         leaves.append((leaf_type, val))
     return leaves, pos
 
@@ -447,14 +439,23 @@ def _parse_distributions(
     distributions: list[list[tuple[int, float]]] = []
     if has_distributions:
         for _ in range(n_dists):
-            (n_entries,) = struct.unpack_from("<H", data, pos)
-            pos += SIZE_U16
-            dist: list[tuple[int, float]] = []
+            n_entries, pos = decode_varint(data, pos)
+            quantized: list[tuple[int, int]] = []
             for _ in range(n_entries):
-                class_idx, prob = struct.unpack_from("<Hd", data, pos)
-                pos += SIZE_DIST_ENTRY
-                dist.append((class_idx, prob))
-            distributions.append(dist)
+                class_idx, pos = decode_varint(data, pos)
+                (probability_q16,) = struct.unpack_from("<H", data, pos)
+                pos += 2
+                quantized.append((class_idx, probability_q16))
+            decoded = [
+                (class_idx, probability_q16 / 65535)
+                for class_idx, probability_q16 in quantized
+            ]
+            total = sum(probability for _, probability in decoded)
+            if not total:
+                raise ValueError("Invalid all-zero quantized distribution")
+            distributions.append(
+                [(class_idx, probability / total) for class_idx, probability in decoded]
+            )
     return distributions, pos
 
 
@@ -474,14 +475,12 @@ def _parse_case_tables(
     """
     case_tables: list[dict[str, Any]] = []
     for _ in range(n_case_tables):
-        (n_cases,) = struct.unpack_from("<H", data, pos)
-        pos += SIZE_U16
+        n_cases, pos = decode_varint(data, pos)
         default_child, pos = decode_varint(data, pos)
         cases: list[tuple[int, int]] = []
         lookup: dict[str, int] = {}
         for _ in range(n_cases):
-            (cat_val_idx,) = struct.unpack_from("<H", data, pos)
-            pos += SIZE_U16
+            cat_val_idx, pos = decode_varint(data, pos)
             child_idx, pos = decode_varint(data, pos)
             cases.append((cat_val_idx, child_idx))
             if cat_val_idx >= len(cat_vals):
@@ -507,12 +506,10 @@ def _parse_category_sets(
     """Parse category sets and resolve each to strings once for O(1) lookup."""
     category_sets: list[set[str]] = []
     for _ in range(n_category_sets):
-        (n_values,) = struct.unpack_from("<H", data, pos)
-        pos += SIZE_U16
+        n_values, pos = decode_varint(data, pos)
         values: set[str] = set()
         for _ in range(n_values):
-            (cat_val_idx,) = struct.unpack_from("<H", data, pos)
-            pos += SIZE_U16
+            cat_val_idx, pos = decode_varint(data, pos)
             if cat_val_idx >= len(cat_vals) or cat_vals[cat_val_idx] >= len(strings):
                 raise ValueError("Invalid categorical value index in category set")
             values.add(strings[cat_vals[cat_val_idx]])
