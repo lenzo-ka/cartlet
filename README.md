@@ -137,18 +137,22 @@ Cartlet supports multiple model formats for different use cases:
 | `.pkl` | Pickle | Python-only, full fidelity |
 | `.skl` / `.joblib` | Sklearn | sklearn interoperability |
 
-Version 3 stores XGBoost's learned missing directions; it retains version 2's
-float64 numeric values and explicit `<`/`<=` operators. JSON, JSONL, and pickle
+Version 3 stores XGBoost's learned missing directions and category-set splits;
+it retains version 2's float64 numeric values and explicit `<`/`<=` operators.
+`.cart` stores classification probabilities as 16-bit quantized values (within
+about 7.6e-6 of the trained probability, then renormalized). JSON, JSONL, and pickle
 model envelopes declare `schema_version: 3`. Earlier models require re-export
 from the training model or retraining; see
 [model contracts](https://github.com/lenzo-ka/cartlet/blob/main/docs/model_contracts.md).
 Replace copied runners together with their model artifacts.
 
 The `.cart` binary format uses:
-- Varint encoding for node indices (1-5 bytes vs fixed 4)
-- Packed feature+op byte (supports up to 64 features inline)
-- One-byte decision flags for learned missing directions
-- 3-byte leaf nodes (no padding)
+- A 52-byte header with u32 model counts
+- Varint encoding for node, feature, string, and table indices (1-5 bytes)
+- One-byte decision flags for learned missing directions and set membership
+- 16-bit quantized class probabilities
+- Capacity limits and runner load caps as given in
+  [the format spec](https://github.com/lenzo-ka/cartlet/blob/main/docs/cart_format.md#capacity-limits)
 
 ```python
 # Export to different formats
