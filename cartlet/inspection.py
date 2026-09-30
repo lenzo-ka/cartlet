@@ -220,6 +220,11 @@ def _flat_paths(data: ModelData) -> list[dict[str, Any]]:
             next_ancestors = ancestors | {index}
             if op_code == OP_SWITCH:
                 table = data["case_tables"][value_index]
+                missing_case = (
+                    table["cases"][0][1]
+                    if direction == "left" and table["cases"]
+                    else None
+                )
                 all_values: list[str] = []
                 grouped: dict[int, list[str]] = {}
                 seen: set[str] = set()
@@ -240,7 +245,9 @@ def _flat_paths(data: ModelData) -> list[dict[str, Any]]:
                         op="in",
                         value=values,
                         branch="case",
-                        missing_direction=direction,
+                        missing_direction=(
+                            direction if child == missing_case else None
+                        ),
                     )
                     stack.append((child, [*path, condition], next_ancestors))
                 default_condition = _condition(
@@ -250,7 +257,7 @@ def _flat_paths(data: ModelData) -> list[dict[str, Any]]:
                     op="not in",
                     value=all_values,
                     branch="default",
-                    missing_direction=direction,
+                    missing_direction=direction if direction == "right" else None,
                 )
                 stack.append(
                     (table["default"], [*path, default_condition], next_ancestors)
@@ -275,7 +282,7 @@ def _flat_paths(data: ModelData) -> list[dict[str, Any]]:
                 op=op,
                 value=decision_value,
                 branch="right",
-                missing_direction=direction,
+                missing_direction=direction if direction == "right" else None,
             )
             left_condition = _condition(
                 node=index,
@@ -284,7 +291,7 @@ def _flat_paths(data: ModelData) -> list[dict[str, Any]]:
                 op=op,
                 value=decision_value,
                 branch="left",
-                missing_direction=direction,
+                missing_direction=direction if direction == "left" else None,
             )
             stack.append((right, [*path, right_condition], next_ancestors))
             stack.append((left, [*path, left_condition], next_ancestors))
@@ -324,6 +331,9 @@ def _nested_paths(model: Any) -> list[dict[str, Any]]:
                 )
                 feature = features[feat]
                 items = list(cases.items()) if isinstance(cases, dict) else list(cases)
+                missing_case = (
+                    id(items[0][1]) if direction == "left" and items else None
+                )
                 seen: set[str] = set()
                 all_values: list[str] = []
                 child_groups: dict[int, tuple[int | str, Any, list[str]]] = {
@@ -349,7 +359,9 @@ def _nested_paths(model: Any) -> list[dict[str, Any]]:
                         op="in",
                         value=values,
                         branch="case",
-                        missing_direction=direction,
+                        missing_direction=(
+                            direction if id(child) == missing_case else None
+                        ),
                     )
                     child_address = (
                         address + ("default",)
@@ -370,7 +382,7 @@ def _nested_paths(model: Any) -> list[dict[str, Any]]:
                     op="not in",
                     value=all_values,
                     branch="default",
-                    missing_direction=direction,
+                    missing_direction=direction if direction == "right" else None,
                 )
                 stack.append(
                     (default, address + ("default",), [*path, default_condition])
@@ -393,7 +405,7 @@ def _nested_paths(model: Any) -> list[dict[str, Any]]:
                 op=op,
                 value=value,
                 branch="right",
-                missing_direction=direction,
+                missing_direction=direction if direction == "right" else None,
             )
             left_condition = _condition(
                 node=decision_ids[address],
@@ -402,7 +414,7 @@ def _nested_paths(model: Any) -> list[dict[str, Any]]:
                 op=op,
                 value=value,
                 branch="left",
-                missing_direction=direction,
+                missing_direction=direction if direction == "left" else None,
             )
             stack.append((right, address + (1,), [*path, right_condition]))
             stack.append((left, address + (0,), [*path, left_condition]))
@@ -449,6 +461,7 @@ def _condition_matches(
     *,
     float32_numeric: bool,
     missing: str,
+    learned_missing_nodes: set[int],
 ) -> bool:
     index = condition["feature"]
     value = row[index] if index < len(row) else None
@@ -458,19 +471,11 @@ def _condition_matches(
     direction = condition["missing_direction"]
     branch = condition["branch"]
     if absent:
-        selected = direction
-        if selected is None:
-            if missing == "error":
-                return False
-            selected = "default" if branch in ("case", "default") else "right"
-        if branch in ("case", "default"):
-            return (
-                selected == "left"
-                and branch == "case"
-                or selected != "left"
-                and branch == "default"
-            )
-        return selected == branch
+        if direction is not None:
+            return True
+        if condition["node"] in learned_missing_nodes or missing == "error":
+            return False
+        return branch in ("right", "default")
     if features[index]["dtype"] == "bool":
         value = normalize_bool(value)
         if numeric:
@@ -525,6 +530,12 @@ def _add_data_statistics(
         else None
     )
     records = [leaf for tree in export["trees"] for leaf in tree["leaves"]]
+    learned_missing_nodes = {
+        condition["node"]
+        for record in records
+        for condition in record["path"]
+        if condition["missing_direction"] is not None
+    }
     candidates: dict[tuple[int, int], list[dict[str, Any]]] = {}
     for record in records:
         record["data_support"] = 0
@@ -549,6 +560,7 @@ def _add_data_statistics(
                             export["features"],
                             float32_numeric=export["numeric_input_float32"],
                             missing=missing,
+                            learned_missing_nodes=learned_missing_nodes,
                         )
                         for condition in record["path"]
                     )

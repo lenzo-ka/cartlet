@@ -131,8 +131,10 @@ retain their split operator and identify the selected `left` or `right` branch.
 Switch values reaching one
 child are one sorted `in` condition; the default route is `not in` with all
 reachable case values. Switches are first-match-wins, so a later duplicate case
-value is unreachable and omitted. Every condition reports the split's learned
-`missing_direction` as `"left"`, `"right"`, or `null`.
+value is unreachable and omitted. A split's learned `missing_direction` appears
+only on the condition that accepts a missing value; all other conditions for
+that split report `null`. For a switch, `"left"` marks the condition containing
+the first stored case and `"right"` marks the default condition.
 
 For classification, a stored distribution supplies `class_distribution` and
 its winning probability supplies model-stored `purity`. A collapsed label does

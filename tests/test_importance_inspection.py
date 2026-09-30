@@ -129,7 +129,26 @@ def test_native_oob_permutation_importance_finds_signal_and_is_deterministic(tas
     assert first["importances"][0]["mean"] > 0
     assert model._inbag_indices is not None
     assert len(model._inbag_indices) == len(model.trees)
-    assert all(len(indices) == len(rows) for indices in model._inbag_indices)
+    assert all(len(indices) == len(rows) for indices in model._inbag_indices.values())
+
+
+def test_oob_permutation_importance_follows_tree_identity_after_reordering():
+    rows, targets = _regression_data()
+    model = RandomForest(
+        n_estimators=15,
+        bootstrap=True,
+        max_features=None,
+        features=FEATURES,
+        task="regression",
+        max_depth=5,
+    )
+    model.load_data(rows, targets)
+    model.train(random_state=0)
+
+    expected = model.oob_permutation_importance(n_repeats=5, random_state=19)
+    model.trees.reverse()
+
+    assert model.oob_permutation_importance(n_repeats=5, random_state=19) == expected
 
 
 @pytest.mark.parametrize("task", ["classification", "regression"])
@@ -334,6 +353,13 @@ def _route_one(export, row, *, missing="error"):
     """Route using only exported conditions and the exported schema."""
     feature_schema = export["features"]
     float32 = export["numeric_input_float32"]
+    learned_missing_nodes = {
+        condition["node"]
+        for tree in export["trees"]
+        for leaf in tree["leaves"]
+        for condition in leaf["path"]
+        if condition["missing_direction"] is not None
+    }
     matches = []
     for leaf in export["trees"][0]["leaves"]:
         accepted = True
@@ -342,21 +368,12 @@ def _route_one(export, row, *, missing="error"):
             spec = feature_schema[condition["feature"]]
             if value is None:
                 direction = condition["missing_direction"]
-                if direction is None:
-                    if missing == "error":
-                        accepted = False
-                        continue
-                    direction = (
-                        "default"
-                        if condition["branch"] in ("case", "default")
-                        else "right"
-                    )
-                if condition["branch"] in ("case", "default"):
-                    predicate = (
-                        direction == "left" and condition["branch"] == "case"
-                    ) or (direction != "left" and condition["branch"] == "default")
+                if direction is not None:
+                    predicate = True
+                elif condition["node"] in learned_missing_nodes or missing == "error":
+                    predicate = False
                 else:
-                    predicate = direction == condition["branch"]
+                    predicate = condition["branch"] in ("right", "default")
                 accepted &= predicate
                 continue
             if spec["dtype"] == "bool":
@@ -436,9 +453,46 @@ def test_exported_set_and_learned_missing_routes_match_predict_path(tmp_path):
         actual = _route_one(export, [None])
         assert actual["leaf"] == expected["leaf"]
         assert all(
-            leaf["path"][0]["missing_direction"] == direction
+            leaf["path"][0]["missing_direction"]
+            == (direction if leaf["path"][0]["branch"] == direction else None)
             for leaf in export["trees"][0]["leaves"]
         )
+
+
+@pytest.mark.parametrize(
+    ("direction", "expected_branch"), [("left", "case"), ("right", "default")]
+)
+def test_exported_switch_missing_route_matches_predict_path(
+    tmp_path, direction, expected_branch
+):
+    model = DecisionTree(features=[{"name": "kind", "dtype": "str", "type": "cat"}])
+    model.model = [
+        {"feature": "kind", "missing": direction},
+        "switch",
+        [("a", "A"), ("b", "B")],
+        "D",
+    ]
+    path = tmp_path / f"switch-missing-{direction}.cart"
+    model.export(str(path))
+
+    for source in (model, load_model(str(path))):
+        export = leaf_paths(source, [[None]])
+        expected = (
+            source.predict_path([None])
+            if isinstance(source, DecisionTree)
+            else predict_path(source, [None])
+        )["trees"][0]
+        actual = _route_one(export, [None])
+        marked = [
+            condition
+            for leaf in export["trees"][0]["leaves"]
+            for condition in leaf["path"]
+            if condition["missing_direction"] is not None
+        ]
+        assert actual["leaf"] == expected["leaf"]
+        assert len(marked) == 1
+        assert marked[0]["branch"] == expected_branch
+        assert marked[0]["missing_direction"] == direction
 
 
 def test_xgboost_float32_boundary_routes_from_exported_schema(tmp_path):

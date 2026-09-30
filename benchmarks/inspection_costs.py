@@ -85,7 +85,9 @@ def run_benchmarks(
         forest.train(random_state=seed)
         node_count = sum(count_nodes(tree.model) for tree in forest.trees)
         assert forest._inbag_indices is not None
-        oob_rows = sum(case.rows - len(set(inbag)) for inbag in forest._inbag_indices)
+        oob_rows = sum(
+            case.rows - len(set(inbag)) for inbag in forest._inbag_indices.values()
+        )
         held_out_units = case.rows * case.trees * (1 + case.features * case.repeats)
         oob_units = oob_rows * (1 + case.features * case.repeats)
         held_out = partial(

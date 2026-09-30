@@ -145,7 +145,7 @@ class RandomForest(BaseModel):
 
         # Trained trees
         self._trees: list[DecisionTree] = []
-        self._inbag_indices: list[list[int]] | None = None
+        self._inbag_indices: dict[DecisionTree, list[int]] | None = None
         self._path_indices_key: tuple[tuple[Any, ...], ...] | None = None
         self._path_indices: (
             list[tuple[dict[tuple[Any, ...], int], dict[tuple[Any, ...], int]]] | None
@@ -328,7 +328,7 @@ class RandomForest(BaseModel):
             raise ValueError("Cannot train forest with zero samples")
 
         self.trees = []
-        self._inbag_indices = [] if self.bootstrap else None
+        self._inbag_indices = {} if self.bootstrap else None
         try:
             for i in range(self.n_estimators):
                 if self.verbose and (i + 1) % _VERBOSE_TREE_INTERVAL == 0:
@@ -348,7 +348,7 @@ class RandomForest(BaseModel):
                 tree = self._train_single_tree(indices, seed, max_features)
                 self.trees.append(tree)
                 if self._inbag_indices is not None:
-                    self._inbag_indices.append(indices)
+                    self._inbag_indices[tree] = indices
         except KeyboardInterrupt:
             if self.verbose:
                 self.logger.info("\nInterrupted after %d trees.", len(self.trees))
@@ -482,10 +482,12 @@ class RandomForest(BaseModel):
             self.trees.append(tree)
 
         if self.bootstrap:
-            self._inbag_indices = [
-                [int(index) for index in sample]
-                for sample in sklearn_rf.estimators_samples_
-            ]
+            self._inbag_indices = {
+                tree: [int(index) for index in sample]
+                for tree, sample in zip(
+                    self.trees, sklearn_rf.estimators_samples_, strict=True
+                )
+            }
 
         return {"n_estimators": len(self.trees)}
 
@@ -520,6 +522,7 @@ class RandomForest(BaseModel):
             not self.bootstrap
             or self._inbag_indices is None
             or len(self._inbag_indices) != len(self.trees)
+            or set(self._inbag_indices) != set(self.trees)
             or not self.X
             or not self.y
         ):
@@ -538,7 +541,7 @@ class RandomForest(BaseModel):
         units = _importance_units(list(self.feature_names), feature_groups)
         tree_rows: list[tuple[DecisionTree, list[int], float]] = []
         all_indices = set(range(len(self.X)))
-        for tree, inbag in zip(self.trees, self._inbag_indices, strict=True):
+        for tree, inbag in self._inbag_indices.items():
             oob = sorted(all_indices.difference(inbag))
             if not oob:
                 continue
