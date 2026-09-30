@@ -25,7 +25,6 @@ from .runner import Predictor
 from .runner import predict_path as runner_predict_path
 from .types import TASK_CLASSIFICATION, TASK_REGRESSION, ModelData, normalize_bool
 from .utils import (
-    build_tree_indices,
     is_decision_node,
     is_leaf,
     is_switch_node,
@@ -294,7 +293,7 @@ def _flat_paths(data: ModelData) -> list[dict[str, Any]]:
 
 def _nested_paths(model: Any) -> list[dict[str, Any]]:
     trees, task, features, statistics_available = _nested_model(model)
-    indices = build_tree_indices(trees)
+    indices = model._tree_indices()
     records: list[dict[str, Any]] = []
     for tree_index, root in enumerate(trees):
         decision_ids, leaf_ids = indices[tree_index]

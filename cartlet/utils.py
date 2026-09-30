@@ -307,6 +307,8 @@ def eval_tree_path(
     feature_specs: list[Any] | None = None,
     decision_offset: int = 0,
     leaf_offset: int = 0,
+    indices: tuple[dict[tuple[Any, ...], int], dict[tuple[Any, ...], int]]
+    | None = None,
 ) -> tuple[Any, int, list[dict[str, Any]]]:
     """Evaluate a nested tree and return its prediction, leaf ID, and path."""
     return _eval_tree(
@@ -317,7 +319,7 @@ def eval_tree_path(
         missing,
         tree_idx,
         feature_specs,
-        None,
+        indices,
         True,
         decision_offset=decision_offset,
         leaf_offset=leaf_offset,
@@ -526,7 +528,7 @@ def _eval_tree(
             if used_learned_missing:
                 step["missing"] = True
             path.append(step)
-        if collect_path:
+        if collect_path and indices is None:
             current, decision_offset, leaf_offset = _writer_child_offsets(
                 current,
                 selector,
@@ -658,3 +660,19 @@ def build_tree_indices(
                 leaf_count += 1
         result.append((decisions, leaves))
     return result
+
+
+def tree_index_cache_key(root: Any) -> tuple[Any, ...]:
+    """Return a cheap cache key for a nested tree's writer-order indexes."""
+    if is_decision_node(root):
+        return (id(root), "decision", id(root[3]), id(root[4]))
+    if is_switch_node(root):
+        cases = root[2]
+        items = list(cases.items()) if isinstance(cases, dict) else cases
+        return (
+            id(root),
+            "switch",
+            id(root[3]),
+            tuple((str(value), id(child)) for value, child in items),
+        )
+    return (id(root), "leaf")

@@ -268,6 +268,37 @@ def test_forest_in_place_member_edit_refreshes_prediction_and_path_ids(tmp_path)
     )
 
 
+def test_predict_path_reuses_leaf_id_indices(monkeypatch):
+    import cartlet.utils as utils
+
+    rows = [[float(index)] for index in range(32)]
+    model = RandomForest(
+        n_estimators=5,
+        max_features=None,
+        bootstrap=False,
+        task="regression",
+        feature_names=["x"],
+        max_depth=5,
+    )
+    model.load_data(rows, [row[0] for row in rows])
+    model.train(random_state=7)
+
+    calls = 0
+    original = utils.tree_array_size
+
+    def counted(root):
+        nonlocal calls
+        calls += 1
+        return original(root)
+
+    monkeypatch.setattr(utils, "tree_array_size", counted)
+    model.predict_path([7.5])
+    after_first = calls
+    for value in (0.5, 15.5, 31.0, 7.5):
+        model.predict_path([value])
+    assert calls == after_first
+
+
 def test_regression_forest_path_prediction_matches_predict(tmp_path):
     rows = [[float(x), float(y)] for x in range(5) for y in range(3)]
     model = RandomForest(

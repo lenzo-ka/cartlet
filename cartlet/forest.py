@@ -31,7 +31,13 @@ from .types import (
     TASK_REGRESSION,
     TYPE_NUM,
 )
-from .utils import collapse_distributions, eval_tree, eval_tree_path, tree_array_size
+from .utils import (
+    build_tree_indices,
+    collapse_distributions,
+    eval_tree,
+    eval_tree_path,
+    tree_index_cache_key,
+)
 from .validation import (
     MODEL_SCHEMA_VERSION,
     validate_model_data,
@@ -140,6 +146,10 @@ class RandomForest(BaseModel):
         # Trained trees
         self._trees: list[DecisionTree] = []
         self._inbag_indices: list[list[int]] | None = None
+        self._path_indices_key: tuple[tuple[Any, ...], ...] | None = None
+        self._path_indices: (
+            list[tuple[dict[tuple[Any, ...], int], dict[tuple[Any, ...], int]]] | None
+        ) = None
 
     @property
     def trees(self) -> list[DecisionTree]:
@@ -150,6 +160,19 @@ class RandomForest(BaseModel):
     def trees(self, value: list[DecisionTree]) -> None:
         self._trees = value
         self._inbag_indices = None
+        self._path_indices_key = None
+        self._path_indices = None
+
+    def _tree_indices(
+        self,
+    ) -> list[tuple[dict[tuple[Any, ...], int], dict[tuple[Any, ...], int]]]:
+        """Return cached writer-order node IDs for every current tree."""
+        roots = [tree.model for tree in self.trees]
+        key = tuple(tree_index_cache_key(root) for root in roots)
+        if self._path_indices is None or self._path_indices_key != key:
+            self._path_indices = build_tree_indices(roots)
+            self._path_indices_key = key
+        return self._path_indices
 
     def load_data(
         self,
@@ -673,8 +696,7 @@ class RandomForest(BaseModel):
             raise ValueError("Forest not trained. Call train() first.")
         values = []
         paths = []
-        decision_offset = 0
-        leaf_offset = 0
+        indices = self._tree_indices()
         for tree_idx, tree in enumerate(self.trees):
             prediction, leaf, path = eval_tree_path(
                 tree.model,
@@ -683,15 +705,10 @@ class RandomForest(BaseModel):
                 missing=missing,
                 tree_idx=tree_idx,
                 feature_specs=tree.feature_specs,
-                decision_offset=decision_offset,
-                leaf_offset=leaf_offset,
+                indices=indices[tree_idx],
             )
             values.append(prediction)
             paths.append({"tree": tree_idx, "leaf": leaf, "path": path})
-            if tree_idx + 1 < len(self.trees):
-                decisions, leaves = tree_array_size(tree.model)
-                decision_offset += decisions
-                leaf_offset += leaves
         prediction = self._aggregate_predictions(values)
         return {"prediction": prediction, "trees": paths}
 
