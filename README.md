@@ -518,6 +518,9 @@ cm = confusion_matrix(y_true, y_pred)
 from cartlet import decisive_leaves, leaf_paths, permutation_importance
 
 importance = permutation_importance(model, X_test, y_test, n_repeats=10, random_state=7)
+oob_importance = forest.oob_permutation_importance(
+    n_repeats=10, random_state=7
+)
 paths = leaf_paths(model, X_test, y_test)
 decisive = decisive_leaves(
     model, "approved", X_test, y_test, min_support=20, min_purity=0.9
@@ -525,9 +528,10 @@ decisive = decisive_leaves(
 ```
 
 Permutation importance reports held-out loss increases, supports jointly
-shuffled feature groups, and never mutates caller data. Path export includes
-the feature schema needed to reproduce routing, optional empirical path counts,
-and retained model leaf statistics where available. See
+shuffled feature groups, and never mutates caller data. Random forests also
+provide Breiman OOB permutation importance immediately after bootstrap training.
+Path export includes the feature schema needed to reproduce routing, optional
+empirical path counts, and retained model leaf statistics where available. See
 [held-out importance and path inspection](https://github.com/lenzo-ka/cartlet/blob/main/docs/inspection.md)
 for the schemas, missing-value rules, float32 XGBoost routing, and retention
 limits.

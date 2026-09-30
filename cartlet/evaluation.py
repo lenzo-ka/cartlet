@@ -61,6 +61,73 @@ def _predict_for_importance(model: Any, row: list[Any], missing: str) -> Any:
     return model.predict(row, missing=missing)
 
 
+def _validate_importance_parameters(
+    n_repeats: int, random_state: int | None, missing: str
+) -> None:
+    """Validate options shared by held-out and OOB permutation importance."""
+    if missing not in ("error", "right"):
+        raise ValueError("missing must be 'error' or 'right'")
+    if isinstance(n_repeats, bool) or not isinstance(n_repeats, int) or n_repeats < 1:
+        raise ValueError("n_repeats must be a positive integer")
+    if random_state is not None and (
+        isinstance(random_state, bool) or not isinstance(random_state, int)
+    ):
+        raise TypeError("random_state must be an int or None")
+
+
+def _importance_units(
+    feature_names: list[str],
+    feature_groups: Mapping[str, Sequence[str | int]] | None,
+) -> list[tuple[str, list[int]]]:
+    """Resolve the ordered features or feature groups to permute."""
+    if not feature_names:
+        raise ValueError("model has no feature schema")
+    if feature_groups is None:
+        return [(name, [index]) for index, name in enumerate(feature_names)]
+    if not isinstance(feature_groups, Mapping) or not feature_groups:
+        raise ValueError("feature_groups must be a nonempty mapping")
+    units = []
+    for group_name, members in feature_groups.items():
+        if not isinstance(group_name, str) or not group_name:
+            raise ValueError("feature group names must be nonempty strings")
+        if isinstance(members, (str, bytes)) or not isinstance(members, Sequence):
+            raise ValueError(
+                f"feature group {group_name!r} must contain feature names or indexes"
+            )
+        indexes: list[int] = []
+        for member in members:
+            if isinstance(member, bool):
+                raise ValueError(
+                    f"invalid feature reference {member!r} in group {group_name!r}"
+                )
+            if isinstance(member, int):
+                index = member
+            elif isinstance(member, str) and member in feature_names:
+                index = feature_names.index(member)
+            else:
+                raise ValueError(f"unknown feature {member!r} in group {group_name!r}")
+            if index < 0 or index >= len(feature_names):
+                raise ValueError(
+                    f"feature index {index} in group {group_name!r} is out of range"
+                )
+            if index in indexes:
+                raise ValueError(
+                    f"feature {member!r} appears more than once in group {group_name!r}"
+                )
+            indexes.append(index)
+        if not indexes:
+            raise ValueError(f"feature group {group_name!r} must not be empty")
+        units.append((group_name, indexes))
+    return units
+
+
+def _importance_loss(task: str, targets: list[Any], predictions: list[Any]) -> float:
+    """Return the task-appropriate loss used by permutation importance."""
+    if task == TASK_CLASSIFICATION:
+        return 1.0 - evaluate_predictions(targets, predictions)["accuracy"]
+    return regression_metrics(targets, predictions)["mse"]
+
+
 def permutation_importance(
     model: Any,
     X: Sequence[Sequence[Any]],
@@ -99,14 +166,7 @@ def permutation_importance(
         ValueError: If rows, targets, groups, repeats, or missing policy are
             invalid, or the model is unsupported.
     """
-    if missing not in ("error", "right"):
-        raise ValueError("missing must be 'error' or 'right'")
-    if isinstance(n_repeats, bool) or not isinstance(n_repeats, int) or n_repeats < 1:
-        raise ValueError("n_repeats must be a positive integer")
-    if random_state is not None and (
-        isinstance(random_state, bool) or not isinstance(random_state, int)
-    ):
-        raise TypeError("random_state must be an int or None")
+    _validate_importance_parameters(n_repeats, random_state, missing)
     if not isinstance(X, Sequence) or isinstance(X, (str, bytes)) or not X:
         raise ValueError("X must contain at least one held-out row")
     if not isinstance(y, Sequence) or isinstance(y, (str, bytes)):
@@ -117,62 +177,18 @@ def permutation_importance(
         raise ValueError("held-out rows must be sequences of feature values")
 
     task, feature_names = _model_task_and_features(model)
-    if not feature_names:
-        raise ValueError("model has no feature schema")
     rows = [list(row) for row in X]
     targets = list(y)
     if task == TASK_CLASSIFICATION:
         targets = [str(value) for value in targets]
 
-    units: list[tuple[str, list[int]]]
-    if feature_groups is None:
-        units = [(name, [index]) for index, name in enumerate(feature_names)]
-    else:
-        if not isinstance(feature_groups, Mapping) or not feature_groups:
-            raise ValueError("feature_groups must be a nonempty mapping")
-        units = []
-        for group_name, members in feature_groups.items():
-            if not isinstance(group_name, str) or not group_name:
-                raise ValueError("feature group names must be nonempty strings")
-            if isinstance(members, (str, bytes)) or not isinstance(members, Sequence):
-                raise ValueError(
-                    f"feature group {group_name!r} must contain feature names or indexes"
-                )
-            indexes: list[int] = []
-            for member in members:
-                if isinstance(member, bool):
-                    raise ValueError(
-                        f"invalid feature reference {member!r} in group {group_name!r}"
-                    )
-                if isinstance(member, int):
-                    index = member
-                elif isinstance(member, str) and member in feature_names:
-                    index = feature_names.index(member)
-                else:
-                    raise ValueError(
-                        f"unknown feature {member!r} in group {group_name!r}"
-                    )
-                if index < 0 or index >= len(feature_names):
-                    raise ValueError(
-                        f"feature index {index} in group {group_name!r} is out of range"
-                    )
-                if index in indexes:
-                    raise ValueError(
-                        f"feature {member!r} appears more than once in group "
-                        f"{group_name!r}"
-                    )
-                indexes.append(index)
-            if not indexes:
-                raise ValueError(f"feature group {group_name!r} must not be empty")
-            units.append((group_name, indexes))
+    units = _importance_units(feature_names, feature_groups)
 
     def loss(sample_rows: list[list[Any]]) -> float:
         predictions = [
             _predict_for_importance(model, row, missing) for row in sample_rows
         ]
-        if task == TASK_CLASSIFICATION:
-            return 1.0 - evaluate_predictions(targets, predictions)["accuracy"]
-        return regression_metrics(targets, predictions)["mse"]
+        return _importance_loss(task, targets, predictions)
 
     baseline = loss(rows)
     rng = random.Random(random_state)

@@ -12,6 +12,8 @@ requires it.
 - Add held-out `permutation_importance` for decision trees and random forests,
   including jointly shuffled feature groups, deterministic integer seeds,
   classification label canonicalization, and CLI JSON/TSV output.
+- Add Breiman OOB permutation importance to bootstrap-trained random forests,
+  retaining per-tree in-bag row indexes only for the current process.
 - Add `leaf_paths` and `decisive_leaves` with schema-complete structural paths,
   retained model leaf statistics, optional empirical support/class counts/purity,
   and CLI export/filtering.

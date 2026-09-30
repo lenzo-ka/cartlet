@@ -105,6 +105,85 @@ def test_permutation_groups_seed_validation_and_missing_policy():
     assert result["baseline"] == 0
 
 
+@pytest.mark.parametrize("task", ["classification", "regression"])
+def test_native_oob_permutation_importance_finds_signal_and_is_deterministic(task):
+    rows, targets = (
+        _classification_data() if task == "classification" else _regression_data()
+    )
+    model = RandomForest(
+        n_estimators=15,
+        bootstrap=True,
+        max_features=None,
+        features=FEATURES,
+        task=task,
+        max_depth=5,
+    )
+    model.load_data(rows, targets)
+    model.train(random_state=17)
+
+    first = model.oob_permutation_importance(n_repeats=5, random_state=19)
+    second = model.oob_permutation_importance(n_repeats=5, random_state=19)
+    assert first == second
+    assert first["baseline"] == first["oob_baseline"]
+    assert first["importances"][0]["name"] == "signal"
+    assert first["importances"][0]["mean"] > 0
+    assert model._inbag_indices is not None
+    assert len(model._inbag_indices) == len(model.trees)
+    assert all(len(indices) == len(rows) for indices in model._inbag_indices)
+
+
+@pytest.mark.parametrize("task", ["classification", "regression"])
+def test_sklearn_oob_permutation_importance_finds_signal(task):
+    pytest.importorskip("sklearn")
+    rows, targets = (
+        _classification_data() if task == "classification" else _regression_data()
+    )
+    model = RandomForest(
+        n_estimators=15,
+        bootstrap=True,
+        max_features=None,
+        features=FEATURES,
+        task=task,
+        max_depth=5,
+    )
+    model.load_data(rows, targets)
+    model.train(trainer="sklearn", random_state=17, n_jobs=1)
+
+    result = model.oob_permutation_importance(n_repeats=4, random_state=19)
+    assert result["importances"][0]["name"] == "signal"
+    assert model._inbag_indices is not None
+    assert len(model._inbag_indices) == len(model.trees)
+
+
+def test_oob_permutation_importance_requires_process_local_bootstraps(tmp_path):
+    rows, targets = _classification_data()
+    non_bootstrap = RandomForest(
+        n_estimators=3,
+        bootstrap=False,
+        max_features=None,
+        features=FEATURES,
+    )
+    non_bootstrap.load_data(rows, targets)
+    non_bootstrap.train(random_state=3)
+    with pytest.raises(ValueError, match="trained in this process with bootstrap=True"):
+        non_bootstrap.oob_permutation_importance()
+
+    model = RandomForest(
+        n_estimators=3,
+        bootstrap=True,
+        max_features=None,
+        features=FEATURES,
+    )
+    model.load_data(rows, targets)
+    model.train(random_state=3)
+    path = tmp_path / "forest.cart"
+    model.export(str(path))
+    loaded = RandomForest()
+    loaded.load_model(str(path))
+    with pytest.raises(ValueError, match="use held-out permutation_importance"):
+        loaded.oob_permutation_importance()
+
+
 def test_loaded_model_importance_and_classification_paths_match(tmp_path):
     model, rows, targets = _train("forest", "classification")
     expected_importance = permutation_importance(

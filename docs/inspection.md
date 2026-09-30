@@ -62,6 +62,34 @@ Every prediction uses the selected missing policy. `missing="error"` raises
 `missing="right"` applies the prediction compatibility route; an XGBoost
 learned missing direction still takes precedence.
 
+### Out-of-bag importance
+
+Bootstrap-trained random forests can measure Breiman OOB importance without a
+separate held-out set:
+
+```python
+report = forest.oob_permutation_importance(
+    n_repeats=10,
+    random_state=7,
+)
+```
+
+For each tree, Cartlet finds the training rows absent from that tree's bootstrap
+sample, computes its baseline loss once, and shuffles each feature or group only
+within those OOB rows. The report's `baseline` and `oob_baseline` are the mean
+per-tree OOB loss. Each repeat value is the mean per-tree rise in loss, and the
+reported mean and sample standard deviation summarize those repeat values.
+Classification uses error rate and regression uses mean squared error, as in
+held-out importance. Rows are unweighted, matching the held-out API; feature
+groups, seeds, and missing-value policies have the same validation and meaning.
+
+Bootstrap membership and training rows stay only in memory. OOB importance is
+therefore available only on a `RandomForest` trained in the current process with
+`bootstrap=True`. Loaded models and forests trained with `bootstrap=False` must
+use held-out `permutation_importance`. There is no CLI command for OOB importance
+because model artifacts intentionally do not retain training rows or bootstrap
+membership.
+
 ## Structural paths
 
 ```python
