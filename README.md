@@ -518,9 +518,7 @@ cm = confusion_matrix(y_true, y_pred)
 from cartlet import decisive_leaves, leaf_paths, permutation_importance
 
 importance = permutation_importance(model, X_test, y_test, n_repeats=10, random_state=7)
-oob_importance = forest.oob_permutation_importance(
-    n_repeats=10, random_state=7
-)
+oob_importance = forest.oob_permutation_importance(n_repeats=10, random_state=7)
 paths = leaf_paths(model, X_test, y_test)
 decisive = decisive_leaves(
     model, "approved", X_test, y_test, min_support=20, min_purity=0.9
