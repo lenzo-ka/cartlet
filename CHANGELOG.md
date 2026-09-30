@@ -31,7 +31,7 @@ requires it.
 - Prediction now raises `MissingFeatureError` by default when an evaluated
   decision tests a missing value: `None`, an index past the vector, a value
   whose float conversion is NaN at a numeric decision, or a non-string NaN at an
-  equality or switch decision. Untested features are never read. CLI `predict`
+  equality, set-membership, or switch decision. Untested features are never read. CLI `predict`
   reads empty delimited fields as missing. Migration: pass `missing="right"`
   (or CLI `--missing right`) for the 0.6.0 right/default routing under the new
   missing definition. Exception: at equality or switch decisions, 0.6.0 could
@@ -41,8 +41,8 @@ requires it.
   `predict(..., return_dist=True)` reaches a classification leaf without a
   stored distribution, matching in-process prediction. Migration: callers that
   handled a string result from `return_dist=True` receive a dict in every case.
-- CLI prediction and CLI training now decide field parsing from declared feature
-  types. Categorical values keep their exact text, while declared numeric values
+- CLI prediction, CLI training, and `train_file` now decide delimited field
+  parsing from declared feature types. Categorical values keep their exact text, while declared numeric values
   are parsed as numbers; numeric inference applies only to undeclared training
   columns. A categorical model trained through the 0.6.0 CLI may store a
   canonicalized value such as `"1"` for input `"01"`; retrain that model, or pass

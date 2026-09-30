@@ -69,7 +69,8 @@ result = model.predict(["red", "large"])
 results = model.predict_batch([["red", "large"], ["blue", "small"]])
 attribution = model.predict_path(["red", "large"])
 
-# With distribution (classification only, if model has distributions)
+# With distribution (classification only; a leaf without a stored
+# distribution reports its class with probability 1.0)
 dist = model.predict(["red", "large"], return_dist=True)
 # {"apple": 0.8, "ball": 0.2}
 

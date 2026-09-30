@@ -32,9 +32,9 @@ CART trainer's inclusive `<=` convention. Strict comparisons use `<`.
 Current XGBoost releases can
 provide a separate base margin for each class; these intercepts must be retained
 for multiclass export. Prediction parity should be checked at split boundaries
-as well as ordinary examples. Models whose missing-value direction cannot be
-represented still warn explicitly; this limitation is separate from ordinary
-numeric boundary semantics.
+as well as ordinary examples. Each decision's learned missing direction is
+stored in the export, and a multi-category split exports as one set-membership
+decision rather than one equality test per category.
 
 ## Native XGBoost artifacts
 

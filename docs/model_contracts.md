@@ -6,9 +6,11 @@ layer is provided for older model artifacts.
 ## Saved models
 
 The binary `.cart` format is version 3. Decision records store XGBoost's learned
-missing direction. Numeric values and probabilities use float64 storage so
-native tree thresholds survive export without float32
-rounding. Numeric decision operators are explicit: `<=` is inclusive and `<`
+missing direction and mark category-set membership decisions. Numeric
+thresholds and regression values use float64 storage so native tree thresholds
+survive export without float32 rounding. Class probabilities are stored as
+16-bit quantized values and renormalized on load; each is within about 7.6e-6
+of the trained probability (see [the bound](cart_format.md#distributions-if-flag_has_distributions)). Numeric decision operators are explicit: `<=` is inclusive and `<`
 is strict. XGBoost's strict comparisons retain its float32 input semantics.
 The package and standalone runners use the same operators and stored feature
 dtypes. See [the binary specification](cart_format.md).
@@ -92,7 +94,8 @@ first headerless row; quoted empty fields are still records. Ragged records are
 skipped with a warning. Batch readers reject empty or header-only input, while
 `iter_vectors` yields nothing; a file containing only ragged data records yields
 an empty batch. Headers and values are NFC-normalized. `load_training_data`
-converts numeric strings; `read_vectors` and `iter_vectors` preserve them.
+converts numeric strings in declared numeric and undeclared columns, and keeps
+declared categorical text exact; `read_vectors` and `iter_vectors` preserve them.
 
 Tabular batch loading consumes and processes records incrementally, without
 retaining a second complete collection of raw rows. Returned feature and target

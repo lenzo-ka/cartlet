@@ -22,7 +22,8 @@ before loading older artifacts.
 - **Classification & Regression**: Full CART support
 - **Random Forests**: Ensemble learning with configurable trees
 - **XGBoost**: Gradient boosted trees with native categorical support
-- **Categorical features**: Equality splits (`feature == value`)
+- **Categorical features**: Equality splits (`feature == value`); XGBoost
+  category-set splits
 - **Numerical features**: Threshold splits (`feature <= value`)
 - **Information gain**: Entropy or Gini for classification, variance for regression
 - **Instance weighting**: Supports weighted training examples
@@ -312,12 +313,21 @@ re-exported at the package root so callers do not need to know the internal
 module layout:
 
 ```python
-from cartlet import load_model, predict, predict_batch
+from cartlet import load_model, predict, predict_batch, predict_path
 
 model = load_model("model.cart")
 result = predict(model, [1, 2, 3])
 results = predict_batch(model, [[1, 2, 3], [4, 5, 6]])
+dist = predict(model, [1, 2, 3], return_dist=True)  # {label: probability}
+path = predict_path(model, [1, 2, 3])  # prediction plus decision/leaf IDs
+predict(model, [None, 2, 3], missing="right")  # default missing="error"
 ```
+
+`return_dist=True` returns a class-probability dict for every classification
+prediction; a leaf without a stored distribution reports its class with
+probability 1.0. `predict_path` records each evaluated decision and leaf by its
+stable `.cart` node ID. Missing values raise `MissingFeatureError` by default;
+see [Standalone deployment](https://github.com/lenzo-ka/cartlet/blob/main/docs/runners.md#missing-values).
 
 For an object-oriented entry point:
 
@@ -522,8 +532,11 @@ and can export to the `.cart` binary format for the zero-dependency runner.
 ```python
 from cartlet import XGBoostTree
 
-xgb = XGBoostTree(feature_names=[...], task="classification")
-xgb.load_data(X, y).train(n_estimators=10, max_depth=4)
+xgb = XGBoostTree(
+    feature_names=[...], task="classification", n_estimators=10, max_depth=4
+)
+xgb.load_data(X, y)
+xgb.train()
 xgb.export("model.cart")  # cross-language inference
 xgb.export("model.xgb")  # native XGBoost format
 ```
@@ -660,7 +673,7 @@ become `None`, categorical fields stay strings, and numeric features parse as
 numbers. JSONL values retain their JSON types. The package CLI and bundled
 standalone CLI therefore preserve numeric-looking categorical values such as
 `01` as the literal string `"01"`. See
-[Standalone deployment](docs/runners.md) for the runner contract.
+[Standalone deployment](https://github.com/lenzo-ka/cartlet/blob/main/docs/runners.md) for the runner contract.
 
 ### evaluate
 
@@ -728,7 +741,7 @@ selects simple mappings, full mappings, or an array of feature specifications;
 | Field   | Values                | Default     | Description |
 |---------|----------------------|-------------|-------------|
 | `name`  | string               | required    | Feature name |
-| `dtype` | `str`, `int`, `float`| `str`       | Data type |
+| `dtype` | `str`, `int`, `float`, `bool` | `str` | Data type |
 | `type`  | `cat`, `num`         | *inferred*  | Split type |
 
 ### CLI Feature Specs
@@ -796,7 +809,7 @@ Training data (CSV/TSV/JSONL)
         │                   flattens nodes to decision/leaf arrays
         ▼
   .cart bytes               format spec in cartlet/io/cart_format.py
-        │                   (magic + 30-byte header + pools + tables)
+        │                   (52-byte header + pools + tables)
         ▼
   runner.load_model         cartlet/runner.py
   runner.predict            (or zero-dep cartlet/bundled/predict.py)
@@ -821,4 +834,4 @@ It's a little CART (Classification And Regression Trees).
 BSD 2-Clause License - see [LICENSE](https://github.com/lenzo-ka/cartlet/blob/main/LICENSE) for details.
 
 For reproducible generated-data timing and memory comparisons, see the
-[scalability benchmark guide](docs/benchmarks.md).
+[scalability benchmark guide](https://github.com/lenzo-ka/cartlet/blob/main/docs/benchmarks.md).
