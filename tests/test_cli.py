@@ -1143,3 +1143,69 @@ class TestCliEndToEndCoverage:
         assert main(["predict", str(model), str(data)]) == 0
         out = capsys.readouterr().out
         assert "apple" in out and "berry" in out
+
+
+class TestAnalysisNamedHeaderlessColumns:
+    """Analysis commands align explicit headerless names to model order."""
+
+    @pytest.fixture
+    def model_and_data(self, tmp_path):
+        model = DecisionTree(
+            features=[
+                {"name": "signal", "dtype": "float", "type": "num"},
+                {"name": "noise", "dtype": "float", "type": "num"},
+            ]
+        )
+        model.model = ["signal", "<=", 0.5, "0", "1"]
+        model_path = tmp_path / "model.cart"
+        model.export(str(model_path))
+        data_path = tmp_path / "data.csv"
+        data_path.write_text("1,0,0\n0,1,1\n")
+        return model_path, data_path
+
+    def test_importance_aligns_column_names_without_header(
+        self, model_and_data, capsys
+    ):
+        model_path, data_path = model_and_data
+        assert (
+            main(
+                [
+                    "importance",
+                    str(model_path),
+                    str(data_path),
+                    "--no-header",
+                    "--column-names",
+                    "noise,signal,label",
+                    "--target",
+                    "label",
+                    "--repeats",
+                    "1",
+                    "--random-seed",
+                    "7",
+                ]
+            )
+            == 0
+        )
+        assert json.loads(capsys.readouterr().out)["baseline"] == 0.0
+
+    def test_leaves_aligns_column_names_without_header(self, model_and_data, capsys):
+        model_path, data_path = model_and_data
+        assert (
+            main(
+                [
+                    "leaves",
+                    str(model_path),
+                    "--data",
+                    str(data_path),
+                    "--no-header",
+                    "--column-names",
+                    "noise,signal,label",
+                    "--target",
+                    "label",
+                ]
+            )
+            == 0
+        )
+        leaves = json.loads(capsys.readouterr().out)["trees"][0]["leaves"]
+        counts = {leaf["predicted_class"]: leaf["data_class_counts"] for leaf in leaves}
+        assert counts == {"0": {"0": 1}, "1": {"1": 1}}

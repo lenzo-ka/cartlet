@@ -58,7 +58,11 @@ def _load_data(
                     f"data columns ({len(feature_names)})"
                 )
             feature_names = column_names
-    if not args.no_header or detect_format(args.data) == "jsonl":
+    if (
+        column_names is not None
+        or not args.no_header
+        or detect_format(args.data) == "jsonl"
+    ):
         model_names = [
             feature["name"] for feature in model_data["meta"].get("features", [])
         ]

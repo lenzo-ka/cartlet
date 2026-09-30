@@ -253,6 +253,35 @@ def test_regression_support_is_effective_weight_and_lost_in_cart(tmp_path):
     assert leaf_paths(cart_model)["trees"][0]["leaves"][0]["support"] is None
 
 
+@pytest.mark.parametrize("kind", ["tree", "forest"])
+def test_retraining_cart_model_restores_regression_leaf_support(kind, tmp_path):
+    kwargs = {
+        "features": [{"name": "x", "dtype": "float", "type": "num"}],
+        "task": "regression",
+    }
+    if kind == "tree":
+        model = DecisionTree(**kwargs)
+    else:
+        model = RandomForest(n_estimators=1, bootstrap=False, **kwargs)
+    model.load_data([[0.0], [0.0]], [1.0, 1.0])
+    if kind == "tree":
+        model.train(validation_split=0)
+    else:
+        model.train(random_state=1)
+
+    path = tmp_path / f"{kind}.cart"
+    model.export(str(path))
+    model.load_model(str(path))
+    model.load_data([[0.0], [0.0]], [2.0, 2.0])
+    if kind == "tree":
+        model.train(validation_split=0)
+    else:
+        model.train(random_state=1)
+
+    leaves = leaf_paths(model)["trees"][0]["leaves"]
+    assert leaves[0]["support"] == 2.0
+
+
 def test_switch_paths_group_nested_identity_and_flat_child_index(tmp_path):
     model = DecisionTree(features=[{"name": "kind", "dtype": "str", "type": "cat"}])
     shared = {"yes": 1.0}

@@ -304,10 +304,13 @@ class RandomForest(BaseModel):
             raise ValueError("No training data loaded. Call load_data() first.")
 
         if trainer == "sklearn":
-            return self._train_sklearn(random_state, n_jobs=n_jobs)
+            result = self._train_sklearn(random_state, n_jobs=n_jobs)
+        else:
+            # n_jobs ignored for native due to Python's GIL
+            result = self._train_native(random_state)
 
-        # n_jobs ignored for native due to Python's GIL
-        return self._train_native(random_state)
+        self._leaf_statistics_available = True
+        return result
 
     def _train_native(self, random_state: int | None = None) -> dict[str, Any]:
         """
@@ -377,6 +380,7 @@ class RandomForest(BaseModel):
         )
 
         tree.model = tree_trainer.train(tree, range(len(indices)))
+        tree._leaf_statistics_available = True
         tree.training_summary = {
             "training_samples": len(indices),
             "validation_samples": 0,
@@ -474,6 +478,7 @@ class RandomForest(BaseModel):
                 is_regression=is_regression,
                 store_distributions=False,  # Forests don't need distributions
             )
+            tree._leaf_statistics_available = True
             self.trees.append(tree)
 
         if self.bootstrap:

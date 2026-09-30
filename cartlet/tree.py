@@ -462,6 +462,7 @@ class DecisionTree(BaseModel):
             train_rows,
             val_rows if do_prune else None,
         )
+        self._leaf_statistics_available = True
         self.training_summary = {
             "training_samples": len(train_rows),
             "validation_samples": len(val_rows),
