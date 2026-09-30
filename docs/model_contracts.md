@@ -25,9 +25,11 @@ copied standalone runners together with the models they load.
 Nested XGBoost comparison nodes keep the five-element decision shape. Their
 feature reference is `{"feature": name_or_index, "missing": "left"}` or the
 same object with `"right"`; native CART nodes retain the plain feature reference.
-XGBoost switch nodes use the same feature descriptor in their existing
-four-element switch shape. These descriptors round-trip through JSON and binary
-tree rebuilds.
+Multi-category XGBoost splits use the same descriptor on an `"in"`
+set-membership node; XGBoost export does not produce switch nodes. These
+descriptors round-trip through JSON and binary tree rebuilds. A hand-authored
+switch written directly to `.cart` may carry a descriptor; see
+[decision flags](cart_format.md#decision-flags) for its routing.
 
 Decision and leaf attribution uses the existing decision and leaf array indexes;
 adding `predict_path` does not change the binary format. See
