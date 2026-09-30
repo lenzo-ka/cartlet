@@ -174,7 +174,7 @@ def test_regression_support_is_effective_weight_and_lost_in_cart(tmp_path):
     assert leaf_paths(cart_model)["trees"][0]["leaves"][0]["support"] is None
 
 
-def test_switch_paths_group_shared_children_and_drop_later_duplicates(tmp_path):
+def test_switch_paths_group_nested_identity_and_flat_child_index(tmp_path):
     model = DecisionTree(features=[{"name": "kind", "dtype": "str", "type": "cat"}])
     shared = {"yes": 1.0}
     model.model = [
@@ -187,22 +187,39 @@ def test_switch_paths_group_shared_children_and_drop_later_duplicates(tmp_path):
     assert len(direct) == 2
     assert direct[0]["leaf"] == direct[1]["leaf"]
     assert direct[1]["path"][0]["value"] == ["a", "b"]
+
+    # The writer deliberately expands identity-equal children and rejects
+    # duplicate canonical keys. Build an ordinary artifact, then admit the two
+    # flat-table cases the loader supports: shared child indexes and a later
+    # duplicate key. Inspection must group by child index and keep first match.
+    model.model = [
+        "kind",
+        "switch",
+        [("a", "first"), ("b", "second")],
+        "default",
+    ]
     path = tmp_path / "switch.cart"
     model.export(str(path), store_distributions=True)
     data = load_model(str(path))
+    table = data["case_tables"][0]
+    first_case, second_case = table["cases"]
+    table["cases"] = [
+        first_case,
+        (second_case[0], first_case[1]),
+        (first_case[0], second_case[1]),
+    ]
+    table["lookup"] = {"a": first_case[1], "b": first_case[1]}
     export = leaf_paths(data)
     leaves = export["trees"][0]["leaves"]
     assert len(leaves) == 2
-    assert leaves[0]["leaf"] == leaves[1]["leaf"]
+    assert leaves[0]["leaf"] != leaves[1]["leaf"]
     assert leaves[0]["path"][0]["op"] == "not in"
     assert leaves[0]["path"][0]["value"] == ["a", "b"]
     assert leaves[1]["path"][0]["op"] == "in"
     assert leaves[1]["path"][0]["value"] == ["a", "b"]
     assert predict_path(data, ["a"])["trees"][0]["leaf"] == leaves[1]["leaf"]
+    assert predict_path(data, ["b"])["trees"][0]["leaf"] == leaves[1]["leaf"]
     assert predict_path(data, ["z"])["trees"][0]["leaf"] == leaves[0]["leaf"]
-    reloaded = DecisionTree()
-    reloaded.load_model(str(path))
-    assert leaf_paths(reloaded) == export
 
 
 def _route_one(export, row, *, missing="error"):

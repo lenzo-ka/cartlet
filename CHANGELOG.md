@@ -16,8 +16,7 @@ requires it.
   retained model leaf statistics, optional empirical support/class counts/purity,
   and CLI export/filtering.
 - Export bool and XGBoost float32 routing semantics with every path set, group
-  switch cases by child, retain distinct routes to shared leaf IDs, and omit
-  unreachable later duplicate switch cases.
+  switch cases by destination, and omit unreachable later duplicate case values.
 
 ## 0.7.0 — 2026-09-29
 

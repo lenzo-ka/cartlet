@@ -96,10 +96,11 @@ Each leaf record contains:
 - `class_distribution`, `class_counts`, `support`, and `purity` when the model
   representation actually retains them.
 
-Paths, not leaf IDs, are the unit of export. A structure can route different
-branches to the same leaf ID, in which case the export contains multiple path
-records carrying that ID. Binary conditions retain their split operator and
-identify the selected `left` or `right` branch. Switch values reaching one
+Paths, not leaf IDs, are the unit of export. A nested or loader-admitted flat
+structure can route different branches to the same leaf ID, in which case the
+export contains multiple path records carrying that ID. Binary conditions
+retain their split operator and identify the selected `left` or `right` branch.
+Switch values reaching one
 child are one sorted `in` condition; the default route is `not in` with all
 reachable case values. Switches are first-match-wins, so a later duplicate case
 value is unreachable and omitted. Every condition reports the split's learned

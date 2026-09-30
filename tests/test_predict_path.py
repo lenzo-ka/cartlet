@@ -653,26 +653,22 @@ def test_nested_switch_path_uses_case_table_and_leaf_array_oracle(tmp_path):
         assert standalone.predict(row, missing="right") == "small-default"
 
 
-def test_writer_drops_unreachable_duplicate_canonical_bool_switch_keys(tmp_path):
+def test_writer_rejects_duplicate_canonical_bool_switch_keys(tmp_path):
     tree = [
         "flag",
         "switch",
         {"yes": "first", True: "second"},
         "default",
     ]
-    path = tmp_path / "collision.cart"
-    write_tree_bytes(
-        str(path),
-        tree,
-        [FeatureSpec("flag", "bool", "cat", {0, 1})],
-        {"flag": 0},
-        ["first", "second", "default"],
-        False,
-    )
-    model = Predictor(str(path))
-    assert len(model.model["case_tables"][0]["cases"]) == 1
-    assert model.predict([True]) == "first"
-    assert model.predict(["yes"]) == "first"
+    with pytest.raises(ValueError, match="duplicate canonical switch case key '1'"):
+        write_tree_bytes(
+            str(tmp_path / "collision.cart"),
+            tree,
+            [FeatureSpec("flag", "bool", "cat", {0, 1})],
+            {"flag": 0},
+            ["first", "second", "default"],
+            False,
+        )
 
 
 def test_missing_policy_is_validated_before_any_row(tmp_path):

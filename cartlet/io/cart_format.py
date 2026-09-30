@@ -195,25 +195,20 @@ def rebuild_tree_from_cart(
     strings = model_data["strings"]
 
     distributions = model_data.get("distributions", [])
-    rebuilt: dict[int, Any] = {}
 
     def rebuild(idx: int) -> Any:
-        if idx in rebuilt:
-            return rebuilt[idx]
         if idx & LEAF_FLAG:
             # Leaf node
             leaf_idx = idx & INDEX_MASK
             leaf_type, val = leaves[leaf_idx]
             if leaf_type == LEAF_CLASS:
-                result: Any = strings[val]
+                return strings[val]
             elif leaf_type == LEAF_CLASS_DIST:
                 # Rebuild distribution dict from stored data
                 dist_data = distributions[val]
-                result = {strings[class_idx]: prob for class_idx, prob in dist_data}
+                return {strings[class_idx]: prob for class_idx, prob in dist_data}
             else:  # LEAF_FLOAT
-                result = [floats[val], 0.0, 1]
-            rebuilt[idx] = result
-            return result
+                return [floats[val], 0.0, 1]
 
         # Decision node
         node = decisions[idx]
@@ -231,7 +226,7 @@ def rebuild_tree_from_cart(
                 feature = {"feature": feature_name, "missing": "left"}
             elif missing_flags == MISSING_RIGHT:
                 feature = {"feature": feature_name, "missing": "right"}
-            result = [
+            return [
                 feature,
                 "<" if op == OP_LT else "<=",
                 value,
@@ -252,10 +247,9 @@ def rebuild_tree_from_cart(
             if is_category_set:
                 category_sets = model_data.get("category_sets", [])
                 value = sorted(category_sets[val])
-                result = [feature, "in", value, left_tree, right_tree]
-            else:
-                value = strings[cat_vals[val]]
-                result = [feature, "=", value, left_tree, right_tree]
+                return [feature, "in", value, left_tree, right_tree]
+            value = strings[cat_vals[val]]
+            return [feature, "=", value, left_tree, right_tree]
         elif op == OP_SWITCH:
             # Switch nodes retain placeholders for their unused child fields.
             missing_flags = node[2]
@@ -266,19 +260,16 @@ def rebuild_tree_from_cart(
             cases = {}
             for cat_val_idx, child_idx in table["cases"]:
                 cat_val = strings[cat_vals[cat_val_idx]]
-                if cat_val not in cases:
-                    cases[cat_val] = rebuild(child_idx)
+                cases[cat_val] = rebuild(child_idx)
             default_tree = rebuild(table["default"])
             feature = feature_name
             if missing_flags == MISSING_LEFT:
                 feature = {"feature": feature_name, "missing": "left"}
             elif missing_flags == MISSING_RIGHT:
                 feature = {"feature": feature_name, "missing": "right"}
-            result = [feature, "switch", cases, default_tree]
+            return [feature, "switch", cases, default_tree]
         else:
             raise ValueError(f"Unknown op type: {op}")
-        rebuilt[idx] = result
-        return result
 
     tree_offset = model_data["tree_offsets"][tree_idx]
     return rebuild(tree_offset)

@@ -566,11 +566,7 @@ def tree_array_size(root: Any) -> tuple[int, int]:
             decision_count += 1
             cases = current[2]
             items = list(cases.items()) if isinstance(cases, dict) else cases
-            seen_children = {id(current[3])}
             for _, subtree in reversed(items):
-                if id(subtree) in seen_children:
-                    continue
-                seen_children.add(id(subtree))
                 stack.append(subtree)
             stack.append(current[3])
         else:
@@ -596,23 +592,13 @@ def _writer_child_offsets(
     else:
         cases = current[2]
         items = list(cases.items()) if isinstance(cases, dict) else cases
-        ordered_children = [current[3]]
-        seen_children = {id(current[3])}
-        for _, subtree in items:
-            if id(subtree) not in seen_children:
-                ordered_children.append(subtree)
-                seen_children.add(id(subtree))
         if selector == "default":
             child = current[3]
+            earlier = []
         else:
             case_idx = selector[1]
             child = items[case_idx][1]
-        child_position = next(
-            index
-            for index, candidate in enumerate(ordered_children)
-            if candidate is child
-        )
-        earlier = ordered_children[:child_position]
+            earlier = [current[3], *(subtree for _, subtree in items[:case_idx])]
 
     decision_offset += 1
     for subtree in earlier:
@@ -664,15 +650,8 @@ def build_tree_indices(
                 decision_count += 1
                 cases = current[2]
                 items = list(cases.items()) if isinstance(cases, dict) else cases
-                unique_cases = []
-                seen_children = {id(current[3])}
-                for case_idx, (_, child) in enumerate(items):
-                    if id(child) in seen_children:
-                        continue
-                    seen_children.add(id(child))
-                    unique_cases.append((case_idx, child))
-                for case_idx, child in reversed(unique_cases):
-                    stack.append((child, address + (("case", case_idx),)))
+                for case_idx in range(len(items) - 1, -1, -1):
+                    stack.append((items[case_idx][1], address + (("case", case_idx),)))
                 stack.append((current[3], address + ("default",)))
             else:
                 leaves[address] = leaf_count
