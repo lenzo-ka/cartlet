@@ -314,10 +314,9 @@ class ByteWriter:
                     val = normalize_bool(val)
                 key = str(val)
                 if key in seen_case_keys:
-                    raise ValueError(
-                        f"duplicate canonical switch case key {key!r} "
-                        f"for feature {feature!r}"
-                    )
+                    # Switches are first-match-wins. A later canonical duplicate
+                    # can never be reached, so do not serialize its subtree.
+                    continue
                 seen_case_keys.add(key)
                 canonical_cases.append((key, subtree))
 
@@ -329,10 +328,15 @@ class ByteWriter:
             default_idx = self._flatten_node(default_node, name_to_col)
 
             case_list: list[tuple[int, int]] = []
+            shared_children: dict[int, int] = {id(default_node): default_idx}
             for key, subtree in canonical_cases:
                 str_idx = self._add_string(key)
                 cat_val_idx = self._add_cat_value(str_idx)
-                child_idx = self._flatten_node(subtree, name_to_col)
+                subtree_identity = id(subtree)
+                child_idx = shared_children.get(subtree_identity)
+                if child_idx is None:
+                    child_idx = self._flatten_node(subtree, name_to_col)
+                    shared_children[subtree_identity] = child_idx
                 case_list.append((cat_val_idx, child_idx))
 
             table_idx = self._add_case_table(default_idx, case_list)

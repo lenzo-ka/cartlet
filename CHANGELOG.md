@@ -5,6 +5,20 @@ formats incompatibly. Keep the package and standalone runner used to export and
 load a model on the same release; retrain or re-export models when a release
 requires it.
 
+## Unreleased
+
+### Added
+
+- Add held-out `permutation_importance` for decision trees and random forests,
+  including jointly shuffled feature groups, deterministic integer seeds,
+  classification label canonicalization, and CLI JSON/TSV output.
+- Add `leaf_paths` and `decisive_leaves` with schema-complete structural paths,
+  retained model leaf statistics, optional empirical support/class counts/purity,
+  and CLI export/filtering.
+- Export bool and XGBoost float32 routing semantics with every path set, group
+  switch cases by child, retain distinct routes to shared leaf IDs, and omit
+  unreachable later duplicate switch cases.
+
 ## 0.7.0 — 2026-09-29
 
 ### Breaking changes

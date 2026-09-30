@@ -114,3 +114,23 @@ Evaluation helpers require equal target and prediction lengths. Cross-validation
 requires aligned feature and target populations and allocates fold remainders
 across folds rather than concentrating them in the final fold. Its reported mean
 remains the mean of the per-fold scores.
+
+Held-out permutation importance canonicalizes classification targets to the
+model's string label representation and permits prediction-time missing values.
+It does not apply training-data validation. See
+[held-out importance and path inspection](inspection.md).
+
+## Leaf statistics and path exports
+
+`leaf_paths` exports complete routes rather than treating leaf IDs as unique
+records. Its top-level feature schema controls categorical, bool, and numeric
+interpretation; XGBoost-derived exports explicitly require float32 input
+conversion for numeric comparisons.
+
+Regression leaf `support` is effective training weight. Nested and JSON models
+retain it, while `.cart` keeps only the regression prediction and therefore
+reports support as unavailable after reload. Classification distributions can
+supply model-stored purity, but collapsed labels do not imply purity and
+classification counts/support are not retained. Empirical `data_support`,
+`data_class_counts`, and `data_purity` are computed only from explicitly
+supplied inspection data and never replace those model-stored fields.

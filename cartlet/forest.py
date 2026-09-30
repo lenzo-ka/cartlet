@@ -665,6 +665,7 @@ class RandomForest(BaseModel):
 
         self.n_estimators = model_data.get("n_trees", len(model_data["tree_offsets"]))
         self.bootstrap = True  # Not stored in .cart, assume default
+        self._leaf_statistics_available = False
 
         # Rebuild trees from flat nodes
         self.trees = []
@@ -674,6 +675,7 @@ class RandomForest(BaseModel):
             tree.feature_specs = self.feature_specs
             tree.name_to_col = self.name_to_col
             tree.model = self._rebuild_tree_from_cart(model_data, tree_idx)
+            tree._leaf_statistics_available = False
             self.trees.append(tree)
 
         return {

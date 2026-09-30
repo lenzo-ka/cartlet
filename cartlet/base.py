@@ -123,6 +123,10 @@ class BaseModel(ABC):
         # Feature importances (set by trainer)
         self._feature_importances: dict[str, float] = {}
 
+        # Full nested/JSON regression leaves retain their effective training
+        # weight. Compact `.cart` leaves keep only the prediction.
+        self._leaf_statistics_available = True
+
     def set_feature_importances(self, importances: dict[str, float]) -> None:
         """Record trainer-computed feature importances on this model.
 
@@ -372,6 +376,7 @@ class BaseModel(ABC):
         # Loaded artifacts replace training provenance and backend state.
         self._sklearn_model = None
         self._feature_importances = {}
+        self._leaf_statistics_available = True
         self.X, self.y, self.counts = [], [], []
         self._detected_task = None
         self.task = TASK_AUTO

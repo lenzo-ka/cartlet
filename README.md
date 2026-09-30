@@ -115,6 +115,10 @@ cartlet predict model.cart input.csv -m append -f json
 # Evaluate
 cartlet eval model.cart test.csv
 
+# Held-out importance and structural paths
+cartlet importance model.cart test.csv --target label --random-seed 7
+cartlet leaves model.cart --data test.csv --target label
+
 # Model stats
 cartlet stats model.cart -J  # JSON output
 
@@ -208,6 +212,7 @@ agreement. Temporary model files are removed when the example finishes; use
 `--output model.cart` to retain one.
 
 - [Standalone deployment](https://github.com/lenzo-ka/cartlet/blob/main/docs/runners.md)
+- [Held-out importance and path inspection](https://github.com/lenzo-ka/cartlet/blob/main/docs/inspection.md)
 - [Binary format](https://github.com/lenzo-ka/cartlet/blob/main/docs/cart_format.md)
 - [Changes and migration notes](https://github.com/lenzo-ka/cartlet/blob/main/CHANGELOG.md)
 
@@ -507,6 +512,26 @@ for cls, m in per_class_metrics(y_true, y_pred).items():
 cm = confusion_matrix(y_true, y_pred)
 ```
 
+### Held-out importance and path inspection
+
+```python
+from cartlet import decisive_leaves, leaf_paths, permutation_importance
+
+importance = permutation_importance(model, X_test, y_test, n_repeats=10, random_state=7)
+paths = leaf_paths(model, X_test, y_test)
+decisive = decisive_leaves(
+    model, "approved", X_test, y_test, min_support=20, min_purity=0.9
+)
+```
+
+Permutation importance reports held-out loss increases, supports jointly
+shuffled feature groups, and never mutates caller data. Path export includes
+the feature schema needed to reproduce routing, optional empirical path counts,
+and retained model leaf statistics where available. See
+[held-out importance and path inspection](https://github.com/lenzo-ka/cartlet/blob/main/docs/inspection.md)
+for the schemas, missing-value rules, float32 XGBoost routing, and retention
+limits.
+
 ### IsolationForest
 
 Anomaly detection. Trains an unsupervised forest of random binary trees;
@@ -683,6 +708,30 @@ cartlet evaluate model.cart test.csv --verbose
 ```
 
 Evaluation uses labeled data and a `.cart` model. `eval` is an alias.
+
+### importance
+
+```bash
+cartlet importance model.cart test.csv --target label --random-seed 7
+cartlet importance model.cart test.csv --groups groups.json --format tsv
+```
+
+Importance uses labeled held-out data and a tree or forest `.cart` model.
+Groups are an inline JSON object or a JSON file mapping group names to model
+feature names or indexes.
+
+### leaves
+
+```bash
+cartlet leaves model.cart
+cartlet leaves model.cart --data test.csv
+cartlet leaves model.cart --data test.csv --target label \
+  --class approved --min-support 20 --min-purity 0.9
+```
+
+Leaves exports every structural path. Optional data adds empirical path support;
+an optional target adds classification counts and purity. JSON is the default,
+and TSV emits one row per path.
 
 ### stats
 

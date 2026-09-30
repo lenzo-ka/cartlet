@@ -803,6 +803,7 @@ class DecisionTree(BaseModel):
 
         self._apply_config_from_cart(model_data)
         self.model = self._rebuild_tree_from_cart(model_data)
+        self._leaf_statistics_available = False
 
         return {
             "features": model_data["meta"]["features"],
