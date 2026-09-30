@@ -201,8 +201,10 @@ flags are 4, 5, or 6. For a present value, the left branch is taken exactly
 when its canonical string is in the referenced set. Bool-dtype values are
 normalized to `"0"` or `"1"` before lookup, as for `OP_EQ`.
 
-For `OP_SWITCH`, left means the XGBoost yes/category child and right means the
-default/no child. Every decision record stores feature and value varints around
+For `OP_SWITCH`, a learned left direction follows the first stored case's child
+and a learned right direction follows the default child. Cartlet's own
+exporters, including XGBoost export, do not produce switch nodes with a learned
+direction; a hand-authored one must list the intended missing-value case first. Every decision record stores feature and value varints around
 the two fixed bytes; comparison records then carry two child varints, while
 switch records end after the value varint.
 

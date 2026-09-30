@@ -6,9 +6,11 @@ layer is provided for older model artifacts.
 ## Saved models
 
 The binary `.cart` format is version 3. Decision records store XGBoost's learned
-missing direction. Numeric values and probabilities use float64 storage so
-native tree thresholds survive export without float32
-rounding. Numeric decision operators are explicit: `<=` is inclusive and `<`
+missing direction and mark category-set membership decisions. Numeric
+thresholds and regression values use float64 storage so native tree thresholds
+survive export without float32 rounding. Class probabilities are stored as
+16-bit quantized values and renormalized on load; each is within about 7.6e-6
+of the trained probability (see [the bound](cart_format.md#distributions-if-flag_has_distributions)). Numeric decision operators are explicit: `<=` is inclusive and `<`
 is strict. XGBoost's strict comparisons retain its float32 input semantics.
 The package and standalone runners use the same operators and stored feature
 dtypes. See [the binary specification](cart_format.md).
@@ -23,9 +25,11 @@ copied standalone runners together with the models they load.
 Nested XGBoost comparison nodes keep the five-element decision shape. Their
 feature reference is `{"feature": name_or_index, "missing": "left"}` or the
 same object with `"right"`; native CART nodes retain the plain feature reference.
-XGBoost switch nodes use the same feature descriptor in their existing
-four-element switch shape. These descriptors round-trip through JSON and binary
-tree rebuilds.
+Multi-category XGBoost splits use the same descriptor on an `"in"`
+set-membership node; XGBoost export does not produce switch nodes. These
+descriptors round-trip through JSON and binary tree rebuilds. A hand-authored
+switch written directly to `.cart` may carry a descriptor; see
+[decision flags](cart_format.md#decision-flags) for its routing.
 
 Decision and leaf attribution uses the existing decision and leaf array indexes;
 adding `predict_path` does not change the binary format. See
@@ -92,7 +96,8 @@ first headerless row; quoted empty fields are still records. Ragged records are
 skipped with a warning. Batch readers reject empty or header-only input, while
 `iter_vectors` yields nothing; a file containing only ragged data records yields
 an empty batch. Headers and values are NFC-normalized. `load_training_data`
-converts numeric strings; `read_vectors` and `iter_vectors` preserve them.
+converts numeric strings in declared numeric and undeclared columns, and keeps
+declared categorical text exact; `read_vectors` and `iter_vectors` preserve them.
 
 Tabular batch loading consumes and processes records incrementally, without
 retaining a second complete collection of raw rows. Returned feature and target
