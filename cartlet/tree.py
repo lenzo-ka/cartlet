@@ -45,7 +45,6 @@ from .types import (
     normalize_bool,
 )
 from .utils import (
-    build_tree_indices,
     collapse_distributions,
     count_nodes,
     eval_tree,
@@ -53,7 +52,6 @@ from .utils import (
     is_decision_node,
     is_missing_for_feature,
     split_feature_and_missing,
-    tree_index_cache_key,
 )
 from .utils import (
     max_depth as compute_max_depth,
@@ -185,10 +183,6 @@ class DecisionTree(BaseModel):
 
         # Trained model
         self._model: Any = None
-        self._path_indices_key: tuple[Any, ...] | None = None
-        self._path_indices: (
-            tuple[dict[tuple[Any, ...], int], dict[tuple[Any, ...], int]] | None
-        ) = None
         self.training_summary: dict[str, int] = {}
 
     @property
@@ -199,20 +193,6 @@ class DecisionTree(BaseModel):
     @model.setter
     def model(self, value: Any) -> None:
         self._model = value
-        self._path_indices_key = None
-        self._path_indices = None
-
-    def _tree_indices(
-        self,
-    ) -> list[tuple[dict[tuple[Any, ...], int], dict[tuple[Any, ...], int]]]:
-        """Return cached writer-order node IDs for the current nested tree."""
-        if self.model is None:
-            raise ValueError("Model not trained. Call train() first.")
-        key = tree_index_cache_key(self.model)
-        if self._path_indices is None or self._path_indices_key != key:
-            self._path_indices = build_tree_indices([self.model])[0]
-            self._path_indices_key = key
-        return [self._path_indices]
 
     def _feature_type(self, feat_idx: int) -> str:
         """Get the type (cat/num) for a feature."""
@@ -605,7 +585,7 @@ class DecisionTree(BaseModel):
     def predict_path(
         self, vector: list[Any], *, missing: str = "error"
     ) -> dict[str, Any]:
-        """Predict and return the decisions and model-global leaf ID."""
+        """Predict and return decisions with root-relative path IDs."""
         if self.model is None:
             raise ValueError("Model not trained. Call train() first.")
         prediction, leaf, path = eval_tree_path(
@@ -614,7 +594,6 @@ class DecisionTree(BaseModel):
             self.name_to_col,
             missing=missing,
             feature_specs=self.feature_specs,
-            indices=self._tree_indices()[0],
         )
         return {
             "prediction": prediction,

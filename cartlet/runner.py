@@ -123,6 +123,11 @@ def _is_categorical_missing(value: Any) -> bool:
     return value is None or _is_self_unequal(value)
 
 
+def _switch_path_token(key: str) -> str:
+    """Encode one canonical switch key as an unambiguous path token."""
+    return f"C{len(key)}:{key}"
+
+
 def load_model(path: str) -> ModelData:
     """
     Load a trained model from a ``.cart`` file.
@@ -750,6 +755,7 @@ def _predict_tree_path_recursive(
     path: list[dict[str, Any]] | None = None,
 ) -> Any:
     """Core tree traversal logic."""
+    path_id = ""
     for _ in range(MAX_TREE_DEPTH):
         # Check if leaf (high bit set)
         if idx & LEAF_FLAG:
@@ -762,7 +768,7 @@ def _predict_tree_path_recursive(
                     raise RuntimeError(f"Invalid string index in leaf: {val}")
                 label = strings[val]
                 result: Any = {label: 1.0} if return_dist else label
-                return (result, leaf_idx) if path is not None else result
+                return (result, path_id) if path is not None else result
             elif leaf_type == LEAF_CLASS_DIST:
                 # Leaf with distribution
                 if val >= len(distributions):
@@ -770,16 +776,16 @@ def _predict_tree_path_recursive(
                 dist_data = distributions[val]
                 if return_dist:
                     result = {strings[ci]: prob for ci, prob in dist_data}
-                    return (result, leaf_idx) if path is not None else result
+                    return (result, path_id) if path is not None else result
                 if not dist_data or dist_data[0][0] >= len(strings):
                     raise RuntimeError("Invalid class index in distribution")
                 result = strings[dist_data[0][0]]
-                return (result, leaf_idx) if path is not None else result
+                return (result, path_id) if path is not None else result
             else:  # LEAF_FLOAT
                 if val >= len(floats):
                     raise RuntimeError(f"Invalid float index in leaf: {val}")
                 result = floats[val]
-                return (result, leaf_idx) if path is not None else result
+                return (result, path_id) if path is not None else result
 
         # Decision node
         if idx >= len(decisions):
@@ -814,7 +820,7 @@ def _predict_tree_path_recursive(
             feature_name = features[feat].get("name", str(feat))
             raise MissingFeatureError(
                 f"feature {feat} ({feature_name!r}) is missing at "
-                f"tree {tree_idx} node {idx}"
+                f"tree {tree_idx} node {path_id}"
             )
         if not is_missing and bool_features[feat]:
             feat_val = normalize_bool(feat_val)
@@ -854,7 +860,7 @@ def _predict_tree_path_recursive(
             branch = "left" if go_left else "right"
             if path is not None:
                 step = {
-                    "node": idx,
+                    "node": path_id,
                     "feature": feat,
                     "name": features[feat].get("name", str(feat)),
                     "op": "<" if op == OP_LT else "<=",
@@ -864,6 +870,7 @@ def _predict_tree_path_recursive(
                 if learned_missing:
                     step["missing"] = True
                 path.append(step)
+            path_id += "L" if go_left else "R"
             idx = left if go_left else right
         elif op == OP_EQ:
             # Categorical comparison
@@ -896,7 +903,7 @@ def _predict_tree_path_recursive(
             branch = "left" if go_left else "right"
             if path is not None:
                 step = {
-                    "node": idx,
+                    "node": path_id,
                     "feature": feat,
                     "name": features[feat].get("name", str(feat)),
                     "op": "in" if is_category_set else "=",
@@ -906,6 +913,7 @@ def _predict_tree_path_recursive(
                 if learned_missing:
                     step["missing"] = True
                 path.append(step)
+            path_id += "L" if go_left else "R"
             idx = left if go_left else right
         elif op == OP_SWITCH:
             # Case table lookup
@@ -914,17 +922,20 @@ def _predict_tree_path_recursive(
             table = case_tables[val]
             next_idx = table["default"]
             branch = "default"
+            case_key = None
             if learned_missing and missing_direction == MISSING_LEFT:
-                next_idx = table["cases"][0][1]
+                case_value_index, next_idx = table["cases"][0]
+                case_key = strings[cat_vals[case_value_index]]
                 branch = "case"
             elif not is_missing:
                 key = str(feat_val)
                 if key in table["lookup"]:
                     next_idx = table["lookup"][key]
+                    case_key = key
                     branch = "case"
             if path is not None:
                 step = {
-                    "node": idx,
+                    "node": path_id,
                     "feature": feat,
                     "name": features[feat].get("name", str(feat)),
                     "op": "switch",
@@ -934,6 +945,7 @@ def _predict_tree_path_recursive(
                 if learned_missing:
                     step["missing"] = True
                 path.append(step)
+            path_id += "D" if case_key is None else _switch_path_token(case_key)
             idx = next_idx
 
     raise RuntimeError("Max tree depth exceeded (possible corrupted model)")
@@ -969,7 +981,7 @@ def _tree_path(
 def predict_path(
     model: ModelData, vector: list[Any], *, missing: str = "error"
 ) -> dict[str, Any]:
-    """Predict and return the model-global leaf ID and decisions evaluated."""
+    """Predict and return root-relative decision and leaf path IDs."""
     _check_missing_policy(missing)
     n_trees = model["n_trees"]
     evaluated = [_tree_path(model, vector, i, missing) for i in range(n_trees)]
@@ -1301,7 +1313,7 @@ class Predictor:
     def predict_path(
         self, vector: list[Any], *, missing: str = "error"
     ) -> dict[str, Any]:
-        """Predict and return the decisions and model-global leaf IDs."""
+        """Predict and return root-relative decision and leaf path IDs."""
         return predict_path(self.model, vector, missing=missing)
 
     def predict_batch(

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import struct
 from collections.abc import Sequence
 from typing import Any, cast
 
@@ -29,6 +28,7 @@ from .utils import (
     is_leaf,
     is_switch_node,
     split_feature_and_missing,
+    switch_path_token,
 )
 
 
@@ -102,7 +102,7 @@ def _canonical_category(value: Any, feature: dict[str, str]) -> str:
 
 def _condition(
     *,
-    node: int,
+    node: str,
     feature_index: int,
     feature: dict[str, str],
     op: str,
@@ -132,7 +132,7 @@ def _leaf_record(
     *,
     task: str,
     tree: int,
-    leaf_id: int,
+    leaf_id: str,
     path: list[dict[str, Any]],
     statistics_available: bool,
     xgboost: bool = False,
@@ -193,11 +193,11 @@ def _flat_paths(data: ModelData) -> list[dict[str, Any]]:
     ]
     records: list[dict[str, Any]] = []
     for tree_index, root in enumerate(data["tree_offsets"]):
-        stack: list[tuple[int, list[dict[str, Any]], frozenset[int]]] = [
-            (root, [], frozenset())
+        stack: list[tuple[int, str, list[dict[str, Any]], frozenset[int]]] = [
+            (root, "", [], frozenset())
         ]
         while stack:
-            index, path, ancestors = stack.pop()
+            index, path_id, path, ancestors = stack.pop()
             if index & LEAF_FLAG:
                 leaf_id = index & INDEX_MASK
                 records.append(
@@ -205,7 +205,7 @@ def _flat_paths(data: ModelData) -> list[dict[str, Any]]:
                         _flat_leaf_value(data, leaf_id),
                         task=task,
                         tree=tree_index,
-                        leaf_id=leaf_id,
+                        leaf_id=path_id,
                         path=path,
                         statistics_available=False,
                         xgboost=bool(data.get("is_xgboost")),
@@ -221,37 +221,44 @@ def _flat_paths(data: ModelData) -> list[dict[str, Any]]:
             if op_code == OP_SWITCH:
                 table = data["case_tables"][value_index]
                 missing_case = (
-                    table["cases"][0][1]
+                    data["strings"][data["cat_vals"][table["cases"][0][0]]]
                     if direction == "left" and table["cases"]
                     else None
                 )
                 all_values: list[str] = []
-                grouped: dict[int, list[str]] = {}
                 seen: set[str] = set()
+                reachable_cases: list[tuple[str, int]] = []
                 for cat_value_index, child in table["cases"]:
                     case_value = data["strings"][data["cat_vals"][cat_value_index]]
                     if case_value in seen:
                         continue
                     seen.add(case_value)
                     all_values.append(case_value)
-                    grouped.setdefault(child, []).append(case_value)
+                    reachable_cases.append((case_value, child))
                 # Push cases in reverse so traversal remains default, then
-                # first-encountered child groups in writer order.
-                for child, values in reversed(list(grouped.items())):
+                # cases in stored order.
+                for case_value, child in reversed(reachable_cases):
                     condition = _condition(
-                        node=index,
+                        node=path_id,
                         feature_index=feat,
                         feature=feature,
                         op="in",
-                        value=values,
+                        value=[case_value],
                         branch="case",
                         missing_direction=(
-                            direction if child == missing_case else None
+                            direction if case_value == missing_case else None
                         ),
                     )
-                    stack.append((child, [*path, condition], next_ancestors))
+                    stack.append(
+                        (
+                            child,
+                            path_id + switch_path_token(case_value),
+                            [*path, condition],
+                            next_ancestors,
+                        )
+                    )
                 default_condition = _condition(
-                    node=index,
+                    node=path_id,
                     feature_index=feat,
                     feature=feature,
                     op="not in",
@@ -260,7 +267,12 @@ def _flat_paths(data: ModelData) -> list[dict[str, Any]]:
                     missing_direction=direction if direction == "right" else None,
                 )
                 stack.append(
-                    (table["default"], [*path, default_condition], next_ancestors)
+                    (
+                        table["default"],
+                        path_id + "D",
+                        [*path, default_condition],
+                        next_ancestors,
+                    )
                 )
                 continue
             if op_code in (OP_LE, OP_LT):
@@ -276,7 +288,7 @@ def _flat_paths(data: ModelData) -> list[dict[str, Any]]:
             else:
                 raise ValueError(f"unknown decision operation: {op_code}")
             right_condition = _condition(
-                node=index,
+                node=path_id,
                 feature_index=feat,
                 feature=feature,
                 op=op,
@@ -285,7 +297,7 @@ def _flat_paths(data: ModelData) -> list[dict[str, Any]]:
                 missing_direction=direction if direction == "right" else None,
             )
             left_condition = _condition(
-                node=index,
+                node=path_id,
                 feature_index=feat,
                 feature=feature,
                 op=op,
@@ -293,29 +305,27 @@ def _flat_paths(data: ModelData) -> list[dict[str, Any]]:
                 branch="left",
                 missing_direction=direction if direction == "left" else None,
             )
-            stack.append((right, [*path, right_condition], next_ancestors))
-            stack.append((left, [*path, left_condition], next_ancestors))
+            stack.append(
+                (right, path_id + "R", [*path, right_condition], next_ancestors)
+            )
+            stack.append((left, path_id + "L", [*path, left_condition], next_ancestors))
     return records
 
 
 def _nested_paths(model: Any) -> list[dict[str, Any]]:
     trees, task, features, statistics_available = _nested_model(model)
-    indices = model._tree_indices()
     records: list[dict[str, Any]] = []
     for tree_index, root in enumerate(trees):
-        decision_ids, leaf_ids = indices[tree_index]
-        stack: list[tuple[Any, tuple[Any, ...], list[dict[str, Any]]]] = [
-            (root, (), [])
-        ]
+        stack: list[tuple[Any, str, list[dict[str, Any]]]] = [(root, "", [])]
         while stack:
-            node, address, path = stack.pop()
+            node, path_id, path = stack.pop()
             if is_leaf(node):
                 records.append(
                     _leaf_record(
                         node,
                         task=task,
                         tree=tree_index,
-                        leaf_id=leaf_ids[address],
+                        leaf_id=path_id,
                         path=path,
                         statistics_available=statistics_available,
                     )
@@ -332,51 +342,41 @@ def _nested_paths(model: Any) -> list[dict[str, Any]]:
                 feature = features[feat]
                 items = list(cases.items()) if isinstance(cases, dict) else list(cases)
                 missing_case = (
-                    id(items[0][1]) if direction == "left" and items else None
+                    _canonical_category(items[0][0], feature)
+                    if direction == "left" and items
+                    else None
                 )
                 seen: set[str] = set()
                 all_values: list[str] = []
-                child_groups: dict[int, tuple[int | str, Any, list[str]]] = {
-                    id(default): ("default", default, [])
-                }
-                for case_index, (value, child) in enumerate(items):
+                reachable_cases: list[tuple[str, Any]] = []
+                for value, child in items:
                     canonical = _canonical_category(value, feature)
                     if canonical in seen:
                         continue
                     seen.add(canonical)
                     all_values.append(canonical)
-                    identity = id(child)
-                    if identity in child_groups:
-                        child_groups[identity][2].append(canonical)
-                    else:
-                        child_groups[identity] = (case_index, child, [canonical])
-                case_groups = [group for group in child_groups.values() if group[2]]
-                for selector, child, values in reversed(case_groups):
+                    reachable_cases.append((canonical, child))
+                for canonical, child in reversed(reachable_cases):
                     condition = _condition(
-                        node=decision_ids[address],
+                        node=path_id,
                         feature_index=feat,
                         feature=feature,
                         op="in",
-                        value=values,
+                        value=[canonical],
                         branch="case",
                         missing_direction=(
-                            direction if id(child) == missing_case else None
+                            direction if canonical == missing_case else None
                         ),
-                    )
-                    child_address = (
-                        address + ("default",)
-                        if selector == "default"
-                        else address + (("case", selector),)
                     )
                     stack.append(
                         (
                             child,
-                            child_address,
+                            path_id + switch_path_token(canonical),
                             [*path, condition],
                         )
                     )
                 default_condition = _condition(
-                    node=decision_ids[address],
+                    node=path_id,
                     feature_index=feat,
                     feature=feature,
                     op="not in",
@@ -384,9 +384,7 @@ def _nested_paths(model: Any) -> list[dict[str, Any]]:
                     branch="default",
                     missing_direction=direction if direction == "right" else None,
                 )
-                stack.append(
-                    (default, address + ("default",), [*path, default_condition])
-                )
+                stack.append((default, path_id + "D", [*path, default_condition]))
                 continue
             if not is_decision_node(node):
                 raise ValueError(f"unknown node type: {type(node)}")
@@ -399,7 +397,7 @@ def _nested_paths(model: Any) -> list[dict[str, Any]]:
             )
             feature = features[feat]
             right_condition = _condition(
-                node=decision_ids[address],
+                node=path_id,
                 feature_index=feat,
                 feature=feature,
                 op=op,
@@ -408,7 +406,7 @@ def _nested_paths(model: Any) -> list[dict[str, Any]]:
                 missing_direction=direction if direction == "right" else None,
             )
             left_condition = _condition(
-                node=decision_ids[address],
+                node=path_id,
                 feature_index=feat,
                 feature=feature,
                 op=op,
@@ -416,92 +414,9 @@ def _nested_paths(model: Any) -> list[dict[str, Any]]:
                 branch="left",
                 missing_direction=direction if direction == "left" else None,
             )
-            stack.append((right, address + (1,), [*path, right_condition]))
-            stack.append((left, address + (0,), [*path, left_condition]))
+            stack.append((right, path_id + "R", [*path, right_condition]))
+            stack.append((left, path_id + "L", [*path, left_condition]))
     return records
-
-
-def _is_missing(value: Any, numeric: bool) -> tuple[bool, float | None]:
-    if value is None:
-        return True, None
-    if numeric:
-        try:
-            number = float(value)
-        except OverflowError:
-            raise
-        except (TypeError, ValueError):
-            return False, None
-        return math.isnan(number), number
-    if isinstance(value, str):
-        return False, None
-    try:
-        unequal = value != value
-    except Exception:
-        return False, None
-    if isinstance(unequal, bool):
-        return unequal, None
-    unequal_type = type(unequal)
-    if unequal_type.__module__.split(".", 1)[
-        0
-    ] == "numpy" and unequal_type.__name__ in (
-        "bool",
-        "bool_",
-    ):
-        try:
-            return bool(unequal), None
-        except Exception:
-            pass
-    return False, None
-
-
-def _condition_matches(
-    condition: dict[str, Any],
-    row: Sequence[Any],
-    features: list[dict[str, str]],
-    *,
-    float32_numeric: bool,
-    missing: str,
-    learned_missing_nodes: set[int],
-) -> bool:
-    index = condition["feature"]
-    value = row[index] if index < len(row) else None
-    op = condition["op"]
-    numeric = op in ("<", "<=")
-    absent, numeric_value = _is_missing(value, numeric)
-    direction = condition["missing_direction"]
-    branch = condition["branch"]
-    if absent:
-        if direction is not None:
-            return True
-        if condition["node"] in learned_missing_nodes or missing == "error":
-            return False
-        return branch in ("right", "default")
-    if features[index]["dtype"] == "bool":
-        value = normalize_bool(value)
-        if numeric:
-            numeric_value = float(value)
-    if numeric and numeric_value is not None and float32_numeric:
-        try:
-            numeric_value = struct.unpack("<f", struct.pack("<f", numeric_value))[0]
-        except OverflowError as exc:
-            raise ValueError(f"XGBoost input {value!r} exceeds float32 range") from exc
-    if op == "<":
-        selected_left = numeric_value is not None and numeric_value < condition["value"]
-    elif op == "<=":
-        selected_left = (
-            numeric_value is not None and numeric_value <= condition["value"]
-        )
-    elif op == "=":
-        selected_left = str(value) == condition["value"]
-    elif op == "in":
-        selected_left = str(value) in condition["value"]
-        if branch == "case":
-            return selected_left
-    elif op == "not in":
-        return str(value) not in condition["value"]
-    else:
-        raise ValueError(f"unknown exported condition operation: {op!r}")
-    return selected_left if branch == "left" else not selected_left
 
 
 def _predict_path(model: Any, row: list[Any], missing: str) -> dict[str, Any]:
@@ -530,47 +445,24 @@ def _add_data_statistics(
         else None
     )
     records = [leaf for tree in export["trees"] for leaf in tree["leaves"]]
-    learned_missing_nodes = {
-        condition["node"]
-        for record in records
-        for condition in record["path"]
-        if condition["missing_direction"] is not None
-    }
-    candidates: dict[tuple[int, int], list[dict[str, Any]]] = {}
+    candidates: dict[tuple[int, str], dict[str, Any]] = {}
     for record in records:
         record["data_support"] = 0
         if targets is not None:
             record["data_class_counts"] = {}
             record["data_purity"] = None
-        candidates.setdefault((record["tree"], record["leaf"]), []).append(record)
+        candidates[(record["tree"], record["leaf"])] = record
 
     for row_index, source_row in enumerate(X):
         row = list(source_row)
         routed = _predict_path(model, row, missing)
         for tree_path in routed["trees"]:
-            matches = candidates.get((tree_path["tree"], tree_path["leaf"]), [])
-            if len(matches) > 1:
-                matches = [
-                    record
-                    for record in matches
-                    if all(
-                        _condition_matches(
-                            condition,
-                            row,
-                            export["features"],
-                            float32_numeric=export["numeric_input_float32"],
-                            missing=missing,
-                            learned_missing_nodes=learned_missing_nodes,
-                        )
-                        for condition in record["path"]
-                    )
-                ]
-            if len(matches) != 1:
+            record = candidates.get((tree_path["tree"], tree_path["leaf"]))
+            if record is None:
                 raise RuntimeError(
-                    "predict_path did not identify exactly one exported path for "
+                    "predict_path did not identify an exported path for "
                     f"tree {tree_path['tree']} leaf {tree_path['leaf']}"
                 )
-            record = matches[0]
             record["data_support"] += 1
             if targets is not None:
                 label = targets[row_index]

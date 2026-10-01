@@ -122,6 +122,11 @@ def _is_categorical_missing(value):
     return value is None or _is_self_unequal(value)
 
 
+def _switch_path_token(key):
+    """Encode one canonical switch key as an unambiguous path token."""
+    return f"C{len(key)}:{key}"
+
+
 def normalize_bool(value):
     """Normalize recognized boolean values exactly like cartlet.types."""
     try:
@@ -216,7 +221,7 @@ class Predictor:
         return predict(self._model, features, return_dist=return_dist, missing=missing)
 
     def predict_path(self, features, missing="error"):
-        """Predict and return the decisions and model-global leaf IDs."""
+        """Predict and return root-relative decision and leaf path IDs."""
         if self._model is None:
             raise ValueError("No model loaded")
         return predict_path(self._model, features, missing=missing)
@@ -839,6 +844,7 @@ def _predict_tree_path_recursive(
     path=None,
 ):
     """Core tree traversal logic."""
+    path_id = ""
     for _ in range(MAX_TREE_DEPTH):
         # Check if leaf (high bit set)
         if idx & LEAF_FLAG:
@@ -851,24 +857,24 @@ def _predict_tree_path_recursive(
                     raise RuntimeError(f"Invalid string index in leaf: {val}")
                 label = strings[val]
                 result = {label: 1.0} if return_dist else label
-                return (result, leaf_idx) if path is not None else result
+                return (result, path_id) if path is not None else result
             elif leaf_type == LEAF_CLASS_DIST:
                 if val >= len(distributions):
                     raise RuntimeError(f"Invalid distribution index in leaf: {val}")
                 dist_data = distributions[val]
                 if return_dist:
                     result = {strings[ci]: prob for ci, prob in dist_data}
-                    return (result, leaf_idx) if path is not None else result
+                    return (result, path_id) if path is not None else result
                 else:
                     if not dist_data or dist_data[0][0] >= len(strings):
                         raise RuntimeError("Invalid class index in distribution")
                     result = strings[dist_data[0][0]]
-                    return (result, leaf_idx) if path is not None else result
+                    return (result, path_id) if path is not None else result
             else:  # LEAF_FLOAT
                 if val >= len(floats):
                     raise RuntimeError(f"Invalid float index in leaf: {val}")
                 result = floats[val]
-                return (result, leaf_idx) if path is not None else result
+                return (result, path_id) if path is not None else result
 
         # Decision node
         if idx >= len(decisions):
@@ -903,7 +909,7 @@ def _predict_tree_path_recursive(
             feature_name = features[feat].get("name", str(feat))
             raise MissingFeatureError(
                 f"feature {feat} ({feature_name!r}) is missing at "
-                f"tree {tree_idx} node {idx}"
+                f"tree {tree_idx} node {path_id}"
             )
         if not is_missing and bool_features[feat]:
             feat_val = normalize_bool(feat_val)
@@ -940,7 +946,7 @@ def _predict_tree_path_recursive(
             branch = "left" if go_left else "right"
             if path is not None:
                 step = {
-                    "node": idx,
+                    "node": path_id,
                     "feature": feat,
                     "name": features[feat].get("name", str(feat)),
                     "op": "<" if op == OP_LT else "<=",
@@ -950,6 +956,7 @@ def _predict_tree_path_recursive(
                 if learned_missing:
                     step["missing"] = True
                 path.append(step)
+            path_id += "L" if go_left else "R"
             idx = left if go_left else right
         elif op == OP_EQ:
             is_category_set = bool(missing_flags & CATEGORY_SET)
@@ -979,7 +986,7 @@ def _predict_tree_path_recursive(
             branch = "left" if go_left else "right"
             if path is not None:
                 step = {
-                    "node": idx,
+                    "node": path_id,
                     "feature": feat,
                     "name": features[feat].get("name", str(feat)),
                     "op": "in" if is_category_set else "=",
@@ -989,6 +996,7 @@ def _predict_tree_path_recursive(
                 if learned_missing:
                     step["missing"] = True
                 path.append(step)
+            path_id += "L" if go_left else "R"
             idx = left if go_left else right
         elif op == OP_SWITCH:
             if val >= len(case_tables):
@@ -996,17 +1004,20 @@ def _predict_tree_path_recursive(
             table = case_tables[val]
             next_idx = table["default"]
             branch = "default"
+            case_key = None
             if learned_missing and missing_direction == MISSING_LEFT:
-                next_idx = table["cases"][0][1]
+                case_value_index, next_idx = table["cases"][0]
+                case_key = strings[cat_vals[case_value_index]]
                 branch = "case"
             elif not is_missing:
                 key = str(feat_val)
                 if key in table["lookup"]:
                     next_idx = table["lookup"][key]
+                    case_key = key
                     branch = "case"
             if path is not None:
                 step = {
-                    "node": idx,
+                    "node": path_id,
                     "feature": feat,
                     "name": features[feat].get("name", str(feat)),
                     "op": "switch",
@@ -1016,6 +1027,7 @@ def _predict_tree_path_recursive(
                 if learned_missing:
                     step["missing"] = True
                 path.append(step)
+            path_id += "D" if case_key is None else _switch_path_token(case_key)
             idx = next_idx
 
     raise RuntimeError("Max tree depth exceeded (possible corrupted model)")
@@ -1047,7 +1059,7 @@ def _tree_path(model, row, tree_idx, missing):
 
 
 def predict_path(model, row, missing="error"):
-    """Predict and return the model-global leaf ID and decisions evaluated."""
+    """Predict and return root-relative decision and leaf path IDs."""
     _check_missing_policy(missing)
     n_trees = model.get("n_trees", len(model["tree_offsets"]))
     evaluated = [_tree_path(model, row, i, missing) for i in range(n_trees)]

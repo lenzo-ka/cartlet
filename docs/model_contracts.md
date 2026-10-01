@@ -31,8 +31,8 @@ descriptors round-trip through JSON and binary tree rebuilds. A hand-authored
 switch written directly to `.cart` may carry a descriptor; see
 [decision flags](cart_format.md#decision-flags) for its routing.
 
-Decision and leaf attribution uses the existing decision and leaf array indexes;
-adding `predict_path` does not change the binary format. See
+Decision and leaf attribution uses root-relative path IDs; the internal
+decision and leaf array indexes and binary format are unchanged. See
 [stable node IDs](cart_format.md#stable-node-ids).
 
 A failed load leaves the existing model usable. A successful load replaces its
@@ -122,10 +122,11 @@ It does not apply training-data validation. See
 
 ## Leaf statistics and path exports
 
-`leaf_paths` exports complete routes rather than treating leaf IDs as unique
-records. Its top-level feature schema controls categorical, bool, and numeric
-interpretation; XGBoost-derived exports explicitly require float32 input
-conversion for numeric comparisons.
+`leaf_paths` exports complete routes with a unique path-based leaf ID for each
+record, including routes that share the same underlying child. Its top-level
+feature schema controls categorical, bool, and numeric interpretation;
+XGBoost-derived exports explicitly require float32 input conversion for
+numeric comparisons.
 
 Regression leaf `support` is effective training weight. Nested and JSON models
 retain it, while `.cart` keeps only the regression prediction and therefore

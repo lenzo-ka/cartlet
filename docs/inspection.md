@@ -117,24 +117,25 @@ float32 before comparing them with an exported threshold.
 
 Each leaf record contains:
 
-- `tree`, the tree index, and `leaf`, the model-global ID used by
-  `predict_path`;
+- `tree`, the integer tree position, and `leaf`, the root-relative path ID used
+  by `predict_path`;
 - `path`, the ordered conditions for one complete route;
 - `prediction` and, for ordinary classification leaves, `predicted_class`;
 - `class_distribution`, `class_counts`, `support`, and `purity` when the model
   representation actually retains them.
 
-Paths, not leaf IDs, are the unit of export. A nested or loader-admitted flat
-structure can route different branches to the same leaf ID, in which case the
-export contains multiple path records carrying that ID. Binary conditions
-retain their split operator and identify the selected `left` or `right` branch.
-Switch values reaching one
-child are one sorted `in` condition; the default route is `not in` with all
+Every exported root-to-leaf route has a unique `leaf` path ID, even when a
+nested or loader-admitted flat structure shares the same child object or array
+entry. Each condition's `node` is the same path prefix reported by
+`predict_path`. Binary conditions retain their split operator and identify the
+selected `left` or `right` branch. Each reachable switch case is a separate
+single-value `in` condition, while the default route is `not in` with all
 reachable case values. Switches are first-match-wins, so a later duplicate case
 value is unreachable and omitted. A split's learned `missing_direction` appears
 only on the condition that accepts a missing value; all other conditions for
-that split report `null`. For a switch, `"left"` marks the condition containing
-the first stored case and `"right"` marks the default condition.
+that split report `null`. For a switch, `"left"` marks the first stored case and
+`"right"` marks the default condition. The path-ID encoding is documented in
+[Decision paths](runners.md#decision-paths).
 
 For classification, a stored distribution supplies `class_distribution` and
 its winning probability supplies model-stored `purity`. A collapsed label does

@@ -203,14 +203,22 @@ per-decision learned missing directions.
 `predict_path(model, vector, *, missing="error")` and
 `Predictor.predict_path(vector, *, missing="error")` return the ordinary
 prediction plus one path record per evaluated tree. Decision and leaf IDs are
-the model-global `.cart` array indexes documented in
-[the binary format](cart_format.md#stable-node-ids). Training-side
-`DecisionTree` and `RandomForest` expose the same result. For XGBoost, use one
-of the `.cart` runners for path attribution. A step's predicate `value` is the
-writer-canonical value: numeric thresholds are floats, equality values are
-strings, and bool-dtype equality values are normalized to `"0"` or `"1"`.
-When a learned missing direction was used, that step alone also contains
-`"missing": true`. Node IDs are unchanged.
+root-relative path strings, identical for nested models, `Predictor`, the
+module-level runner, and the standalone runner. The root decision has ID `""`.
+Binary branches append `L` or `R`; a switch default appends `D`; and a matched
+switch case appends `C`, the canonical key length, `:`, and the canonical key.
+For example, left-right is `"LR"`, the switch key `"red"` is `"C3:red"`, and a
+right branch after that case is `"C3:redR"`. Length-prefixing makes arbitrary
+case strings unambiguous. Each decision step's `node` is the prefix before its
+selected branch, and `leaf` is the complete path. `tree` remains the integer
+tree position.
+
+Training-side `DecisionTree` and `RandomForest` expose the same result. For
+XGBoost, use one of the `.cart` runners for path attribution. A step's
+predicate `value` is the writer-canonical value: numeric thresholds are floats,
+equality values are strings, and bool-dtype equality values are normalized to
+`"0"` or `"1"`. When a learned missing direction was used, that step alone also
+contains `"missing": true`.
 
 ## Lazy feature access
 

@@ -7,6 +7,15 @@ requires it.
 
 ## Unreleased
 
+### Breaking changes
+
+- Change `predict_path` decision and leaf IDs from the model-global `.cart`
+  array indexes introduced in 0.7.0 to root-relative path strings. Binary
+  branches use `L`/`R`, switch defaults use `D`, and switch cases use a
+  length-prefixed canonical key such as `C3:red`. The `.cart` format is
+  unchanged. Migrate by rerunning `predict_path` or `leaf_paths` and replacing
+  stored `(tree, integer ID)` references with `(tree, path ID)` references.
+
 ### Added
 
 - Add held-out `permutation_importance` for decision trees and random forests,
@@ -17,8 +26,9 @@ requires it.
 - Add `leaf_paths` and `decisive_leaves` with schema-complete structural paths,
   retained model leaf statistics, optional empirical support/class counts/purity,
   and CLI export/filtering.
-- Export bool and XGBoost float32 routing semantics with every path set, group
-  switch cases by destination, and omit unreachable later duplicate case values.
+- Export bool and XGBoost float32 routing semantics with every path set, keep
+  switch cases as distinct routes, and omit unreachable later duplicate case
+  values.
 
 ## 0.7.0 — 2026-09-29
 

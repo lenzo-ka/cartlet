@@ -324,14 +324,14 @@ model = load_model("model.cart")
 result = predict(model, [1, 2, 3])
 results = predict_batch(model, [[1, 2, 3], [4, 5, 6]])
 dist = predict(model, [1, 2, 3], return_dist=True)  # {label: probability}
-path = predict_path(model, [1, 2, 3])  # prediction plus decision/leaf IDs
+path = predict_path(model, [1, 2, 3])  # prediction plus path-based IDs
 predict(model, [None, 2, 3], missing="right")  # default missing="error"
 ```
 
 `return_dist=True` returns a class-probability dict for every classification
 prediction; a leaf without a stored distribution reports its class with
-probability 1.0. `predict_path` records each evaluated decision and leaf by its
-stable `.cart` node ID. Missing values raise `MissingFeatureError` by default;
+probability 1.0. `predict_path` identifies each evaluated decision and leaf by
+its root-relative branch path. Missing values raise `MissingFeatureError` by default;
 see [Standalone deployment](https://github.com/lenzo-ka/cartlet/blob/main/docs/runners.md#missing-values).
 
 For an object-oriented entry point:

@@ -301,7 +301,7 @@ def test_retraining_cart_model_restores_regression_leaf_support(kind, tmp_path):
     assert leaves[0]["support"] == 2.0
 
 
-def test_switch_paths_group_nested_identity_and_flat_child_index(tmp_path):
+def test_switch_paths_are_unique_for_nested_and_flat_shared_children(tmp_path):
     model = DecisionTree(features=[{"name": "kind", "dtype": "str", "type": "cat"}])
     shared = {"yes": 1.0}
     model.model = [
@@ -311,14 +311,14 @@ def test_switch_paths_group_nested_identity_and_flat_child_index(tmp_path):
         shared,
     ]
     direct = leaf_paths(model)["trees"][0]["leaves"]
-    assert len(direct) == 2
-    assert direct[0]["leaf"] == direct[1]["leaf"]
-    assert direct[1]["path"][0]["value"] == ["a", "b"]
+    assert [leaf["leaf"] for leaf in direct] == ["D", "C1:a", "C1:b"]
+    assert direct[1]["path"][0]["value"] == ["a"]
+    assert direct[2]["path"][0]["value"] == ["b"]
 
     # The writer deliberately expands identity-equal children and rejects
     # duplicate canonical keys. Build an ordinary artifact, then admit the two
     # flat-table cases the loader supports: shared child indexes and a later
-    # duplicate key. Inspection must group by child index and keep first match.
+    # duplicate key. Inspection must preserve routes and keep first match.
     model.model = [
         "kind",
         "switch",
@@ -338,14 +338,14 @@ def test_switch_paths_group_nested_identity_and_flat_child_index(tmp_path):
     table["lookup"] = {"a": first_case[1], "b": first_case[1]}
     export = leaf_paths(data)
     leaves = export["trees"][0]["leaves"]
-    assert len(leaves) == 2
-    assert leaves[0]["leaf"] != leaves[1]["leaf"]
+    assert [leaf["leaf"] for leaf in leaves] == ["D", "C1:a", "C1:b"]
     assert leaves[0]["path"][0]["op"] == "not in"
     assert leaves[0]["path"][0]["value"] == ["a", "b"]
     assert leaves[1]["path"][0]["op"] == "in"
-    assert leaves[1]["path"][0]["value"] == ["a", "b"]
+    assert leaves[1]["path"][0]["value"] == ["a"]
+    assert leaves[2]["path"][0]["value"] == ["b"]
     assert predict_path(data, ["a"])["trees"][0]["leaf"] == leaves[1]["leaf"]
-    assert predict_path(data, ["b"])["trees"][0]["leaf"] == leaves[1]["leaf"]
+    assert predict_path(data, ["b"])["trees"][0]["leaf"] == leaves[2]["leaf"]
     assert predict_path(data, ["z"])["trees"][0]["leaf"] == leaves[0]["leaf"]
 
 

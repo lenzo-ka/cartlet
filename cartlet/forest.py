@@ -32,11 +32,9 @@ from .types import (
     TYPE_NUM,
 )
 from .utils import (
-    build_tree_indices,
     collapse_distributions,
     eval_tree,
     eval_tree_path,
-    tree_index_cache_key,
 )
 from .validation import (
     MODEL_SCHEMA_VERSION,
@@ -146,10 +144,6 @@ class RandomForest(BaseModel):
         # Trained trees
         self._trees: list[DecisionTree] = []
         self._inbag_indices: dict[DecisionTree, list[int]] | None = None
-        self._path_indices_key: tuple[tuple[Any, ...], ...] | None = None
-        self._path_indices: (
-            list[tuple[dict[tuple[Any, ...], int], dict[tuple[Any, ...], int]]] | None
-        ) = None
 
     @property
     def trees(self) -> list[DecisionTree]:
@@ -160,19 +154,6 @@ class RandomForest(BaseModel):
     def trees(self, value: list[DecisionTree]) -> None:
         self._trees = value
         self._inbag_indices = None
-        self._path_indices_key = None
-        self._path_indices = None
-
-    def _tree_indices(
-        self,
-    ) -> list[tuple[dict[tuple[Any, ...], int], dict[tuple[Any, ...], int]]]:
-        """Return cached writer-order node IDs for every current tree."""
-        roots = [tree.model for tree in self.trees]
-        key = tuple(tree_index_cache_key(root) for root in roots)
-        if self._path_indices is None or self._path_indices_key != key:
-            self._path_indices = build_tree_indices(roots)
-            self._path_indices_key = key
-        return self._path_indices
 
     def load_data(
         self,
@@ -645,7 +626,6 @@ class RandomForest(BaseModel):
                 raise ValueError(f"OOV values for features: {oov_features}")
         else:
             normalized = vector
-        models = [tree.model for tree in self.trees]
         predictions = [
             eval_tree(
                 tree.model,
@@ -654,7 +634,6 @@ class RandomForest(BaseModel):
                 missing=missing,
                 tree_idx=tree_idx,
                 feature_specs=tree.feature_specs,
-                id_trees=models,
             )
             for tree_idx, tree in enumerate(self.trees)
         ]
@@ -679,7 +658,6 @@ class RandomForest(BaseModel):
         if self._is_regression():
             raise ValueError("predict_proba not available for regression")
 
-        models = [tree.model for tree in self.trees]
         predictions = [
             eval_tree(
                 tree.model,
@@ -688,7 +666,6 @@ class RandomForest(BaseModel):
                 missing=missing,
                 tree_idx=tree_idx,
                 feature_specs=tree.feature_specs,
-                id_trees=models,
             )
             for tree_idx, tree in enumerate(self.trees)
         ]
@@ -699,12 +676,11 @@ class RandomForest(BaseModel):
     def predict_path(
         self, vector: list[Any], *, missing: str = "error"
     ) -> dict[str, Any]:
-        """Predict and return each tree's decisions and model-global leaf ID."""
+        """Predict and return each tree's root-relative decision path."""
         if not self.trees:
             raise ValueError("Forest not trained. Call train() first.")
         values = []
         paths = []
-        indices = self._tree_indices()
         for tree_idx, tree in enumerate(self.trees):
             prediction, leaf, path = eval_tree_path(
                 tree.model,
@@ -713,7 +689,6 @@ class RandomForest(BaseModel):
                 missing=missing,
                 tree_idx=tree_idx,
                 feature_specs=tree.feature_specs,
-                indices=indices[tree_idx],
             )
             values.append(prediction)
             paths.append({"tree": tree_idx, "leaf": leaf, "path": path})

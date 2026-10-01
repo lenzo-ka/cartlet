@@ -9,9 +9,8 @@ import pytest
 
 from cartlet import DecisionTree, MissingFeatureError, RandomForest
 from cartlet.io.bytes import write_forest_bytes, write_tree_bytes
-from cartlet.runner import INDEX_MASK, LEAF_FLAG, Predictor, load_model
+from cartlet.runner import Predictor
 from cartlet.types import FeatureSpec
-from cartlet.utils import build_tree_indices
 
 
 def _bundled():
@@ -25,7 +24,7 @@ def _bundled():
 
 def _assert_steps(result, row, switch_cases=None, *, xgboost=False):
     for tree in result["trees"]:
-        assert isinstance(tree["leaf"], int)
+        assert isinstance(tree["leaf"], str)
         for step in tree["path"]:
             value = row[step["feature"]]
             if step["op"] == "<=":
@@ -196,14 +195,14 @@ def test_tree_in_place_subtree_edit_refreshes_prediction_and_path_ids(tmp_path):
     model.load_data([[0.0], [2.0]], ["a", "b"])
     model.model = ["x", "<=", 1.0, "a", "b"]
 
-    # Prime both former cache users, then replace the left leaf in place. The
-    # edit is on the 0.5 path and off the 2.0 path, whose leaf ID still shifts.
+    # Predict, then replace the left leaf in place. The edit is on the 0.5 path
+    # and off the 2.0 path, whose path-based leaf ID remains unchanged.
     assert model.predict([0.5]) == "a"
-    assert model.predict_path([2.0])["trees"][0]["leaf"] == 1
+    assert model.predict_path([2.0])["trees"][0]["leaf"] == "R"
     model.model[3] = ["x", "<=", 0.0, "c", "d"]
 
     assert model.predict([0.5]) == "d"
-    assert model.predict_path([2.0])["trees"][0]["leaf"] == 2
+    assert model.predict_path([2.0])["trees"][0]["leaf"] == "R"
     _assert_edited_cart_parity(
         model, [[-0.5], [0.5], [2.0]], tmp_path, "edited-tree.cart"
     )
@@ -223,10 +222,10 @@ def test_deep_unvisited_branch_does_not_recurse_for_path_or_missing_error():
     assert result["trees"] == [
         {
             "tree": 0,
-            "leaf": depth,
+            "leaf": "R",
             "path": [
                 {
-                    "node": 0,
+                    "node": "",
                     "feature": 0,
                     "name": "x",
                     "op": "<=",
@@ -236,12 +235,9 @@ def test_deep_unvisited_branch_does_not_recurse_for_path_or_missing_error():
             ],
         }
     ]
-    decisions, leaves = build_tree_indices([root])[0]
-    assert decisions[()] == 0
-    assert leaves[(1,)] == depth
     with pytest.raises(
         MissingFeatureError,
-        match=r"feature 0 \('x'\) is missing at tree 0 node 0",
+        match=r"feature 0 \('x'\) is missing at tree 0 node $",
     ):
         model.predict([None])
 
@@ -258,45 +254,17 @@ def test_forest_in_place_member_edit_refreshes_prediction_and_path_ids(tmp_path)
 
     assert model.predict([0.5]) == "a"
     primed = model.predict_path([2.0])
-    assert [tree["leaf"] for tree in primed["trees"]] == [1, 3]
+    assert [tree["leaf"] for tree in primed["trees"]] == ["R", "R"]
     first.model[3] = ["x", "<=", 0.0, "c", "d"]
 
     assert model.predict([0.5]) == "d"
-    assert [tree["leaf"] for tree in model.predict_path([2.0])["trees"]] == [2, 4]
+    assert [tree["leaf"] for tree in model.predict_path([2.0])["trees"]] == [
+        "R",
+        "R",
+    ]
     _assert_edited_cart_parity(
         model, [[-0.5], [0.5], [2.0]], tmp_path, "edited-forest.cart"
     )
-
-
-def test_predict_path_reuses_leaf_id_indices(monkeypatch):
-    import cartlet.utils as utils
-
-    rows = [[float(index)] for index in range(32)]
-    model = RandomForest(
-        n_estimators=5,
-        max_features=None,
-        bootstrap=False,
-        task="regression",
-        feature_names=["x"],
-        max_depth=5,
-    )
-    model.load_data(rows, [row[0] for row in rows])
-    model.train(random_state=7)
-
-    calls = 0
-    original = utils.tree_array_size
-
-    def counted(root):
-        nonlocal calls
-        calls += 1
-        return original(root)
-
-    monkeypatch.setattr(utils, "tree_array_size", counted)
-    model.predict_path([7.5])
-    after_first = calls
-    for value in (0.5, 15.5, 31.0, 7.5):
-        model.predict_path([value])
-    assert calls == after_first
 
 
 def test_regression_forest_path_prediction_matches_predict(tmp_path):
@@ -604,7 +572,7 @@ def test_xgboost_learned_missing_route_overrides_runner_policy(tmp_path):
         )
 
 
-def test_nested_switch_path_uses_case_table_and_leaf_array_oracle(tmp_path):
+def test_nested_switch_path_uses_canonical_case_keys(tmp_path):
     tree = [
         "color",
         "switch",
@@ -628,41 +596,20 @@ def test_nested_switch_path_uses_case_table_and_leaf_array_oracle(tmp_path):
         ["red-round", "red-other", "blue", "small-default", "large-default"],
         False,
     )
-    loaded = load_model(str(path))
     predictor = Predictor(str(path))
     bundled = _bundled()
     standalone = bundled.Predictor(str(path))
 
-    root = loaded["decisions"][loaded["tree_offsets"][0]]
-    table = loaded["case_tables"][root[3]]
-    red_child = table["lookup"]["red"]
-    blue_child = table["lookup"]["blue"]
-    default_child = table["default"]
-    assert loaded["tree_offsets"][0] == 0
-    assert default_child == 1
-    assert red_child == 2
-
-    def leaf_from_child(child, take_left):
-        decision = loaded["decisions"][child]
-        encoded = decision[4] if take_left else decision[5]
-        assert encoded & LEAF_FLAG
-        return encoded & INDEX_MASK
-
-    # Writer preorder: root decision; default decision and leaves 0/1; red
-    # decision and leaves 2/3; blue leaf 4.
-    assert blue_child & LEAF_FLAG
-    blue_leaf = blue_child & INDEX_MASK
     cases = [
-        (["red", "round", 9.0], "case", leaf_from_child(red_child, True), 2),
-        (["blue", "square", 9.0], "case", blue_leaf, 4),
-        (["green", "square", 1.0], "default", leaf_from_child(default_child, True), 0),
+        (["red", "round", 9.0], "case", "C3:redL"),
+        (["blue", "square", 9.0], "case", "C4:blue"),
+        (["green", "square", 1.0], "default", "DL"),
     ]
-    for row, branch, oracle_leaf, handwritten_leaf in cases:
-        assert oracle_leaf == handwritten_leaf
+    for row, branch, expected_leaf in cases:
         for result in (predictor.predict_path(row), standalone.predict_path(row)):
-            _assert_steps(result, row, {0: {"red", "blue"}})
+            _assert_steps(result, row, {"": {"red", "blue"}})
             assert result["trees"][0]["path"][0]["branch"] == branch
-            assert result["trees"][0]["leaf"] == oracle_leaf
+            assert result["trees"][0]["leaf"] == expected_leaf
 
     for missing_value in (None, float("nan")):
         row = [missing_value, "square", 1.0]
@@ -679,9 +626,63 @@ def test_nested_switch_path_uses_case_table_and_leaf_array_oracle(tmp_path):
             standalone.predict_path(row, missing="right"),
         ):
             assert result["trees"][0]["path"][0]["branch"] == "default"
-            assert result["trees"][0]["leaf"] == 0
+            assert result["trees"][0]["leaf"] == "DL"
         assert predictor.predict(row, missing="right") == "small-default"
         assert standalone.predict(row, missing="right") == "small-default"
+
+
+def test_switch_path_ids_escape_arbitrary_canonical_keys(tmp_path):
+    keys = ["", "a:b", '"q"', "C1:xR", "snowman-☃"]
+    cases = [(key, ["size", "<=", 0.0, f"{key}-left", f"{key}-right"]) for key in keys]
+    model = DecisionTree(
+        features=[
+            {"name": "kind", "dtype": "str", "type": "cat"},
+            {"name": "size", "dtype": "float", "type": "num"},
+        ]
+    )
+    model.model = ["kind", "switch", cases, "default"]
+    path = tmp_path / "arbitrary-switch-keys.cart"
+    model.export(str(path))
+    implementations = [
+        model.predict_path,
+        Predictor(str(path)).predict_path,
+        _bundled().Predictor(str(path)).predict_path,
+    ]
+
+    for key in keys:
+        token = f"C{len(key)}:{key}"
+        expected = {
+            "prediction": f"{key}-left",
+            "trees": [
+                {
+                    "tree": 0,
+                    "leaf": token + "L",
+                    "path": [
+                        {
+                            "node": "",
+                            "feature": 0,
+                            "name": "kind",
+                            "op": "switch",
+                            "value": None,
+                            "branch": "case",
+                        },
+                        {
+                            "node": token,
+                            "feature": 1,
+                            "name": "size",
+                            "op": "<=",
+                            "value": 0.0,
+                            "branch": "left",
+                        },
+                    ],
+                }
+            ],
+        }
+        assert [predict([key, -1.0]) for predict in implementations] == [
+            expected,
+            expected,
+            expected,
+        ]
 
 
 def test_writer_rejects_duplicate_canonical_bool_switch_keys(tmp_path):
