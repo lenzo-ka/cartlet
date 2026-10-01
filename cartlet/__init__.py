@@ -23,9 +23,11 @@ from .evaluation import (
     evaluate_predictions,
     evaluate_tree,
     per_class_metrics,
+    permutation_importance,
     regression_metrics,
 )
 from .forest import RandomForest
+from .inspection import decisive_leaves, leaf_paths
 from .io.bytes import bundle
 from .io.utils import resolve_format
 from .isolation import IsolationForest
@@ -208,7 +210,11 @@ __all__ = [
     "evaluate_predictions",
     "evaluate_tree",
     "per_class_metrics",
+    "permutation_importance",
     "regression_metrics",
+    # Inspection
+    "decisive_leaves",
+    "leaf_paths",
     # Tree utilities
     "count_leaves",
     "count_nodes",

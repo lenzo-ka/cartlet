@@ -5,6 +5,31 @@ formats incompatibly. Keep the package and standalone runner used to export and
 load a model on the same release; retrain or re-export models when a release
 requires it.
 
+## Unreleased
+
+### Breaking changes
+
+- Change `predict_path` decision and leaf IDs from the model-global `.cart`
+  array indexes introduced in 0.7.0 to root-relative path strings. Binary
+  branches use `L`/`R`, switch defaults use `D`, and switch cases use a
+  length-prefixed canonical key such as `C3:red`. The `.cart` format is
+  unchanged. Migrate by rerunning `predict_path` or `leaf_paths` and replacing
+  stored `(tree, integer ID)` references with `(tree, path ID)` references.
+
+### Added
+
+- Add held-out `permutation_importance` for decision trees and random forests,
+  including jointly shuffled feature groups, deterministic integer seeds,
+  classification label canonicalization, and CLI JSON/TSV output.
+- Add Breiman OOB permutation importance to bootstrap-trained random forests,
+  retaining per-tree in-bag row indexes only for the current process.
+- Add `leaf_paths` and `decisive_leaves` with schema-complete structural paths,
+  retained model leaf statistics, optional empirical support/class counts/purity,
+  and CLI export/filtering.
+- Export bool and XGBoost float32 routing semantics with every path set, keep
+  switch cases as distinct routes, and omit unreachable later duplicate case
+  values.
+
 ## 0.7.0 — 2026-09-29
 
 ### Breaking changes

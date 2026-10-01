@@ -442,6 +442,7 @@ class DecisionTree(BaseModel):
             train_rows,
             val_rows if do_prune else None,
         )
+        self._leaf_statistics_available = True
         self.training_summary = {
             "training_samples": len(train_rows),
             "validation_samples": len(val_rows),
@@ -584,7 +585,7 @@ class DecisionTree(BaseModel):
     def predict_path(
         self, vector: list[Any], *, missing: str = "error"
     ) -> dict[str, Any]:
-        """Predict and return the decisions and model-global leaf ID."""
+        """Predict and return decisions with root-relative path IDs."""
         if self.model is None:
             raise ValueError("Model not trained. Call train() first.")
         prediction, leaf, path = eval_tree_path(
@@ -803,6 +804,7 @@ class DecisionTree(BaseModel):
 
         self._apply_config_from_cart(model_data)
         self.model = self._rebuild_tree_from_cart(model_data)
+        self._leaf_statistics_available = False
 
         return {
             "features": model_data["meta"]["features"],

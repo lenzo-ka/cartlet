@@ -234,9 +234,14 @@ val: varint                     # Index into appropriate pool
 
 ### Stable node IDs
 
-The decision-array index and leaf-array index are the public IDs returned by
-`predict_path`. They are model-global and stable across supported save/load
-formats. The writer numbers trees in tree order. Within each nested tree it
+Decision-array and leaf-array indexes are internal references in the `.cart`
+format. The format and writer numbering are unchanged, but `predict_path` and
+leaf inspection do not expose these indexes. They report root-relative path
+IDs instead: binary branches contribute `L` or `R`, switch defaults contribute
+`D`, and matched switch cases contribute a length-prefixed canonical key such
+as `C3:red`. See [Decision paths](runners.md#decision-paths).
+
+The writer still numbers trees in tree order. Within each nested tree it
 reserves each decision in preorder, visits the left subtree before the right
 subtree, and, for a switch, visits the default subtree before case subtrees in
 stored order. Every leaf node appends one leaf-array entry in that traversal;

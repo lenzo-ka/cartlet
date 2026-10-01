@@ -33,8 +33,18 @@ except ImportError:
     _YAML_AVAILABLE = False
 
 from . import __version__, convert
-from .evaluation import evaluate_predictions, per_class_metrics, regression_metrics
-from .io import detect_delimiter, detect_format, load_training_data, resolve_format
+from .analysis_cli import cmd_importance, cmd_leaves
+from .evaluation import (
+    evaluate_predictions,
+    per_class_metrics,
+    regression_metrics,
+)
+from .io import (
+    detect_delimiter,
+    detect_format,
+    load_training_data,
+    resolve_format,
+)
 from .io.bytes import bundle
 from .io.cart_format import VERSION
 from .runner import load_model, predict_batch
@@ -1325,6 +1335,103 @@ Examples:
         "-v", "--verbose", action="store_true", help="Show per-class metrics"
     )
     eval_parser.set_defaults(func=cmd_evaluate)
+
+    importance_parser = subparsers.add_parser(
+        "importance",
+        help="Measure held-out permutation importance",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  cartlet importance model.cart test.csv --target label
+  cartlet importance model.cart test.tsv --groups '{"location":["x","y"]}'
+  cartlet importance model.cart test.jsonl --repeats 10 --random-seed 7 -f tsv
+""",
+    )
+    importance_parser.add_argument("model", help="Model file (.cart)")
+    importance_parser.add_argument("data", help="Held-out data (CSV/TSV/JSONL)")
+    _add_tabular_input_args(importance_parser, delimiter_help="Column delimiter")
+    importance_parser.add_argument(
+        "--groups",
+        metavar="JSON|FILE",
+        help="Feature groups as a JSON object or path to a JSON file",
+    )
+    importance_parser.add_argument(
+        "--repeats",
+        type=int,
+        default=5,
+        metavar="N",
+        help="Permutations per feature or group (default: 5)",
+    )
+    importance_parser.add_argument(
+        "--random-seed",
+        type=int,
+        metavar="SEED",
+        help="Integer random seed (default: nondeterministic)",
+    )
+    importance_parser.add_argument(
+        "--missing",
+        choices=["error", "right"],
+        default="error",
+        help="Missing-feature policy (default: error)",
+    )
+    importance_parser.add_argument(
+        "-f",
+        "--format",
+        choices=["json", "tsv"],
+        default="json",
+        help="Output format (default: json)",
+    )
+    importance_parser.add_argument(
+        "-o", "--output", metavar="FILE", help="Output file (default: stdout)"
+    )
+    importance_parser.set_defaults(func=cmd_importance)
+
+    leaves_parser = subparsers.add_parser(
+        "leaves",
+        help="Export root-to-leaf decision paths",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  cartlet leaves model.cart
+  cartlet leaves model.cart --class approved --min-purity 0.95
+  cartlet leaves model.cart --data heldout.csv --target label --class approved
+""",
+    )
+    leaves_parser.add_argument("model", help="Model file (.cart)")
+    leaves_parser.add_argument(
+        "--data", metavar="FILE", help="Optional CSV/TSV/JSONL routing data"
+    )
+    _add_tabular_input_args(
+        leaves_parser,
+        target_help="Optional target column (requires --data)",
+        delimiter_help="Data column delimiter",
+    )
+    leaves_parser.add_argument(
+        "--class", dest="class_label", metavar="LABEL", help="Predicted class to keep"
+    )
+    leaves_parser.add_argument(
+        "--min-support", type=float, metavar="N", help="Inclusive support threshold"
+    )
+    leaves_parser.add_argument(
+        "--min-purity", type=float, metavar="FRAC", help="Inclusive purity threshold"
+    )
+    leaves_parser.add_argument(
+        "--missing",
+        choices=["error", "right"],
+        default="error",
+        help="Missing-feature policy for --data routing (default: error)",
+    )
+    leaves_parser.add_argument(
+        "-f",
+        "--format",
+        choices=["json", "tsv"],
+        default="json",
+        help="Output format (default: json)",
+    )
+    leaves_parser.add_argument(
+        "-o", "--output", metavar="FILE", help="Output file (default: stdout)"
+    )
+    leaves_parser.set_defaults(func=cmd_leaves)
 
     # Stats command
     stats_parser = subparsers.add_parser(

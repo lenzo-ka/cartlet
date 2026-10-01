@@ -260,9 +260,6 @@ def eval_tree(
     missing: str = "error",
     tree_idx: int = 0,
     feature_specs: list[Any] | None = None,
-    indices: tuple[dict[tuple[Any, ...], int], dict[tuple[Any, ...], int]]
-    | None = None,
-    id_trees: list[Any] | None = None,
 ) -> Any:
     """
     Evaluate a nested tree structure (used by DecisionTree.predict).
@@ -290,9 +287,7 @@ def eval_tree(
         missing,
         tree_idx,
         feature_specs,
-        indices,
         False,
-        id_trees,
     )
     return result
 
@@ -305,9 +300,7 @@ def eval_tree_path(
     missing: str = "error",
     tree_idx: int = 0,
     feature_specs: list[Any] | None = None,
-    decision_offset: int = 0,
-    leaf_offset: int = 0,
-) -> tuple[Any, int, list[dict[str, Any]]]:
+) -> tuple[Any, str, list[dict[str, Any]]]:
     """Evaluate a nested tree and return its prediction, leaf ID, and path."""
     return _eval_tree(
         node,
@@ -317,10 +310,7 @@ def eval_tree_path(
         missing,
         tree_idx,
         feature_specs,
-        None,
         True,
-        decision_offset=decision_offset,
-        leaf_offset=leaf_offset,
     )
 
 
@@ -332,17 +322,12 @@ def _eval_tree(
     missing: str,
     tree_idx: int,
     feature_specs: list[Any] | None,
-    indices: tuple[dict[tuple[Any, ...], int], dict[tuple[Any, ...], int]]
-    | None = None,
     collect_path: bool = False,
-    id_trees: list[Any] | None = None,
-    decision_offset: int = 0,
-    leaf_offset: int = 0,
-) -> tuple[Any, int, list[dict[str, Any]]]:
+) -> tuple[Any, str, list[dict[str, Any]]]:
     if missing not in ("error", "right"):
         raise ValueError("missing must be 'error' or 'right'")
     current = node
-    address: tuple[Any, ...] = ()
+    path_id = ""
     path: list[dict[str, Any]] = []
     while is_decision_node(current) or is_switch_node(current):
         selector: Any
@@ -394,33 +379,10 @@ def _eval_tree(
             if op in ("<=", "<"):
                 numeric_value = float(feat_val)
 
-        decision_id = (
-            indices[0][address] if indices else decision_offset if collect_path else -1
-        )
+        decision_id = path_id
         used_learned_missing = is_missing and learned_missing is not None
         if is_missing and learned_missing is None and missing == "error":
             from .runner import MissingFeatureError
-
-            # Ordinary prediction deliberately carries no node-ID index. Build
-            # the current writer-order numbering only on this exceptional path
-            # so in-place model edits cannot affect prediction correctness or
-            # add tree-size work to successful predictions.
-            if indices is None:
-                error_decision_offset = 0
-                error_leaf_offset = 0
-                if id_trees is not None:
-                    for earlier_tree in id_trees[:tree_idx]:
-                        earlier_decisions, earlier_leaves = tree_array_size(
-                            earlier_tree
-                        )
-                        error_decision_offset += earlier_decisions
-                        error_leaf_offset += earlier_leaves
-                decision_id, _ = tree_node_id(
-                    node,
-                    address,
-                    decision_offset=error_decision_offset,
-                    leaf_offset=error_leaf_offset,
-                )
 
             raise MissingFeatureError(
                 f"feature {col} ({name!r}) is missing at "
@@ -438,7 +400,7 @@ def _eval_tree(
                 )
             branch = "left" if go_left else "right"
             selector = 0 if go_left else 1
-            next_address = address + (selector,)
+            path_token = "L" if go_left else "R"
         elif is_switch:
             items = list(cases.items()) if isinstance(cases, dict) else cases
             key = None if is_missing else str(feat_val)
@@ -449,22 +411,29 @@ def _eval_tree(
                         from .types import normalize_bool
 
                         case_value = normalize_bool(case_value)
-                    if key == str(case_value):
-                        selected = (case_idx, subtree)
+                    canonical_key = str(case_value)
+                    if key == canonical_key:
+                        selected = (case_idx, subtree, canonical_key)
                         break
             if used_learned_missing and learned_missing == "left":
                 branch = "case"
                 selector = ("case", 0)
-                selected = (0, items[0][1])
-                next_address = address + (selector,)
+                case_value = items[0][0]
+                if spec is not None and getattr(spec, "dtype", None) == "bool":
+                    from .types import normalize_bool
+
+                    case_value = normalize_bool(case_value)
+                canonical_key = str(case_value)
+                selected = (0, items[0][1], canonical_key)
+                path_token = switch_path_token(canonical_key)
             elif selected is None:
                 branch = "default"
                 selector = "default"
-                next_address = address + (selector,)
+                path_token = "D"
             else:
                 branch = "case"
                 selector = ("case", selected[0])
-                next_address = address + (selector,)
+                path_token = switch_path_token(selected[2])
         elif op == "in":
             predicates = value
             if spec is not None and getattr(spec, "dtype", None) == "bool":
@@ -479,7 +448,7 @@ def _eval_tree(
             )
             branch = "left" if go_left else "right"
             selector = 0 if go_left else 1
-            next_address = address + (selector,)
+            path_token = "L" if go_left else "R"
         else:
             predicate = value
             if spec is not None and getattr(spec, "dtype", None) == "bool":
@@ -493,7 +462,7 @@ def _eval_tree(
             )
             branch = "left" if go_left else "right"
             selector = 0 if go_left else 1
-            next_address = address + (selector,)
+            path_token = "L" if go_left else "R"
         if collect_path:
             path_value: str | float | list[str] | None
             if is_switch:
@@ -526,18 +495,11 @@ def _eval_tree(
             if used_learned_missing:
                 step["missing"] = True
             path.append(step)
-        if collect_path:
-            current, decision_offset, leaf_offset = _writer_child_offsets(
-                current,
-                selector,
-                decision_offset,
-                leaf_offset,
-            )
-        elif is_switch:
+        if is_switch:
             current = default if selector == "default" else selected[1]
         else:
             current = left if selector == 0 else right
-        address = next_address
+        path_id += path_token
 
     if isinstance(current, str):
         result: Any = {current: 1.0} if return_dist else current
@@ -547,114 +509,9 @@ def _eval_tree(
         result = current[0]
     else:
         raise ValueError(f"Unknown node type: {type(current)}")
-    leaf_id = indices[1][address] if indices else leaf_offset if collect_path else -1
-    return result, leaf_id, path
+    return result, path_id, path
 
 
-def tree_array_size(root: Any) -> tuple[int, int]:
-    """Return decision and leaf counts without using Python recursion."""
-    decision_count = 0
-    leaf_count = 0
-    stack = [root]
-    while stack:
-        current = stack.pop()
-        if is_decision_node(current):
-            decision_count += 1
-            stack.append(current[4])
-            stack.append(current[3])
-        elif is_switch_node(current):
-            decision_count += 1
-            cases = current[2]
-            items = list(cases.items()) if isinstance(cases, dict) else cases
-            for _, subtree in reversed(items):
-                stack.append(subtree)
-            stack.append(current[3])
-        else:
-            leaf_count += 1
-    return decision_count, leaf_count
-
-
-def _writer_child_offsets(
-    current: Any,
-    selector: Any,
-    decision_offset: int,
-    leaf_offset: int,
-) -> tuple[Any, int, int]:
-    """Return a child and its writer-order decision and leaf offsets."""
-    earlier: list[Any]
-    if is_decision_node(current):
-        if selector == 0:
-            child = current[3]
-            earlier = []
-        else:
-            child = current[4]
-            earlier = [current[3]]
-    else:
-        cases = current[2]
-        items = list(cases.items()) if isinstance(cases, dict) else cases
-        if selector == "default":
-            child = current[3]
-            earlier = []
-        else:
-            case_idx = selector[1]
-            child = items[case_idx][1]
-            earlier = [current[3], *(subtree for _, subtree in items[:case_idx])]
-
-    decision_offset += 1
-    for subtree in earlier:
-        decisions, leaves = tree_array_size(subtree)
-        decision_offset += decisions
-        leaf_offset += leaves
-    return child, decision_offset, leaf_offset
-
-
-def tree_node_id(
-    root: Any,
-    address: tuple[Any, ...],
-    *,
-    decision_offset: int = 0,
-    leaf_offset: int = 0,
-) -> tuple[int, bool]:
-    """Return the writer-order ID at an address and whether it is a leaf."""
-    current = root
-    for selector in address:
-        current, decision_offset, leaf_offset = _writer_child_offsets(
-            current, selector, decision_offset, leaf_offset
-        )
-    is_decision = is_decision_node(current) or is_switch_node(current)
-    return (decision_offset if is_decision else leaf_offset), not is_decision
-
-
-def build_tree_indices(
-    trees: list[Any],
-) -> list[tuple[dict[tuple[Any, ...], int], dict[tuple[Any, ...], int]]]:
-    """Number nested nodes exactly as the .cart writer numbers its arrays."""
-    decision_count = 0
-    leaf_count = 0
-    result = []
-
-    for root in trees:
-        decisions: dict[tuple[Any, ...], int] = {}
-        leaves: dict[tuple[Any, ...], int] = {}
-
-        stack: list[tuple[Any, tuple[Any, ...]]] = [(root, ())]
-        while stack:
-            current, address = stack.pop()
-            if is_decision_node(current):
-                decisions[address] = decision_count
-                decision_count += 1
-                stack.append((current[4], address + (1,)))
-                stack.append((current[3], address + (0,)))
-            elif is_switch_node(current):
-                decisions[address] = decision_count
-                decision_count += 1
-                cases = current[2]
-                items = list(cases.items()) if isinstance(cases, dict) else cases
-                for case_idx in range(len(items) - 1, -1, -1):
-                    stack.append((items[case_idx][1], address + (("case", case_idx),)))
-                stack.append((current[3], address + ("default",)))
-            else:
-                leaves[address] = leaf_count
-                leaf_count += 1
-        result.append((decisions, leaves))
-    return result
+def switch_path_token(key: str) -> str:
+    """Encode one canonical switch key as an unambiguous path token."""
+    return f"C{len(key)}:{key}"

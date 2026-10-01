@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import math
 import random
+import statistics
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
 from .base import BaseModel, _read_model_artifact
@@ -30,7 +31,11 @@ from .types import (
     TASK_REGRESSION,
     TYPE_NUM,
 )
-from .utils import collapse_distributions, eval_tree, eval_tree_path, tree_array_size
+from .utils import (
+    collapse_distributions,
+    eval_tree,
+    eval_tree_path,
+)
 from .validation import (
     MODEL_SCHEMA_VERSION,
     validate_model_data,
@@ -138,6 +143,7 @@ class RandomForest(BaseModel):
 
         # Trained trees
         self._trees: list[DecisionTree] = []
+        self._inbag_indices: dict[DecisionTree, list[int]] | None = None
 
     @property
     def trees(self) -> list[DecisionTree]:
@@ -147,6 +153,7 @@ class RandomForest(BaseModel):
     @trees.setter
     def trees(self, value: list[DecisionTree]) -> None:
         self._trees = value
+        self._inbag_indices = None
 
     def load_data(
         self,
@@ -278,10 +285,13 @@ class RandomForest(BaseModel):
             raise ValueError("No training data loaded. Call load_data() first.")
 
         if trainer == "sklearn":
-            return self._train_sklearn(random_state, n_jobs=n_jobs)
+            result = self._train_sklearn(random_state, n_jobs=n_jobs)
+        else:
+            # n_jobs ignored for native due to Python's GIL
+            result = self._train_native(random_state)
 
-        # n_jobs ignored for native due to Python's GIL
-        return self._train_native(random_state)
+        self._leaf_statistics_available = True
+        return result
 
     def _train_native(self, random_state: int | None = None) -> dict[str, Any]:
         """
@@ -299,6 +309,7 @@ class RandomForest(BaseModel):
             raise ValueError("Cannot train forest with zero samples")
 
         self.trees = []
+        self._inbag_indices = {} if self.bootstrap else None
         try:
             for i in range(self.n_estimators):
                 if self.verbose and (i + 1) % _VERBOSE_TREE_INTERVAL == 0:
@@ -317,6 +328,8 @@ class RandomForest(BaseModel):
                 )
                 tree = self._train_single_tree(indices, seed, max_features)
                 self.trees.append(tree)
+                if self._inbag_indices is not None:
+                    self._inbag_indices[tree] = indices
         except KeyboardInterrupt:
             if self.verbose:
                 self.logger.info("\nInterrupted after %d trees.", len(self.trees))
@@ -348,6 +361,7 @@ class RandomForest(BaseModel):
         )
 
         tree.model = tree_trainer.train(tree, range(len(indices)))
+        tree._leaf_statistics_available = True
         tree.training_summary = {
             "training_samples": len(indices),
             "validation_samples": 0,
@@ -445,9 +459,135 @@ class RandomForest(BaseModel):
                 is_regression=is_regression,
                 store_distributions=False,  # Forests don't need distributions
             )
+            tree._leaf_statistics_available = True
             self.trees.append(tree)
 
+        if self.bootstrap:
+            self._inbag_indices = {
+                tree: [int(index) for index in sample]
+                for tree, sample in zip(
+                    self.trees, sklearn_rf.estimators_samples_, strict=True
+                )
+            }
+
         return {"n_estimators": len(self.trees)}
+
+    def oob_permutation_importance(
+        self,
+        *,
+        feature_groups: Mapping[str, Sequence[str | int]] | None = None,
+        n_repeats: int = 5,
+        random_state: int | None = None,
+        missing: str = "error",
+    ) -> dict[str, Any]:
+        """Measure Breiman out-of-bag permutation importance.
+
+        Each tree is scored only on training rows absent from its bootstrap
+        sample. Its baseline loss is computed once, and each feature or group
+        is shuffled jointly within that tree's OOB rows. Per-tree loss rises
+        are averaged for each repeat, then summarized across repeats. Rows are
+        unweighted, matching :func:`cartlet.permutation_importance`.
+
+        OOB state is intentionally process-local and is not serialized. Use
+        held-out ``permutation_importance`` for loaded models or forests trained
+        with ``bootstrap=False``.
+        """
+        from .evaluation import (
+            _importance_loss,
+            _importance_units,
+            _validate_importance_parameters,
+        )
+
+        _validate_importance_parameters(n_repeats, random_state, missing)
+        if (
+            not self.bootstrap
+            or self._inbag_indices is None
+            or len(self._inbag_indices) != len(self.trees)
+            or set(self._inbag_indices) != set(self.trees)
+            or not self.X
+            or not self.y
+        ):
+            raise ValueError(
+                "OOB permutation importance needs a forest trained in this "
+                "process with bootstrap=True; use held-out "
+                "permutation_importance for loaded or non-bootstrap forests"
+            )
+
+        task = self._effective_task()
+        targets = (
+            [str(value) for value in self.y]
+            if task == TASK_CLASSIFICATION
+            else list(self.y)
+        )
+        units = _importance_units(list(self.feature_names), feature_groups)
+        tree_rows: list[tuple[DecisionTree, list[int], float]] = []
+        all_indices = set(range(len(self.X)))
+        for tree, inbag in self._inbag_indices.items():
+            oob = sorted(all_indices.difference(inbag))
+            if not oob:
+                continue
+            baseline_predictions = [
+                tree.predict(self.X[index], missing=missing) for index in oob
+            ]
+            baseline = _importance_loss(
+                task,
+                [targets[index] for index in oob],
+                baseline_predictions,
+            )
+            tree_rows.append((tree, oob, baseline))
+        if not tree_rows:
+            raise ValueError(
+                "OOB permutation importance found no out-of-bag rows; use "
+                "held-out permutation_importance"
+            )
+
+        oob_baseline = statistics.mean(item[2] for item in tree_rows)
+        rng = random.Random(random_state)
+        importances: list[dict[str, Any]] = []
+        for name, feature_indexes in units:
+            values = []
+            for _ in range(n_repeats):
+                rises = []
+                for tree, oob, baseline in tree_rows:
+                    donors = list(oob)
+                    rng.shuffle(donors)
+                    permuted_rows = []
+                    for destination, donor in zip(oob, donors, strict=True):
+                        row = self.X[destination].copy()
+                        for feature_index in feature_indexes:
+                            row[feature_index] = self.X[donor][feature_index]
+                        permuted_rows.append(row)
+                    permuted_predictions = [
+                        tree.predict(row, missing=missing) for row in permuted_rows
+                    ]
+                    permuted_loss = _importance_loss(
+                        task,
+                        [targets[index] for index in oob],
+                        permuted_predictions,
+                    )
+                    rises.append(permuted_loss - baseline)
+                values.append(statistics.mean(rises))
+            importances.append(
+                {
+                    "name": name,
+                    "features": [
+                        self.feature_names[index] for index in feature_indexes
+                    ],
+                    "values": values,
+                    "mean": statistics.mean(values),
+                    "std": statistics.stdev(values) if len(values) > 1 else 0.0,
+                }
+            )
+        importances.sort(key=lambda record: float(record["mean"]), reverse=True)
+        return {
+            "task": task,
+            "metric": "error_rate" if task == TASK_CLASSIFICATION else "mse",
+            "baseline": oob_baseline,
+            "oob_baseline": oob_baseline,
+            "n_repeats": n_repeats,
+            "random_state": random_state,
+            "importances": importances,
+        }
 
     def predict(
         self,
@@ -486,7 +626,6 @@ class RandomForest(BaseModel):
                 raise ValueError(f"OOV values for features: {oov_features}")
         else:
             normalized = vector
-        models = [tree.model for tree in self.trees]
         predictions = [
             eval_tree(
                 tree.model,
@@ -495,7 +634,6 @@ class RandomForest(BaseModel):
                 missing=missing,
                 tree_idx=tree_idx,
                 feature_specs=tree.feature_specs,
-                id_trees=models,
             )
             for tree_idx, tree in enumerate(self.trees)
         ]
@@ -520,7 +658,6 @@ class RandomForest(BaseModel):
         if self._is_regression():
             raise ValueError("predict_proba not available for regression")
 
-        models = [tree.model for tree in self.trees]
         predictions = [
             eval_tree(
                 tree.model,
@@ -529,7 +666,6 @@ class RandomForest(BaseModel):
                 missing=missing,
                 tree_idx=tree_idx,
                 feature_specs=tree.feature_specs,
-                id_trees=models,
             )
             for tree_idx, tree in enumerate(self.trees)
         ]
@@ -540,13 +676,11 @@ class RandomForest(BaseModel):
     def predict_path(
         self, vector: list[Any], *, missing: str = "error"
     ) -> dict[str, Any]:
-        """Predict and return each tree's decisions and model-global leaf ID."""
+        """Predict and return each tree's root-relative decision path."""
         if not self.trees:
             raise ValueError("Forest not trained. Call train() first.")
         values = []
         paths = []
-        decision_offset = 0
-        leaf_offset = 0
         for tree_idx, tree in enumerate(self.trees):
             prediction, leaf, path = eval_tree_path(
                 tree.model,
@@ -555,15 +689,9 @@ class RandomForest(BaseModel):
                 missing=missing,
                 tree_idx=tree_idx,
                 feature_specs=tree.feature_specs,
-                decision_offset=decision_offset,
-                leaf_offset=leaf_offset,
             )
             values.append(prediction)
             paths.append({"tree": tree_idx, "leaf": leaf, "path": path})
-            if tree_idx + 1 < len(self.trees):
-                decisions, leaves = tree_array_size(tree.model)
-                decision_offset += decisions
-                leaf_offset += leaves
         prediction = self._aggregate_predictions(values)
         return {"prediction": prediction, "trees": paths}
 
@@ -665,6 +793,7 @@ class RandomForest(BaseModel):
 
         self.n_estimators = model_data.get("n_trees", len(model_data["tree_offsets"]))
         self.bootstrap = True  # Not stored in .cart, assume default
+        self._leaf_statistics_available = False
 
         # Rebuild trees from flat nodes
         self.trees = []
@@ -674,6 +803,7 @@ class RandomForest(BaseModel):
             tree.feature_specs = self.feature_specs
             tree.name_to_col = self.name_to_col
             tree.model = self._rebuild_tree_from_cart(model_data, tree_idx)
+            tree._leaf_statistics_available = False
             self.trees.append(tree)
 
         return {

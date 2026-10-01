@@ -77,6 +77,7 @@ cartlet = ["py.typed", "bundled/*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v"
+console_output_style = "times"
 
 [tool.ruff]
 required-version = ">=0.16.7"
