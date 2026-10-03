@@ -9,6 +9,13 @@ requires it.
 
 ### Breaking changes
 
+- `DecisionTree`, `RandomForest`, and `XGBoostTree` now infer numeric,
+  categorical string, and categorical bool columns when `features=` is omitted,
+  including when only `feature_names=` is supplied. Models trained with
+  `feature_names=` on numeric data now use numeric splits, producing smaller
+  models and potentially different splits; ambiguous mixed-type columns now
+  raise. Migration: to preserve the old all-categorical behavior, pass
+  `features=[{"name": n, "dtype": "str", "type": "cat"} ...]` explicitly.
 - Change `predict_path` decision and leaf IDs from the model-global `.cart`
   array indexes introduced in 0.7.0 to root-relative path strings. Binary
   branches use `L`/`R`, switch defaults use `D`, and switch cases use a

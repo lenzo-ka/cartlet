@@ -95,7 +95,8 @@ class RandomForest(BaseModel):
             bootstrap: Whether to use bootstrap sampling
             extra_trees: Use random splits instead of best splits (Extra-Trees)
             features: Feature specs (same as DecisionTree)
-            feature_names: Simple feature names (same as DecisionTree)
+            feature_names: Column names; types are inferred from every dataset
+                passed to ``load_data`` (same as DecisionTree).
             target: Target spec (same as DecisionTree)
             task: "classification", "regression", or "auto"
             max_depth: Nonnegative integer depth (None = unlimited; native 0 = leaf).
@@ -205,9 +206,14 @@ class RandomForest(BaseModel):
 
     def _make_tree(self) -> DecisionTree:
         """Create a new tree with our configuration."""
+        features = self._features
+        feature_names = self._feature_names
+        if not self._infer_feature_specs_on_load:
+            features = self._serialize_feature_specs()
+            feature_names = None
         return DecisionTree(
-            features=self._features,
-            feature_names=self._feature_names,
+            features=features,
+            feature_names=feature_names,
             target=self._target,
             task=self._task,
             max_depth=self.max_depth,

@@ -70,6 +70,10 @@ class BaseModel(ABC):
 
     `IsolationForest` does **not** subclass `BaseModel`; it follows a similar
     but separate API for unsupervised anomaly detection.
+
+    When ``features`` is omitted, concrete supervised models infer feature
+    dtypes and split types from each dataset passed to ``load_data``. Explicit
+    feature specifications are preserved unchanged.
     """
 
     def __init__(
@@ -87,6 +91,9 @@ class BaseModel(ABC):
         self.feature_specs: list[FeatureSpec] = []
         self.feature_names: list[str] = []
         self.name_to_col: dict[str, int] = {}
+        # Keep the constructor intent separate from feature_specs: models may
+        # retain inferred specs after a load, but a later load must infer again.
+        self._infer_feature_specs_on_load = not features
 
         if features:
             self.feature_specs = [normalize_feature_spec(f) for f in features]
@@ -318,6 +325,7 @@ class BaseModel(ABC):
     ) -> tuple[Any, list[str], list[FeatureSpec]]:
         """Derive shared feature metadata from an already decoded estimator."""
         self._sklearn_model = sklearn_model
+        self._infer_feature_specs_on_load = False
         n_features = sklearn_model.n_features_in_
         if hasattr(sklearn_model, "feature_names_in_"):
             feature_names = list(sklearn_model.feature_names_in_)
@@ -450,6 +458,7 @@ class BaseModel(ABC):
             self.feature_specs.append(spec)
 
         self.feature_names = [f.name for f in self.feature_specs]
+        self._infer_feature_specs_on_load = False
         self._rebuild_name_to_col()
 
         task = meta.get("task", TASK_AUTO)
@@ -460,6 +469,7 @@ class BaseModel(ABC):
     def _apply_loaded_data(self, data: dict) -> dict:
         """Apply loaded data from JSON/pickle to instance."""
         self.feature_names = data.get("feature_names", [])
+        self._infer_feature_specs_on_load = False
         self._rebuild_name_to_col()
 
         self.feature_specs = []

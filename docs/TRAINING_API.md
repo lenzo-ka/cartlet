@@ -24,6 +24,15 @@ statistics, warnings, and output path. `source_samples` counts active rows after
 zero-weight rows are removed; training, validation, and test populations are
 reported separately. Explicit test data is additional to the source population.
 
+Direct `DecisionTree`, `RandomForest`, and `XGBoostTree` construction with
+`feature_names=` and no `features=` infers the schema on every `load_data` call.
+A column whose values are all non-bool instances of Python `int`/`float`
+(including subclasses such as NumPy `float64`) is numeric (float if any value is
+a float), a column of only strings is categorical, and a column of only bools
+remains categorical. Mixed strings/numbers, bools/numbers, and other mixed
+columns are ambiguous and require explicit `features=`. XGBoost keeps its
+existing behavior of representing inferred numeric columns as floats.
+
 The default settings use a native decision tree and reserve 5% of source rows
 for testing, rounding down. Pruning is off. When enabled for native
 classification trees, the requested validation fraction is relative to the
@@ -57,8 +66,10 @@ defaults, `1.0`/`0.0`, retain distributions.
 
 When `train_file` or `cartlet train` receives feature specifications, declared
 categorical columns preserve their source values exactly and declared numeric
-columns parse numeric text. Numeric inference is limited to undeclared columns;
-without feature specifications, loading retains the existing inference behavior.
+columns parse numeric text. Numeric inference is limited to undeclared columns.
+The operational API already infers undeclared columns before model construction;
+its permissive inference behavior is unchanged. For strict mixed-type rejection,
+use the direct model API described above or provide feature specifications.
 
 `convert` similarly returns `ConversionResult` with `to_dict()`. It decodes the
 input once, preserves available distributions, and rejects isolation and

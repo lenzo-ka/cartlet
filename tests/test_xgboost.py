@@ -13,6 +13,7 @@ except Exception:  # pragma: no cover - environment-dependent
     pytest.skip("xgboost unavailable", allow_module_level=True)
 
 from cartlet import XGBoostTree  # noqa: E402
+from cartlet.runner import load_model  # noqa: E402
 
 
 class TestXGBoostTree:
@@ -88,6 +89,62 @@ class TestXGBoostTree:
         pred = xgb_model.predict([2.0, 3.0])
         assert isinstance(pred, float)
         assert 0.0 <= pred <= 6.0
+
+    def test_feature_names_infer_numeric_and_export_without_categories(
+        self, regression_data, tmp_path
+    ):
+        X, y = regression_data
+        model = XGBoostTree(
+            n_estimators=2,
+            max_depth=2,
+            feature_names=["left", "right"],
+            task="regression",
+        )
+        model.load_data(X, y)
+        assert [(spec.dtype, spec.type) for spec in model.feature_specs] == [
+            ("float", "num"),
+            ("float", "num"),
+        ]
+        model.train(random_state=7)
+        path = tmp_path / "numeric-xgb.cart"
+        model.export(str(path))
+        exported = load_model(str(path))
+        assert [feature["type"] for feature in exported["meta"]["features"]] == [
+            "num",
+            "num",
+        ]
+        assert exported["cat_vals"] == []
+        assert exported["category_sets"] == []
+
+    def test_strict_inference_bool_auto_names_reloads_and_explicit_features(self):
+        model = XGBoostTree(feature_names=["word", "enabled"])
+        model.load_data([["a", True], ["b", False]], ["x", "y"])
+        assert [(spec.dtype, spec.type) for spec in model.feature_specs] == [
+            ("str", "cat"),
+            ("str", "cat"),
+        ]
+
+        with pytest.raises(ValueError, match=r"word.*features="):
+            model.load_data([["a", True], [2.0, False]], ["x", "y"])
+
+        auto = XGBoostTree()
+        auto.load_data([[1, 2], [3, 4]], ["x", "y"])
+        assert auto.feature_names == ["f0", "f1"]
+        assert [(spec.dtype, spec.type) for spec in auto.feature_specs] == [
+            ("float", "num"),
+            ("float", "num"),
+        ]
+        auto.load_data([["a", "b"], ["c", "d"]], ["x", "y"])
+        assert [spec.type for spec in auto.feature_specs] == ["cat", "cat"]
+
+        explicit = XGBoostTree(
+            features=[{"name": "code", "dtype": "str", "type": "cat"}]
+        )
+        explicit.load_data([[1.0], [2.0]], ["x", "y"])
+        assert (explicit.feature_specs[0].dtype, explicit.feature_specs[0].type) == (
+            "str",
+            "cat",
+        )
 
     def test_predict_classification(self, classification_data):
         """Test prediction for classification."""

@@ -198,16 +198,24 @@ def permutation_importance(
         for _ in range(n_repeats):
             donors = list(range(len(rows)))
             rng.shuffle(donors)
-            permuted = [row.copy() for row in rows]
-            for destination, donor in enumerate(donors):
-                for index in indexes:
-                    donor_value = (
-                        rows[donor][index] if index < len(rows[donor]) else None
-                    )
-                    while index >= len(permuted[destination]):
-                        permuted[destination].append(None)
-                    permuted[destination][index] = donor_value
-            values.append(loss(permuted) - baseline)
+            original_lengths = [len(row) for row in rows]
+            original_values = [
+                [row[index] if index < len(row) else None for index in indexes]
+                for row in rows
+            ]
+            try:
+                for destination, donor in enumerate(donors):
+                    for offset, index in enumerate(indexes):
+                        while index >= len(rows[destination]):
+                            rows[destination].append(None)
+                        rows[destination][index] = original_values[donor][offset]
+                values.append(loss(rows) - baseline)
+            finally:
+                for destination, row in enumerate(rows):
+                    for offset, index in enumerate(indexes):
+                        if index < original_lengths[destination]:
+                            row[index] = original_values[destination][offset]
+                    del row[original_lengths[destination] :]
         importances.append(
             {
                 "name": name,

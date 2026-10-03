@@ -33,7 +33,6 @@ from .types import (
     DEFAULT_MIN_SAMPLES_SPLIT,
     DEFAULT_VALIDATION_SPLIT,
     DTYPE_BOOL,
-    DTYPE_STR,
     PROB_HIGH_CONFIDENCE,
     TASK_AUTO,
     TASK_CLASSIFICATION,
@@ -41,6 +40,7 @@ from .types import (
     TYPE_CAT,
     TYPE_NUM,
     FeatureSpec,
+    infer_feature_specs,
     is_likely_regression,
     normalize_bool,
 )
@@ -103,7 +103,7 @@ class DecisionTree(BaseModel):
         dt.load_data(X, y)  # y contains numerical targets
         dt.train()
 
-        # Simple: just feature names (all categorical strings)
+        # Simple: names only; column types are inferred by load_data
         dt = DecisionTree(feature_names=["color", "size"])
     """
 
@@ -130,7 +130,8 @@ class DecisionTree(BaseModel):
         Args:
             features: List of input feature specs, e.g.:
                 [{"name": "age", "dtype": "int", "type": "num"}, ...]
-            feature_names: Simple alternative: list of names (all categorical strings)
+            feature_names: Names for columns whose types are inferred at load time.
+                Pass ``features`` for explicit or ambiguous column schemas.
             target: Output/target feature spec, e.g.:
                 {"name": "price", "dtype": "float"} for regression
                 {"name": "class", "dtype": "str"} for classification
@@ -223,11 +224,28 @@ class DecisionTree(BaseModel):
         assert targets is not None
         if self.feature_names and len(self.feature_names) != len(rows[0]):
             raise ValueError("feature specifications must match training width")
+
+        feature_names = self.feature_names or [str(i) for i in range(len(rows[0]))]
+        feature_specs = self.feature_specs
+        if self._infer_feature_specs_on_load:
+            feature_specs = [
+                FeatureSpec(**spec)
+                for spec in infer_feature_specs(
+                    rows,
+                    feature_names,
+                    exclude_bool_from_numeric=True,
+                    strict=True,
+                )
+            ]
+
         self.X, self.y, self.counts = rows, targets, weights
         self.model = None
         self.training_summary = {}
         self._sklearn_model = None
         self._feature_importances = {}
+        self.feature_names = feature_names
+        self.feature_specs = feature_specs
+        self._rebuild_name_to_col()
 
         # Normalize bool features to 0/1 and collect known categorical values in
         # a single pass per column (bool + categorical features would otherwise
@@ -248,15 +266,6 @@ class DecisionTree(BaseModel):
                             values.add(row[col])
                 if values is not None:
                     spec.values = values
-
-        if not self.feature_names and X:
-            # Auto-generate feature names and specs
-            self.feature_names = [str(i) for i in range(len(X[0]))]
-            self.feature_specs = [
-                FeatureSpec(name=name, dtype=DTYPE_STR, type=TYPE_CAT)
-                for name in self.feature_names
-            ]
-            self._rebuild_name_to_col()
 
         # Auto-detect task if needed. Use the unique-count/ratio heuristic so a
         # small set of integer *class* labels (e.g. y=[0, 1, 0, 1]) is treated
