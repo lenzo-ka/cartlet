@@ -488,6 +488,7 @@ from cartlet import (
     evaluate_predictions,
     evaluate_tree,
     per_class_metrics,
+    regression_metrics,
 )
 
 # Cross-validation (task-aware: returns accuracy for classification, mse for regression)
@@ -507,6 +508,11 @@ metrics = evaluate_tree(model, X_test, y_test)
 # Per-class
 for cls, m in per_class_metrics(y_true, y_pred).items():
     print(f"{cls}: P={m['precision']:.2f} R={m['recall']:.2f} F1={m['f1']:.2f}")
+
+# Regression metrics on pre-computed predictions
+reg = regression_metrics(y_true, y_pred, include_r2=True)
+# {"mse", "mae", "rmse", "total", "r2"}; R^2 is optional and is 0.0
+# when all true targets are equal.
 
 # Confusion matrix as a dict-of-dicts
 cm = confusion_matrix(y_true, y_pred)

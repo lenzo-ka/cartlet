@@ -728,7 +728,7 @@ class TestErrorHandling:
         result = main(["predict", str(model_path), str(data_path)])
         captured = capsys.readouterr()
         assert result == 1
-        assert "feature 0 ('x') is missing at tree 0 node 0" in captured.err
+        assert "feature 0 ('x') is missing at tree 0 node ''" in captured.err
         assert "Traceback" not in captured.err
 
         result = main(

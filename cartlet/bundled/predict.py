@@ -127,6 +127,86 @@ def _switch_path_token(key):
     return f"C{len(key)}:{key}"
 
 
+def _decision_path_id(root_idx, target_idx, parents):
+    """Reconstruct a unique decision path from its load-time parent table."""
+    tokens = []
+    idx = target_idx
+    while idx != root_idx:
+        try:
+            idx, token = parents[idx]
+        except KeyError as e:
+            raise RuntimeError(
+                f"Decision {target_idx} is unreachable from tree root"
+            ) from e
+        tokens.append(token)
+    return "".join(reversed(tokens))
+
+
+def _build_decision_parents(tree_offsets, decisions, case_tables, cat_vals, strings):
+    """Build unique parents and identify trees whose decisions have shared routes."""
+    all_parents = []
+    shared_trees = []
+    for root_idx in tree_offsets:
+        parents = {}
+        shared = False
+        stack = [root_idx]
+        visited = set()
+        while stack:
+            idx = stack.pop()
+            if idx & LEAF_FLAG or idx >= len(decisions) or idx in visited:
+                continue
+            visited.add(idx)
+            _feat, op, _flags, val, left, right = decisions[idx]
+            routes = []
+            if op == OP_SWITCH and val < len(case_tables):
+                table = case_tables[val]
+                routes.append((table["default"], "D"))
+                seen_keys = set()
+                for case_value_idx, child_idx in table["cases"]:
+                    if case_value_idx >= len(cat_vals):
+                        continue
+                    string_idx = cat_vals[case_value_idx]
+                    if string_idx >= len(strings):
+                        continue
+                    key = strings[string_idx]
+                    if key in seen_keys:
+                        continue
+                    seen_keys.add(key)
+                    routes.append((child_idx, _switch_path_token(key)))
+            else:
+                routes.extend(((left, "L"), (right, "R")))
+            for child_idx, token in routes:
+                if child_idx & LEAF_FLAG:
+                    continue
+                incoming = (idx, token)
+                if child_idx == root_idx or child_idx in parents:
+                    shared = True
+                else:
+                    parents[child_idx] = incoming
+                if child_idx not in visited:
+                    stack.append(child_idx)
+        all_parents.append(parents)
+        shared_trees.append(shared)
+    return all_parents, shared_trees
+
+
+def _model_decision_parents(model):
+    """Return route metadata, adding it lazily for caller-built model dicts."""
+    parents = model.get("_decision_parents")
+    shared = model.get("_shared_decision_trees")
+    if parents is None or shared is None:
+        parents, shared = _build_decision_parents(
+            model["tree_offsets"],
+            model["decisions"],
+            model.get("case_tables", []),
+            model["cat_vals"],
+            model["strings"],
+        )
+        model["_decision_parents"] = parents
+        model["_shared_decision_trees"] = shared
+    return parents, shared
+
+
 def normalize_bool(value):
     """Normalize recognized boolean values exactly like cartlet.types."""
     try:
@@ -609,7 +689,7 @@ def _load_cart_from_bytes_impl(data):
         except (UnicodeDecodeError, ValueError):
             metadata = {}
 
-    return {
+    model = {
         "features": features,
         "class_labels": class_labels,
         "floats": floats,
@@ -629,6 +709,12 @@ def _load_cart_from_bytes_impl(data):
         "n_trees": n_trees,
         "metadata": metadata,
     }
+    parents, shared = _build_decision_parents(
+        tree_offsets, decisions, case_tables, cat_vals, strings
+    )
+    model["_decision_parents"] = parents
+    model["_shared_decision_trees"] = shared
+    return model
 
 
 def load_cart(path):
@@ -655,6 +741,10 @@ def load_embedded():
 def predict_tree(model, row, tree_idx=0, return_dist=False, *, missing="error"):
     """Predict using a single tree."""
     _check_missing_policy(missing)
+    if "_decision_parents" not in model:
+        _model_decision_parents(model)
+    parents = model["_decision_parents"]
+    shared_trees = model["_shared_decision_trees"]
     return _predict_tree_recursive(
         model["tree_offsets"][tree_idx],
         row,
@@ -673,6 +763,8 @@ def predict_tree(model, row, tree_idx=0, return_dist=False, *, missing="error"):
         missing,
         tree_idx,
         False,
+        None,
+        None if shared_trees[tree_idx] else parents[tree_idx],
     )
 
 
@@ -695,9 +787,10 @@ def _predict_tree_recursive(
     tree_idx=0,
     xgboost=False,
     path=None,
+    decision_parents=None,
 ):
     """Hot tree traversal; path collection uses a separate implementation."""
-    if path is not None or xgboost:
+    if path is not None or xgboost or decision_parents is None:
         return _predict_tree_path_recursive(
             idx,
             row,
@@ -718,6 +811,7 @@ def _predict_tree_recursive(
             xgboost,
             path,
         )
+    root_idx = idx
     for _ in range(MAX_TREE_DEPTH):
         if idx & LEAF_FLAG:
             leaf_idx = idx & INDEX_MASK
@@ -765,9 +859,10 @@ def _predict_tree_recursive(
         learned_missing = is_missing and missing_direction != MISSING_NONE
         if is_missing and not learned_missing and missing == "error":
             feature_name = features[feat].get("name", str(feat))
+            path_id = _decision_path_id(root_idx, idx, decision_parents)
             raise MissingFeatureError(
                 f"feature {feat} ({feature_name!r}) is missing at "
-                f"tree {tree_idx} node {idx}"
+                f"tree {tree_idx} node {path_id!r}"
             )
         if not is_missing and bool_features[feat]:
             feat_val = normalize_bool(feat_val)
@@ -909,7 +1004,7 @@ def _predict_tree_path_recursive(
             feature_name = features[feat].get("name", str(feat))
             raise MissingFeatureError(
                 f"feature {feat} ({feature_name!r}) is missing at "
-                f"tree {tree_idx} node {path_id}"
+                f"tree {tree_idx} node {path_id!r}"
             )
         if not is_missing and bool_features[feat]:
             feat_val = normalize_bool(feat_val)
@@ -1121,6 +1216,10 @@ def predict(model, row, return_dist=False, *, missing="error"):
         return predict_tree(model, row, 0, return_dist=return_dist, missing=missing)
 
     # Forest: aggregate predictions
+    if "_decision_parents" not in model:
+        _model_decision_parents(model)
+    parents = model["_decision_parents"]
+    shared_trees = model["_shared_decision_trees"]
     decisions = model["decisions"]
     leaves = model["leaves"]
     floats = model["floats"]
@@ -1151,6 +1250,8 @@ def predict(model, row, return_dist=False, *, missing="error"):
             missing,
             i,
             False,
+            None,
+            None if shared_trees[i] else parents[i],
         )
         for i in range(n_trees)
     ]

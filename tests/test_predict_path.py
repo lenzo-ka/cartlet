@@ -7,7 +7,9 @@ from pathlib import Path
 
 import pytest
 
+import cartlet.runner as package_runner
 from cartlet import DecisionTree, MissingFeatureError, RandomForest
+from cartlet.cli import main as cli_main
 from cartlet.io.bytes import write_forest_bytes, write_tree_bytes
 from cartlet.runner import Predictor
 from cartlet.types import FeatureSpec
@@ -46,6 +48,451 @@ def _assert_steps(result, row, switch_cases=None, *, xgboost=False):
                     "case" if str(value) in switch_cases[step["node"]] else "default"
                 )
             assert step["branch"] == expected
+
+
+@pytest.mark.parametrize(
+    ("tree", "features", "row", "expected"),
+    [
+        (
+            ["x", "<=", 0.0, "yes", "no"],
+            [{"name": "x", "dtype": "float", "type": "num"}],
+            [None],
+            "feature 0 ('x') is missing at tree 0 node ''",
+        ),
+        (
+            [
+                "a",
+                "<=",
+                0.0,
+                ["b", "<=", 0.0, "yes", ["x", "<=", 0.0, "yes", "no"]],
+                "no",
+            ],
+            [
+                {"name": "a", "dtype": "float", "type": "num"},
+                {"name": "b", "dtype": "float", "type": "num"},
+                {"name": "x", "dtype": "float", "type": "num"},
+            ],
+            [-1.0, 1.0, None],
+            "feature 2 ('x') is missing at tree 0 node 'LR'",
+        ),
+        (
+            ["route", "switch", {"red": ["x", "<=", 0.0, "yes", "no"]}, "no"],
+            [
+                {
+                    "name": "route",
+                    "dtype": "str",
+                    "type": "cat",
+                    "values": {"red", "blue"},
+                },
+                {"name": "x", "dtype": "float", "type": "num"},
+            ],
+            ["red", None],
+            "feature 1 ('x') is missing at tree 0 node 'C3:red'",
+        ),
+        (
+            ["route", "switch", {"red": "yes"}, ["x", "<=", 0.0, "yes", "no"]],
+            [
+                {
+                    "name": "route",
+                    "dtype": "str",
+                    "type": "cat",
+                    "values": {"red", "blue"},
+                },
+                {"name": "x", "dtype": "float", "type": "num"},
+            ],
+            ["blue", None],
+            "feature 1 ('x') is missing at tree 0 node 'D'",
+        ),
+    ],
+)
+def test_missing_error_message_parity_across_all_predict_apis(
+    tmp_path, monkeypatch, capsys, tree, features, row, expected
+):
+    nested = DecisionTree(features=features)
+    nested.model = tree
+    specs = [
+        FeatureSpec(
+            feature["name"],
+            feature["dtype"],
+            feature["type"],
+            feature.get("values"),
+        )
+        for feature in features
+    ]
+    path = tmp_path / "missing-parity.cart"
+    write_tree_bytes(
+        str(path),
+        tree,
+        specs,
+        {feature["name"]: i for i, feature in enumerate(features)},
+        ["yes", "no"],
+        False,
+    )
+    loaded = package_runner.load_model(str(path))
+    predictor = Predictor(str(path))
+    bundled = _bundled()
+    bundled_loaded = bundled.load_cart(str(path))
+    standalone = bundled.Predictor(str(path))
+
+    calls = [
+        (MissingFeatureError, lambda: nested.predict(row)),
+        (MissingFeatureError, lambda: nested.predict_path(row)),
+        (MissingFeatureError, lambda: nested.predict_batch([row])),
+        (MissingFeatureError, lambda: predictor.predict(row)),
+        (MissingFeatureError, lambda: predictor.predict_path(row)),
+        (MissingFeatureError, lambda: predictor.predict_batch([row])),
+        (MissingFeatureError, lambda: package_runner.predict(loaded, row)),
+        (MissingFeatureError, lambda: package_runner.predict_path(loaded, row)),
+        (MissingFeatureError, lambda: package_runner.predict_batch(loaded, [row])),
+        (bundled.MissingFeatureError, lambda: standalone.predict(row)),
+        (bundled.MissingFeatureError, lambda: standalone.predict_path(row)),
+        (bundled.MissingFeatureError, lambda: standalone.predict_batch([row])),
+        (
+            bundled.MissingFeatureError,
+            lambda: bundled.predict(bundled_loaded, row),
+        ),
+        (
+            bundled.MissingFeatureError,
+            lambda: bundled.predict_path(bundled_loaded, row),
+        ),
+    ]
+    messages = []
+    for error_type, call in calls:
+        with pytest.raises(error_type) as exc_info:
+            call()
+        messages.append(str(exc_info.value))
+    assert messages == [expected] * len(calls)
+
+    values = ["" if value is None else str(value) for value in row]
+    package_input = tmp_path / "package-input.csv"
+    package_input.write_text(
+        ",".join(feature["name"] for feature in features)
+        + ",unused\n"
+        + ",".join(values)
+        + ",0\n"
+    )
+    assert cli_main(["predict", str(path), str(package_input)]) == 1
+    assert capsys.readouterr().err.splitlines()[-1] == f"Error: {expected}"
+
+    bundled_input = tmp_path / "bundled-input.csv"
+    bundled_input.write_text(",".join(values) + ",0\n")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["predict.py", "-m", str(path), "-f", str(bundled_input), "-d", ","],
+    )
+    assert bundled.main() == 1
+    assert capsys.readouterr().err == f"Error: {expected}\n"
+
+
+def _clear_route_metadata(model):
+    model.pop("_decision_parents", None)
+    model.pop("_shared_decision_trees", None)
+
+
+def _share_binary_child(model, tree_idx=0):
+    root = model["tree_offsets"][tree_idx]
+    decision = model["decisions"][root]
+    model["decisions"][root] = (*decision[:5], decision[4])
+    _clear_route_metadata(model)
+
+
+def _share_switch_case_with_default(model, tree_idx=0):
+    root = model["tree_offsets"][tree_idx]
+    table_idx = model["decisions"][root][3]
+    table = model["case_tables"][table_idx]
+    case_value, _child = table["cases"][0]
+    table["cases"][0] = (case_value, table["default"])
+    key = model["strings"][model["cat_vals"][case_value]]
+    table["lookup"][key] = table["default"]
+    _clear_route_metadata(model)
+
+
+@pytest.mark.parametrize("kind", ["binary", "switch"])
+def test_shared_decision_error_uses_the_evaluated_route(tmp_path, kind):
+    shared = ["x", "<=", 0.0, "yes", "no"]
+    if kind == "binary":
+        nested_tree = ["route", "<=", 0.0, shared, shared]
+        flat_tree = [
+            "route",
+            "<=",
+            0.0,
+            shared,
+            ["x", "<=", 0.0, "other", "no"],
+        ]
+        features = [
+            {"name": "route", "dtype": "float", "type": "num"},
+            {"name": "x", "dtype": "float", "type": "num"},
+        ]
+        row = [1.0, None]
+        expected = "feature 1 ('x') is missing at tree 0 node 'R'"
+        share = _share_binary_child
+    else:
+        nested_tree = ["route", "switch", {"red": shared}, shared]
+        flat_tree = [
+            "route",
+            "switch",
+            {"red": ["x", "<=", 0.0, "other", "no"]},
+            shared,
+        ]
+        features = [
+            {
+                "name": "route",
+                "dtype": "str",
+                "type": "cat",
+                "values": {"red", "blue"},
+            },
+            {"name": "x", "dtype": "float", "type": "num"},
+        ]
+        row = ["red", None]
+        expected = "feature 1 ('x') is missing at tree 0 node 'C3:red'"
+        share = _share_switch_case_with_default
+
+    nested = DecisionTree(features=features)
+    nested.model = nested_tree
+    specs = [
+        FeatureSpec(
+            feature["name"],
+            feature["dtype"],
+            feature["type"],
+            feature.get("values"),
+        )
+        for feature in features
+    ]
+    path = tmp_path / f"shared-{kind}.cart"
+    write_tree_bytes(
+        str(path),
+        flat_tree,
+        specs,
+        {feature["name"]: i for i, feature in enumerate(features)},
+        ["yes", "no", "other"],
+        False,
+    )
+    package_model = package_runner.load_model(str(path))
+    bundled = _bundled()
+    bundled_model = bundled.load_cart(str(path))
+    share(package_model)
+    share(bundled_model)
+    predictor = Predictor(package_model)
+    standalone = bundled.Predictor()
+    standalone._model = bundled_model
+
+    calls = [
+        (MissingFeatureError, lambda: nested.predict(row)),
+        (MissingFeatureError, lambda: nested.predict_path(row)),
+        (MissingFeatureError, lambda: predictor.predict(row)),
+        (MissingFeatureError, lambda: predictor.predict_path(row)),
+        (MissingFeatureError, lambda: predictor.predict_batch([row])),
+        (MissingFeatureError, lambda: package_runner.predict(package_model, row)),
+        (
+            MissingFeatureError,
+            lambda: package_runner.predict_path(package_model, row),
+        ),
+        (
+            MissingFeatureError,
+            lambda: package_runner.predict_batch(package_model, [row]),
+        ),
+        (bundled.MissingFeatureError, lambda: standalone.predict(row)),
+        (bundled.MissingFeatureError, lambda: standalone.predict_path(row)),
+        (bundled.MissingFeatureError, lambda: standalone.predict_batch([row])),
+        (bundled.MissingFeatureError, lambda: bundled.predict(bundled_model, row)),
+        (
+            bundled.MissingFeatureError,
+            lambda: bundled.predict_path(bundled_model, row),
+        ),
+    ]
+    messages = []
+    for error_type, call in calls:
+        with pytest.raises(error_type) as exc_info:
+            call()
+        messages.append(str(exc_info.value))
+    assert messages == [expected] * len(calls)
+
+
+def test_shared_decision_error_reads_each_feature_once(tmp_path):
+    tree = [
+        "route",
+        "<=",
+        0.0,
+        ["x", "<=", 0.0, "yes", "no"],
+        ["x", "<=", 0.0, "other", "no"],
+    ]
+    specs = [
+        FeatureSpec("route", "float", "num"),
+        FeatureSpec("x", "float", "num"),
+    ]
+    path = tmp_path / "shared-lazy.cart"
+    write_tree_bytes(
+        str(path), tree, specs, {"route": 0, "x": 1}, ["yes", "no", "other"], False
+    )
+    package_model = package_runner.load_model(str(path))
+    bundled = _bundled()
+    bundled_model = bundled.load_cart(str(path))
+    _share_binary_child(package_model)
+    _share_binary_child(bundled_model)
+
+    class CountingVector:
+        def __init__(self):
+            self.reads = {}
+
+        def __len__(self):
+            return 2
+
+        def __getitem__(self, index):
+            self.reads[index] = self.reads.get(index, 0) + 1
+            return [1.0, None][index]
+
+    for error_type, call in (
+        (MissingFeatureError, lambda row: package_runner.predict(package_model, row)),
+        (
+            bundled.MissingFeatureError,
+            lambda row: bundled.predict(bundled_model, row),
+        ),
+    ):
+        row = CountingVector()
+        with pytest.raises(error_type):
+            call(row)
+        assert row.reads == {0: 1, 1: 1}
+
+
+def test_parent_table_ignores_unreachable_duplicate_switch_cases(tmp_path):
+    tree = [
+        "route",
+        "switch",
+        {"red": ["x", "<=", 0.0, "yes", "no"]},
+        ["x", "<=", 0.0, "other", "no"],
+    ]
+    specs = [
+        FeatureSpec("route", "str", "cat", {"red"}),
+        FeatureSpec("x", "float", "num"),
+    ]
+    path = tmp_path / "duplicate-switch.cart"
+    write_tree_bytes(
+        str(path), tree, specs, {"route": 0, "x": 1}, ["yes", "no", "other"], False
+    )
+    package_model = package_runner.load_model(str(path))
+    bundled = _bundled()
+    bundled_model = bundled.load_cart(str(path))
+    for model in (package_model, bundled_model):
+        table = model["case_tables"][0]
+        case_value, _case_child = table["cases"][0]
+        table["cases"].append((case_value, table["default"]))
+        _clear_route_metadata(model)
+
+    expected = "feature 1 ('x') is missing at tree 0 node 'C3:red'"
+    for error_type, call, model in (
+        (
+            MissingFeatureError,
+            lambda: package_runner.predict(package_model, ["red", None]),
+            package_model,
+        ),
+        (
+            bundled.MissingFeatureError,
+            lambda: bundled.predict(bundled_model, ["red", None]),
+            bundled_model,
+        ),
+    ):
+        with pytest.raises(error_type) as exc_info:
+            call()
+        assert str(exc_info.value) == expected
+        assert model["_shared_decision_trees"] == [False]
+
+
+def test_shared_decision_forest_error_names_later_tree(tmp_path):
+    trees = [
+        ["route", "<=", 0.0, "yes", "no"],
+        [
+            "route",
+            "<=",
+            0.0,
+            ["x", "<=", 0.0, "yes", "no"],
+            ["x", "<=", 0.0, "other", "no"],
+        ],
+    ]
+    specs = [
+        FeatureSpec("route", "float", "num"),
+        FeatureSpec("x", "float", "num"),
+    ]
+    path = tmp_path / "shared-forest.cart"
+    write_forest_bytes(
+        str(path), trees, specs, {"route": 0, "x": 1}, ["yes", "no", "other"], False
+    )
+    package_model = package_runner.load_model(str(path))
+    bundled = _bundled()
+    bundled_model = bundled.load_cart(str(path))
+    _share_binary_child(package_model, tree_idx=1)
+    _share_binary_child(bundled_model, tree_idx=1)
+    expected = "feature 1 ('x') is missing at tree 1 node 'R'"
+    for error_type, call in (
+        (
+            MissingFeatureError,
+            lambda: package_runner.predict(package_model, [1.0, None]),
+        ),
+        (
+            MissingFeatureError,
+            lambda: package_runner.predict_path(package_model, [1.0, None]),
+        ),
+        (
+            bundled.MissingFeatureError,
+            lambda: bundled.predict(bundled_model, [1.0, None]),
+        ),
+        (
+            bundled.MissingFeatureError,
+            lambda: bundled.predict_path(bundled_model, [1.0, None]),
+        ),
+    ):
+        with pytest.raises(error_type) as exc_info:
+            call()
+        assert str(exc_info.value) == expected
+
+
+def test_xgboost_cart_missing_error_message_parity(tmp_path):
+    tree = [
+        "a",
+        "<",
+        0.0,
+        ["b", "<", 0.0, [1.0, 0.0, 1], ["x", "<", 0.0, [2.0, 0.0, 1], [3.0, 0.0, 1]]],
+        [4.0, 0.0, 1],
+    ]
+    specs = [FeatureSpec(name, "float", "num") for name in ("a", "b", "x")]
+    path = tmp_path / "missing-xgboost.cart"
+    write_tree_bytes(
+        str(path),
+        tree,
+        specs,
+        {name: i for i, name in enumerate(("a", "b", "x"))},
+        [],
+        True,
+        is_xgboost=True,
+    )
+    row = [-1.0, 1.0, None]
+    expected = "feature 2 ('x') is missing at tree 0 node 'LR'"
+    loaded = package_runner.load_model(str(path))
+    predictor = Predictor(str(path))
+    bundled = _bundled()
+    bundled_loaded = bundled.load_cart(str(path))
+    standalone = bundled.Predictor(str(path))
+    calls = [
+        (MissingFeatureError, lambda: predictor.predict(row)),
+        (MissingFeatureError, lambda: predictor.predict_path(row)),
+        (MissingFeatureError, lambda: predictor.predict_batch([row])),
+        (MissingFeatureError, lambda: package_runner.predict(loaded, row)),
+        (MissingFeatureError, lambda: package_runner.predict_path(loaded, row)),
+        (MissingFeatureError, lambda: package_runner.predict_batch(loaded, [row])),
+        (bundled.MissingFeatureError, lambda: standalone.predict(row)),
+        (bundled.MissingFeatureError, lambda: standalone.predict_path(row)),
+        (bundled.MissingFeatureError, lambda: standalone.predict_batch([row])),
+        (bundled.MissingFeatureError, lambda: bundled.predict(bundled_loaded, row)),
+        (
+            bundled.MissingFeatureError,
+            lambda: bundled.predict_path(bundled_loaded, row),
+        ),
+    ]
+    messages = []
+    for error_type, call in calls:
+        with pytest.raises(error_type) as exc_info:
+            call()
+        messages.append(str(exc_info.value))
+    assert messages == [expected] * len(calls)
 
 
 def _roundtrips(model, rows, tmp_path, kind):
@@ -237,7 +684,7 @@ def test_deep_unvisited_branch_does_not_recurse_for_path_or_missing_error():
     ]
     with pytest.raises(
         MissingFeatureError,
-        match=r"feature 0 \('x'\) is missing at tree 0 node $",
+        match=r"feature 0 \('x'\) is missing at tree 0 node ''$",
     ):
         model.predict([None])
 
@@ -474,7 +921,7 @@ def test_missing_default_errors_and_legacy_policy(tmp_path, missing_row):
 
     with pytest.raises(
         MissingFeatureError,
-        match=r"feature 0 \('g1@\+1'\) is missing at tree 0 node 0",
+        match=r"feature 0 \('g1@\+1'\) is missing at tree 0 node ''",
     ):
         package.predict(missing_row)
     with pytest.raises(MissingFeatureError):
@@ -532,11 +979,19 @@ def test_forest_missing_error_names_tree_and_node(tmp_path):
     package = Predictor(str(path))
     bundled = _bundled()
     standalone = bundled.Predictor(str(path))
-    match = r"feature 0 \('x'\) is missing at tree 0 node 0"
+    match = r"feature 0 \('x'\) is missing at tree 0 node ''"
+    with pytest.raises(MissingFeatureError, match=match):
+        model.predict([None])
+    with pytest.raises(MissingFeatureError, match=match):
+        model.predict_path([None])
     with pytest.raises(MissingFeatureError, match=match):
         package.predict([None])
+    with pytest.raises(MissingFeatureError, match=match):
+        package.predict_path([None])
     with pytest.raises(bundled.MissingFeatureError, match=match):
         standalone.predict([float("nan")])
+    with pytest.raises(bundled.MissingFeatureError, match=match):
+        standalone.predict_path([float("nan")])
     assert package.predict([None], missing="right") == standalone.predict(
         [None], missing="right"
     )
@@ -613,14 +1068,19 @@ def test_nested_switch_path_uses_canonical_case_keys(tmp_path):
 
     for missing_value in (None, float("nan")):
         row = [missing_value, "square", 1.0]
-        with pytest.raises(MissingFeatureError):
+        expected = "feature 0 ('color') is missing at tree 0 node ''"
+        with pytest.raises(MissingFeatureError) as exc_info:
             predictor.predict_path(row)
-        with pytest.raises(MissingFeatureError):
+        assert str(exc_info.value) == expected
+        with pytest.raises(MissingFeatureError) as exc_info:
             predictor.predict(row)
-        with pytest.raises(bundled.MissingFeatureError):
+        assert str(exc_info.value) == expected
+        with pytest.raises(bundled.MissingFeatureError) as exc_info:
             standalone.predict_path(row)
-        with pytest.raises(bundled.MissingFeatureError):
+        assert str(exc_info.value) == expected
+        with pytest.raises(bundled.MissingFeatureError) as exc_info:
             standalone.predict(row)
+        assert str(exc_info.value) == expected
         for result in (
             predictor.predict_path(row, missing="right"),
             standalone.predict_path(row, missing="right"),

@@ -210,7 +210,7 @@ def test_switch_missing_feature_errors_by_default(tmp_path, vector):
     _write_switch_model(path)
     package = pkg_runner.load_model(path)
     standalone = bundled.load_cart(path)
-    match = r"feature 0 \('color'\) is missing at tree 0 node 0"
+    match = r"feature 0 \('color'\) is missing at tree 0 node ''"
     with pytest.raises(pkg_runner.MissingFeatureError, match=match):
         pkg_runner.predict(package, vector)
     with pytest.raises(bundled.MissingFeatureError, match=match):

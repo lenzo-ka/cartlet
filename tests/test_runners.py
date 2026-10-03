@@ -147,7 +147,7 @@ class TestPythonRunner:
         ]
         result = subprocess.run(command, capture_output=True, text=True)
         assert result.returncode == 1
-        assert "feature 0 ('x') is missing at tree 0 node 0" in result.stderr
+        assert "feature 0 ('x') is missing at tree 0 node ''" in result.stderr
         assert "Traceback" not in result.stderr
 
         result = subprocess.run(
