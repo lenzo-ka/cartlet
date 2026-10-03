@@ -15,6 +15,9 @@ requires it.
   length-prefixed canonical key such as `C3:red`. The `.cart` format is
   unchanged. Migrate by rerunning `predict_path` or `leaf_paths` and replacing
   stored `(tree, integer ID)` references with `(tree, path ID)` references.
+- `MissingFeatureError` messages now name the failing decision with its quoted
+  path ID in every implementation; `.cart` runners previously reported an
+  internal decision-array index.
 
 ### Added
 

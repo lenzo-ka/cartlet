@@ -128,6 +128,99 @@ def _switch_path_token(key: str) -> str:
     return f"C{len(key)}:{key}"
 
 
+def _decision_path_id(
+    root_idx: int,
+    target_idx: int,
+    parents: dict[int, tuple[int, str]],
+) -> str:
+    """Reconstruct a unique decision path from its load-time parent table."""
+    tokens = []
+    idx = target_idx
+    while idx != root_idx:
+        try:
+            idx, token = parents[idx]
+        except KeyError as e:
+            raise RuntimeError(
+                f"Decision {target_idx} is unreachable from tree root"
+            ) from e
+        tokens.append(token)
+    return "".join(reversed(tokens))
+
+
+def _build_decision_parents(
+    tree_offsets: list[int],
+    decisions: list[tuple[int, int, int, int, int, int]],
+    case_tables: list[CaseTable],
+    cat_vals: list[int],
+    strings: list[str],
+) -> tuple[list[dict[int, tuple[int, str]]], list[bool]]:
+    """Build unique parents and identify trees whose decisions have shared routes."""
+    all_parents = []
+    shared_trees = []
+    for root_idx in tree_offsets:
+        parents: dict[int, tuple[int, str]] = {}
+        shared = False
+        stack = [root_idx]
+        visited: set[int] = set()
+        while stack:
+            idx = stack.pop()
+            if idx & LEAF_FLAG or idx >= len(decisions) or idx in visited:
+                continue
+            visited.add(idx)
+            _feat, op, _flags, val, left, right = decisions[idx]
+            routes: list[tuple[int, str]] = []
+            if op == OP_SWITCH and val < len(case_tables):
+                table = case_tables[val]
+                routes.append((table["default"], "D"))
+                seen_keys: set[str] = set()
+                for case_value_idx, child_idx in table["cases"]:
+                    if case_value_idx >= len(cat_vals):
+                        continue
+                    string_idx = cat_vals[case_value_idx]
+                    if string_idx >= len(strings):
+                        continue
+                    key = strings[string_idx]
+                    if key in seen_keys:
+                        continue
+                    seen_keys.add(key)
+                    routes.append((child_idx, _switch_path_token(key)))
+            else:
+                routes.extend(((left, "L"), (right, "R")))
+            for child_idx, token in routes:
+                if child_idx & LEAF_FLAG:
+                    continue
+                incoming = (idx, token)
+                if child_idx == root_idx or child_idx in parents:
+                    shared = True
+                else:
+                    parents[child_idx] = incoming
+                if child_idx not in visited:
+                    stack.append(child_idx)
+        all_parents.append(parents)
+        shared_trees.append(shared)
+    return all_parents, shared_trees
+
+
+def _model_decision_parents(
+    model: ModelData,
+) -> tuple[list[dict[int, tuple[int, str]]], list[bool]]:
+    """Return route metadata, adding it lazily for caller-built ModelData."""
+    data = cast(dict[str, Any], model)
+    parents = data.get("_decision_parents")
+    shared = data.get("_shared_decision_trees")
+    if parents is None or shared is None:
+        parents, shared = _build_decision_parents(
+            model["tree_offsets"],
+            model["decisions"],
+            model.get("case_tables", []),
+            model["cat_vals"],
+            model["strings"],
+        )
+        data["_decision_parents"] = parents
+        data["_shared_decision_trees"] = shared
+    return cast(list[dict[int, tuple[int, str]]], parents), cast(list[bool], shared)
+
+
 def load_model(path: str) -> ModelData:
     """
     Load a trained model from a ``.cart`` file.
@@ -313,7 +406,7 @@ def _load_cart_from_bytes(data: bytes) -> dict[str, Any]:
                 # were already parsed.
                 metadata = {}
 
-        return {
+        model = {
             "meta": {
                 "features": features,
                 "task": TASK_REGRESSION if is_regression else TASK_CLASSIFICATION,
@@ -337,6 +430,12 @@ def _load_cart_from_bytes(data: bytes) -> dict[str, Any]:
             "n_trees": n_trees,
             "version": version,
         }
+        parents, shared = _build_decision_parents(
+            tree_offsets, decisions, case_tables, cat_vals, strings
+        )
+        model["_decision_parents"] = parents
+        model["_shared_decision_trees"] = shared
+        return model
 
     except struct.error as e:
         raise ValueError(f"Malformed .cart file: {e}") from e
@@ -470,7 +569,7 @@ def _parse_case_tables(
     n_case_tables: int,
     cat_vals: list[int],
     strings: list[str],
-) -> tuple[list[dict], int]:
+) -> tuple[list[CaseTable], int]:
     """Parse case tables for OP_SWITCH nodes.
 
     Each table's cases are resolved once to a ``{category_string: child_idx}``
@@ -478,7 +577,7 @@ def _parse_case_tables(
     scan (with per-entry ``cat_vals``/``strings`` dereferences) on every
     prediction row. First-match-wins is preserved via ``setdefault``.
     """
-    case_tables: list[dict[str, Any]] = []
+    case_tables: list[CaseTable] = []
     for _ in range(n_case_tables):
         n_cases, pos = decode_varint(data, pos)
         default_child, pos = decode_varint(data, pos)
@@ -565,6 +664,11 @@ def _predict_tree(
     missing: str = "error",
 ) -> Any:
     """Predict using a single tree."""
+    data: Any = model
+    if "_decision_parents" not in data:
+        _model_decision_parents(model)
+    parents = data["_decision_parents"]
+    shared_trees = data["_shared_decision_trees"]
     return _predict_tree_recursive(
         model["tree_offsets"][tree_idx],
         vector,
@@ -583,6 +687,8 @@ def _predict_tree(
         missing,
         tree_idx,
         False,
+        None,
+        None if shared_trees[tree_idx] else parents[tree_idx],
     )
 
 
@@ -605,9 +711,10 @@ def _predict_tree_recursive(
     tree_idx: int = 0,
     xgboost: bool = False,
     path: list[dict[str, Any]] | None = None,
+    decision_parents: dict[int, tuple[int, str]] | None = None,
 ) -> Any:
     """Hot tree traversal; path collection uses a separate implementation."""
-    if path is not None or xgboost:
+    if path is not None or xgboost or decision_parents is None:
         return _predict_tree_path_recursive(
             idx,
             vector,
@@ -628,6 +735,7 @@ def _predict_tree_recursive(
             xgboost,
             path,
         )
+    root_idx = idx
     for _ in range(MAX_TREE_DEPTH):
         if idx & LEAF_FLAG:
             leaf_idx = idx & INDEX_MASK
@@ -675,9 +783,10 @@ def _predict_tree_recursive(
         learned_missing = is_missing and missing_direction != MISSING_NONE
         if is_missing and not learned_missing and missing == "error":
             feature_name = features[feat].get("name", str(feat))
+            path_id = _decision_path_id(root_idx, idx, decision_parents)
             raise MissingFeatureError(
                 f"feature {feat} ({feature_name!r}) is missing at "
-                f"tree {tree_idx} node {idx}"
+                f"tree {tree_idx} node {path_id!r}"
             )
         if not is_missing and bool_features[feat]:
             feat_val = normalize_bool(feat_val)
@@ -820,7 +929,7 @@ def _predict_tree_path_recursive(
             feature_name = features[feat].get("name", str(feat))
             raise MissingFeatureError(
                 f"feature {feat} ({feature_name!r}) is missing at "
-                f"tree {tree_idx} node {path_id}"
+                f"tree {tree_idx} node {path_id!r}"
             )
         if not is_missing and bool_features[feat]:
             feat_val = normalize_bool(feat_val)
@@ -1015,6 +1124,11 @@ def _predict_forest(
     category_sets = model.get("category_sets", [])
     features = model["meta"]["features"]
     n_input_features = len(vector)
+    data: Any = model
+    if "_decision_parents" not in data:
+        _model_decision_parents(model)
+    parents = data["_decision_parents"]
+    shared_trees = data["_shared_decision_trees"]
 
     predictions = [
         _predict_tree_recursive(
@@ -1035,6 +1149,8 @@ def _predict_forest(
             missing,
             i,
             False,
+            None,
+            None if shared_trees[i] else parents[i],
         )
         for i in range(model["n_trees"])
     ]

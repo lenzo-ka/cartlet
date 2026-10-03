@@ -386,7 +386,7 @@ def _eval_tree(
 
             raise MissingFeatureError(
                 f"feature {col} ({name!r}) is missing at "
-                f"tree {tree_idx} node {decision_id}"
+                f"tree {tree_idx} node {decision_id!r}"
             )
 
         if op in ("<=", "<"):
