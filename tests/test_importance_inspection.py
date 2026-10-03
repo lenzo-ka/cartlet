@@ -2,10 +2,12 @@
 
 import copy
 import json
+import random
 import struct
 
 import pytest
 
+import cartlet.evaluation as evaluation
 from cartlet import (
     DecisionTree,
     MissingFeatureError,
@@ -103,6 +105,105 @@ def test_permutation_groups_seed_validation_and_missing_policy():
         authored, [[], []], [1, 1], n_repeats=1, missing="right"
     )
     assert result["baseline"] == 0
+
+
+def test_permutation_importance_matches_copying_algorithm_for_grouped_ragged_rows():
+    model = DecisionTree(
+        features=[
+            {"name": "first", "dtype": "str", "type": "cat"},
+            {"name": "second", "dtype": "str", "type": "cat"},
+        ]
+    )
+    model.model = ["second", "=", "hit", "yes", "no"]
+    rows = [["a", "hit"], ["b"], ["c", "miss"], []]
+    targets = ["yes", "no", "no", "no"]
+
+    def old_values():
+        copied = [row.copy() for row in rows]
+        baseline_predictions = [model.predict(row, missing="right") for row in copied]
+        baseline = 1.0 - sum(
+            prediction == target
+            for prediction, target in zip(baseline_predictions, targets, strict=True)
+        ) / len(targets)
+        rng = random.Random(29)
+        values = []
+        for _ in range(6):
+            donors = list(range(len(copied)))
+            rng.shuffle(donors)
+            permuted = [row.copy() for row in copied]
+            for destination, donor in enumerate(donors):
+                for index in (0, 1):
+                    donor_value = (
+                        copied[donor][index] if index < len(copied[donor]) else None
+                    )
+                    while index >= len(permuted[destination]):
+                        permuted[destination].append(None)
+                    permuted[destination][index] = donor_value
+            predictions = [model.predict(row, missing="right") for row in permuted]
+            loss = 1.0 - sum(
+                prediction == target
+                for prediction, target in zip(predictions, targets, strict=True)
+            ) / len(targets)
+            values.append(loss - baseline)
+        return baseline, values
+
+    original = copy.deepcopy(rows)
+    expected_baseline, expected_values = old_values()
+    result = permutation_importance(
+        model,
+        rows,
+        targets,
+        feature_groups={"pair": ["first", "second"]},
+        n_repeats=6,
+        random_state=29,
+        missing="right",
+    )
+
+    assert result["baseline"] == expected_baseline
+    assert result["importances"][0]["values"] == expected_values
+    assert rows == original
+
+
+def test_permutation_importance_restores_internal_rows_when_prediction_raises(
+    monkeypatch,
+):
+    model = DecisionTree(
+        features=[
+            {"name": "first", "dtype": "str", "type": "cat"},
+            {"name": "second", "dtype": "str", "type": "cat"},
+        ]
+    )
+    model.model = ["first", "=", "a", "yes", "no"]
+    rows = [["a", "x"], ["b"], ["c", "z"]]
+    original = copy.deepcopy(rows)
+    original_predict = evaluation._predict_for_importance
+    calls = 0
+    internal_rows = []
+
+    def raising_predict(model, row, missing):
+        nonlocal calls
+        calls += 1
+        if calls > len(rows):
+            internal_rows.append(row)
+        if calls == len(rows) + 2:
+            raise RuntimeError("prediction failed")
+        return original_predict(model, row, missing)
+
+    monkeypatch.setattr(evaluation, "_predict_for_importance", raising_predict)
+
+    with pytest.raises(RuntimeError, match="prediction failed"):
+        permutation_importance(
+            model,
+            rows,
+            ["yes", "no", "no"],
+            feature_groups={"pair": ["first", "second"]},
+            n_repeats=1,
+            random_state=4,
+            missing="right",
+        )
+
+    assert rows == original
+    assert internal_rows == original[:2]
 
 
 @pytest.mark.parametrize("task", ["classification", "regression"])

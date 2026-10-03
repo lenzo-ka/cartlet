@@ -82,7 +82,8 @@ class XGBoostTree(BaseModel):
             learning_rate: Step size shrinkage
             max_depth: Maximum depth per tree
             features: Feature specs
-            feature_names: Simple feature names
+            feature_names: Column names; types are inferred from every dataset
+                passed to ``load_data``. Use ``features`` for an explicit schema.
             target: Target spec
             task: "classification", "regression", or "auto"
             verbose: Enable verbose output
@@ -146,7 +147,7 @@ class XGBoostTree(BaseModel):
             self.feature_names = [f"f{i}" for i in range(n_features)]
             self._rebuild_name_to_col()
 
-        if self.feature_specs:
+        if self.feature_specs and not self._infer_feature_specs_on_load:
             for i, spec in enumerate(self.feature_specs):
                 if spec.type == TYPE_CAT:
                     spec.values = {str(row[i]) for row in self.X}
@@ -157,6 +158,7 @@ class XGBoostTree(BaseModel):
                 exclude_bool_from_numeric=True,
                 include_values=True,
                 force_float_numeric=True,
+                strict=True,
             )
             self.feature_specs = [
                 FeatureSpec(

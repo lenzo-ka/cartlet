@@ -76,7 +76,7 @@ dt.load_data([[1000], [2000], [3000]], [100000, 200000, 300000])
 dt.train()
 print(dt.predict([1500]))  # 100000.0: a tree predicts a leaf mean
 
-# Random Forest
+# Random Forest (x and y are inferred numeric from the data; see below)
 rf = RandomForest(n_estimators=100, feature_names=["x", "y"])
 rf.load_data([[1, 2], [3, 4], [1, 3], [4, 4]], ["A", "B", "A", "B"])
 rf.train(random_state=42)
@@ -95,6 +95,12 @@ print(xgb.predict_proba(["red", "small"]))  # class probabilities
 xgb.export("model.cart")  # Compact binary for the runner
 xgb.export("model.xgb")  # Native XGBoost format
 ```
+
+With `features=` omitted, `feature_names=` supplies labels while `load_data`
+infers each column: all non-bool `int`/`float` values are numeric, all strings
+are categorical, and all bools retain categorical behavior. Mixed-type columns
+are ambiguous and raise `ValueError`; pass explicit `features=` for those or to
+override the inferred split type.
 
 ### CLI
 
@@ -268,9 +274,11 @@ dt.export("model.cart")  # Save (default: .cart)
 dt.load_model("model.cart")  # Load
 ```
 
-Use `feature_names=["age", "color"]` instead of `features` when both inputs
-should be categorical. Numeric dtype and numeric split behavior are separate:
-set `type="num"` for ordered threshold splits.
+Use `feature_names=["age", "color"]` when the data consistently identifies each
+column as numeric, string, or bool. Use `features` when a split type must be
+declared explicitly—for example, an integer code that should be categorical—or
+when a column mixes value types. Numeric dtype and numeric split behavior are
+separate in an explicit schema: set `type="num"` for ordered threshold splits.
 
 Distribution storage knobs (`store_distributions`, `min_dist_entropy`,
 `min_confidence`) only apply to classification trees. The defaults retain every

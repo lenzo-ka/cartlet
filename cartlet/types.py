@@ -351,6 +351,7 @@ def infer_feature_specs(
     exclude_bool_from_numeric: bool = False,
     include_values: bool = False,
     force_float_numeric: bool = False,
+    strict: bool = False,
 ) -> list[dict[str, Any]]:
     """
     Infer feature specifications from data.
@@ -367,6 +368,9 @@ def infer_feature_specs(
         force_float_numeric: If True, numeric columns get `dtype="float"`
             regardless of whether the values were ints. Useful when the
             downstream trainer always casts numeric features to float.
+        strict: If True, accept only columns containing all numbers (excluding
+            bool), all strings, or all bools. Ambiguous columns raise and tell
+            the caller to provide explicit feature specifications.
 
     Returns:
         List of feature spec dicts with `name`, `dtype`, `type`, and
@@ -378,7 +382,18 @@ def infer_feature_specs(
     specs: list[dict[str, Any]] = []
     for col, name in enumerate(feature_names):
         values = [row[col] for row in X if col < len(row)]
-        if exclude_bool_from_numeric:
+        if strict:
+            all_bool = all(isinstance(v, bool) for v in values)
+            all_str = all(isinstance(v, str) for v in values)
+            all_numeric = all(
+                isinstance(v, (int, float)) and not isinstance(v, bool) for v in values
+            )
+            if not (all_bool or all_str or all_numeric):
+                raise ValueError(
+                    f"cannot infer feature type for column {name!r}; "
+                    "pass features= explicitly"
+                )
+        elif exclude_bool_from_numeric:
             all_numeric = all(
                 isinstance(v, (int, float)) and not isinstance(v, bool) for v in values
             )
