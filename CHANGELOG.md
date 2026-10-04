@@ -5,7 +5,7 @@ formats incompatibly. Keep the package and standalone runner used to export and
 load a model on the same release; retrain or re-export models when a release
 requires it.
 
-## Unreleased
+## 0.8.0 — 2026-10-04
 
 ### Breaking changes
 
